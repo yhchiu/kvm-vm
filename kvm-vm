@@ -508,22 +508,38 @@ def supported_sysprep_ops() -> List[str]:
     return ops
 
 
-def sysprep_clone_disk(disk: Path) -> None:
-    wanted = [
-        "machine-id",
-        "ssh-hostkeys",
-        "net-hostname",
-        "dhcp-client-state",
-        "udev-persistent-net",
-        "lvm-system-devices",
-        "random-seed",
-    ]
+WANTED_SYSPREP_OPS = [
+    "machine-id",
+    "ssh-hostkeys",
+    "net-hostname",
+    "dhcp-client-state",
+    "udev-persistent-net",
+    "lvm-system-devices",
+    "random-seed",
+]
+
+
+def selected_sysprep_ops() -> List[str]:
     available = set(supported_sysprep_ops())
     critical = {"machine-id", "ssh-hostkeys"}
     if not critical.issubset(available):
         missing = sorted(critical - available)
         raise KVMError("virt-sysprep is too old; missing critical operation(s): " + ", ".join(missing))
-    selected = [x for x in wanted if x in available]
+    return [x for x in WANTED_SYSPREP_OPS if x in available]
+
+
+def verify_sysprep_compatibility(disk: Path) -> None:
+    ops = selected_sysprep_ops()
+    cmd = ["virt-sysprep", "--dry-run", "-a", str(disk), "--operations", ",".join(ops)]
+    try:
+        run(cmd, check=True, capture=True)
+    except subprocess.CalledProcessError as exc:
+        err = exc.stderr.strip() if exc.stderr else str(exc)
+        raise KVMError(f"Source disk {disk} is not compatible with virt-sysprep: {err}") from exc
+
+
+def sysprep_clone_disk(disk: Path) -> None:
+    selected = selected_sysprep_ops()
     print("Sysprep operations:", ",".join(selected))
     run(["virt-sysprep", "-a", str(disk), "--operations", ",".join(selected)])
 
@@ -812,6 +828,8 @@ def cmd_clone(args: argparse.Namespace) -> int:
         src_disk = first_disk_source(source_name)
     if not src_disk.is_file():
         raise KVMError(f"Clone currently supports regular file-backed system disks only: {src_disk}")
+
+    verify_sysprep_compatibility(src_disk)
 
     if args.dry_run:
         print("dry-run: all pre-flight checks passed")

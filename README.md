@@ -435,7 +435,8 @@ kvm-vm clone source-vm target.yaml --dry-run
 
 Runs all pre-flight checks (YAML normalization, domain/state collision checks, bridge/NAT
 validation, MAC allocation, and SSH key resolution) and prints the normalized YAML without
-downloading images, touching disks, or defining libvirt domains.
+downloading images, touching disks, or defining libvirt domains. For `clone`, it also verifies
+`virt-sysprep` compatibility against the source disk using a dry-run check before any disk conversion.
 
 ## Recommended operational workflow
 

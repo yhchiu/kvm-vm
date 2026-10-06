@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import subprocess
 import sys
 import urllib.error
 from pathlib import Path
@@ -228,3 +229,41 @@ class TestParser:
 
         args_create_default = parser.parse_args(["create", "myvm.yaml"])
         assert args_create_default.dry_run is False
+
+
+# --- sysprep compatibility verification ---
+
+class TestSysprepCompatibility:
+    def test_selected_sysprep_ops_missing_critical(self):
+        with patch("kvm_vm.supported_sysprep_ops", return_value=["random-seed"]):
+            with pytest.raises(kvm_vm.KVMError, match="missing critical operation"):
+                kvm_vm.selected_sysprep_ops()
+
+    def test_selected_sysprep_ops_filters(self):
+        with patch("kvm_vm.supported_sysprep_ops", return_value=["machine-id", "ssh-hostkeys", "extra-unknown"]):
+            ops = kvm_vm.selected_sysprep_ops()
+            assert ops == ["machine-id", "ssh-hostkeys"]
+
+    def test_verify_sysprep_compatibility_success(self, tmp_path):
+        fake_disk = tmp_path / "test.qcow2"
+        fake_disk.touch()
+        with patch("kvm_vm.supported_sysprep_ops", return_value=["machine-id", "ssh-hostkeys"]), \
+             patch("kvm_vm.run") as mock_run:
+            kvm_vm.verify_sysprep_compatibility(fake_disk)
+            mock_run.assert_called_once()
+            args, kwargs = mock_run.call_args
+            cmd = args[0]
+            assert cmd[0] == "virt-sysprep"
+            assert "--dry-run" in cmd
+            assert str(fake_disk) in cmd
+            assert kwargs.get("capture") is True
+
+    def test_verify_sysprep_compatibility_failure_raises(self, tmp_path):
+        fake_disk = tmp_path / "test.qcow2"
+        fake_disk.touch()
+        exc = subprocess.CalledProcessError(1, ["virt-sysprep"], stderr="no operating system found")
+        with patch("kvm_vm.supported_sysprep_ops", return_value=["machine-id", "ssh-hostkeys"]), \
+             patch("kvm_vm.run", side_effect=exc):
+            with pytest.raises(kvm_vm.KVMError, match="not compatible with virt-sysprep: no operating system found"):
+                kvm_vm.verify_sysprep_compatibility(fake_disk)
+
