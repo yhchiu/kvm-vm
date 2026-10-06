@@ -337,6 +337,9 @@ class TestParser:
         args_create_default = parser.parse_args(["create", "myvm.yaml"])
         assert args_create_default.dry_run is False
 
+    def test_version(self):
+        assert kvm_vm.VERSION == "1.2.0"
+
 
 # --- sysprep compatibility verification ---
 
