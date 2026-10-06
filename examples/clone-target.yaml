@@ -18,7 +18,8 @@ storage:
   discard: unmap
 
 network:
-  bridge: br0
+  mode: bridge
+  bridge: viifbr0
   mac: auto
   ipv4:
     method: static

@@ -79,7 +79,7 @@ KVM_VM_DEF_DIR
 
 ## Create a VM
 
-Start with `examples/ubuntu24-web01.yaml` and edit the network and SSH key path.
+Start with `examples/ubuntu24-web01.yaml` and edit the network and SSH key path. The default network mode is `bridge`, and the default bridge is `viifbr0`.
 
 ```bash
 kvm-vm validate web01.yaml
@@ -146,7 +146,8 @@ storage:
     distro: ubuntu24.04
 
 network:
-  bridge: br0
+  mode: bridge
+  bridge: viifbr0
   model: virtio
   mac: auto
   ipv4:
@@ -179,6 +180,71 @@ paths are resolved relative to the YAML file.
 Static cloud-init networking matches that MAC and renames the interface to `eth0`, so
 the definition does not depend on whether a distribution originally calls it `ens3`,
 `enp1s0`, etc.
+
+## Network modes
+
+`kvm-vm` supports two single-NIC attachment modes.
+
+### Bridge mode
+
+Bridge mode is the default. If `network.mode` and `network.bridge` are omitted, the VM is
+attached to `viifbr0`:
+
+```yaml
+network:
+  mode: bridge
+  bridge: viifbr0
+  model: virtio
+  mac: auto
+  ipv4:
+    method: dhcp
+```
+
+This produces the equivalent of:
+
+```text
+virt-install ... --network bridge=viifbr0,model=virtio,mac=...
+```
+
+For backward compatibility, existing YAML that contains only `network.bridge` still uses
+bridge mode. The default bridge changed from `br0` in v1.0.0 to `viifbr0` in v1.1.0.
+
+### NAT mode
+
+NAT mode attaches the VM to a libvirt virtual network, not directly to that virtual
+network's Linux bridge. The common libvirt `default` network is typically backed by
+`virbr0`, dnsmasq/DHCP, and outbound NAT.
+
+```yaml
+network:
+  mode: nat
+  libvirt_network: default
+  model: virtio
+  mac: auto
+  ipv4:
+    method: dhcp
+  ipv6:
+    method: disabled
+```
+
+This produces the equivalent of:
+
+```text
+virt-install ... --network network=default,model=virtio,mac=...
+```
+
+Before `create` or `clone`, `kvm-vm` verifies that the named libvirt network exists, is
+active, and has NAT forwarding configured. If it exists but is inactive, start it with:
+
+```bash
+virsh -c qemu:///system net-start default
+virsh -c qemu:///system net-autostart default
+```
+
+`examples/ubuntu24-nat.yaml` is a complete NAT example. DHCP is normally the simplest
+choice for a NAT network because libvirt's network DHCP service then owns address
+allocation. A static guest address is still accepted, but you are responsible for keeping
+it inside the NAT subnet and outside conflicting DHCP allocations/reservations.
 
 ## List and status
 
@@ -332,6 +398,15 @@ kvm-vm create vm.yaml --no-start
 
 The domain is defined but left shut off, which is useful if you want to inspect `virsh
 dumpxml` or apply additional libvirt policy before first boot.
+
+## Version notes
+
+### 1.1.0
+
+- Changed the default bridge from `br0` to `viifbr0`.
+- Added `network.mode: nat` with `libvirt_network: default`.
+- NAT definitions are validated against the active libvirt virtual network and its forward mode.
+- Existing bridge-mode YAML remains compatible.
 
 ## Recommended operational workflow
 
