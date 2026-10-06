@@ -1,21 +1,25 @@
 version: 1
 
 vm:
-  name: debian01
+  name: nat01
   vcpus: 2
   memory_mib: 4096
   cpu: host-passthrough
   autostart: true
   start: true
+  os_variant: ubuntu24.04
 
 storage:
   disk_gib: 40
   image:
-    distro: debian13
+    distro: ubuntu24.04
 
 network:
-  mode: bridge
-  bridge: viifbr0
+  mode: nat
+  # A libvirt virtual network whose <forward mode="nat"/> is enabled.
+  # "default" normally uses virbr0 + dnsmasq and provides outbound NAT.
+  libvirt_network: default
+  model: virtio
   mac: auto
   ipv4:
     method: dhcp

@@ -23,7 +23,8 @@ storage:
     # sha256: optional_sha256_for_url_or_path
 
 network:
-  bridge: br0
+  mode: bridge
+  bridge: viifbr0
   model: virtio
   mac: auto
   ipv4:

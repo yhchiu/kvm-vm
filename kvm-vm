@@ -20,6 +20,7 @@ import subprocess
 import sys
 import tempfile
 import urllib.request
+import xml.etree.ElementTree as ET
 from urllib.parse import urlparse
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -30,7 +31,7 @@ except ImportError:
     print("ERROR: PyYAML is required (Debian/Ubuntu: apt install python3-yaml; RHEL-family: dnf install python3-pyyaml)", file=sys.stderr)
     sys.exit(2)
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 LIBVIRT_URI = os.environ.get("KVM_VM_LIBVIRT_URI", "qemu:///system")
 BASE_DIR = Path(os.environ.get("KVM_VM_BASE_DIR", "/var/lib/libvirt/images/base"))
 VM_DIR = Path(os.environ.get("KVM_VM_DISK_DIR", "/var/lib/libvirt/images/vm"))
@@ -182,7 +183,19 @@ def normalize_definition(raw: Dict[str, Any], *, for_clone: bool = False) -> Dic
         if distro and distro not in DISTROS:
             raise KVMError(f"Unsupported distro '{distro}'. Supported: {', '.join(sorted(DISTROS))}")
 
-    bridge = network.get("bridge", "br0")
+    network_mode = str(network.get("mode", "bridge")).lower()
+    if network_mode not in {"bridge", "nat"}:
+        raise KVMError("network.mode must be bridge or nat")
+
+    bridge = network.get("bridge", "viifbr0")
+    libvirt_network = network.get("libvirt_network", "default")
+    if network_mode == "bridge":
+        if not isinstance(bridge, str) or not bridge.strip():
+            raise KVMError("network.bridge must be a non-empty bridge/interface name")
+    else:
+        if not isinstance(libvirt_network, str) or not libvirt_network.strip():
+            raise KVMError("network.libvirt_network must be a non-empty libvirt network name")
+
     model = network.get("model", "virtio")
     mac = network.get("mac") or "auto"
     if mac != "auto" and not MAC_RE.match(str(mac)):
@@ -247,7 +260,8 @@ def normalize_definition(raw: Dict[str, Any], *, for_clone: bool = False) -> Dic
             },
         },
         "network": {
-            "bridge": bridge,
+            "mode": network_mode,
+            **({"bridge": bridge} if network_mode == "bridge" else {"libvirt_network": libvirt_network}),
             "model": model,
             "mac": mac,
             "ipv4": ipv4,
@@ -295,6 +309,44 @@ def validate_bridge(bridge: str) -> None:
         p = run(["ip", "link", "show", "dev", bridge], check=False, capture=True)
         if p.returncode != 0:
             raise KVMError(f"Bridge/interface not found: {bridge}")
+
+
+def validate_nat_network(network_name: str) -> None:
+    info = run(["virsh", "-c", LIBVIRT_URI, "net-info", network_name], check=False, capture=True)
+    if info.returncode != 0:
+        raise KVMError(f"Libvirt NAT network not found: {network_name}")
+
+    values: Dict[str, str] = {}
+    for line in info.stdout.splitlines():
+        if ":" in line:
+            key, value = line.split(":", 1)
+            values[key.strip().lower()] = value.strip().lower()
+    if values.get("active") != "yes":
+        raise KVMError(
+            f"Libvirt NAT network '{network_name}' is not active; start it with: "
+            f"virsh -c {LIBVIRT_URI} net-start {network_name}"
+        )
+
+    xml = run(["virsh", "-c", LIBVIRT_URI, "net-dumpxml", network_name], check=False, capture=True)
+    if xml.returncode != 0:
+        raise KVMError(f"Could not inspect libvirt network: {network_name}")
+    try:
+        root = ET.fromstring(xml.stdout)
+    except ET.ParseError as exc:
+        raise KVMError(f"Invalid libvirt network XML for '{network_name}': {exc}")
+    forward = root.find("forward")
+    if forward is None:
+        raise KVMError(f"Libvirt network '{network_name}' is isolated, not NAT")
+    mode = forward.attrib.get("mode", "nat").lower()
+    if mode != "nat":
+        raise KVMError(f"Libvirt network '{network_name}' uses forward mode '{mode}', not NAT")
+
+
+def validate_network_attachment(net: Dict[str, Any]) -> None:
+    if net["mode"] == "bridge":
+        validate_bridge(net["bridge"])
+    else:
+        validate_nat_network(net["libvirt_network"])
 
 
 def sha256_file(path: Path) -> str:
@@ -561,7 +613,10 @@ def define_vm(cfg: Dict[str, Any], disk: Path, seed: Path, default_variant: Opti
         eprint(f"WARN: osinfo variant '{requested_variant}' not available on this host; using 'generic'")
 
     disk_opts = f"path={disk},format=qcow2,bus={st['bus']},cache={st['cache']},discard={st['discard']}"
-    net_opts = f"bridge={net['bridge']},model={net['model']},mac={net['mac']}"
+    if net["mode"] == "bridge":
+        net_opts = f"bridge={net['bridge']},model={net['model']},mac={net['mac']}"
+    else:
+        net_opts = f"network={net['libvirt_network']},model={net['model']},mac={net['mac']}"
     cmd = [
         "virt-install", "--connect", LIBVIRT_URI,
         "--name", name,
@@ -648,7 +703,7 @@ def cmd_create(args: argparse.Namespace) -> int:
         raise KVMError(f"Domain already exists: {name}")
     if load_state(name):
         raise KVMError(f"Managed state already exists for {name}; resolve it before creating")
-    validate_bridge(cfg["network"]["bridge"])
+    validate_network_attachment(cfg["network"])
     if cfg["network"]["mac"] == "auto":
         cfg["network"]["mac"] = generate_mac()
     resolve_ssh_keys(cfg["cloud_init"]["ssh_authorized_keys"], p.parent)
@@ -700,7 +755,7 @@ def cmd_clone(args: argparse.Namespace) -> int:
         raise KVMError("Clone target name must differ from source")
     if domain_exists(name) or load_state(name):
         raise KVMError(f"Clone target already exists or has managed state: {name}")
-    validate_bridge(cfg["network"]["bridge"])
+    validate_network_attachment(cfg["network"])
     if cfg["network"]["mac"] == "auto":
         cfg["network"]["mac"] = generate_mac()
     resolve_ssh_keys(cfg["cloud_init"]["ssh_authorized_keys"], p.parent)
