@@ -35,7 +35,7 @@ RHEL / Rocky / Alma 系列：
 ```bash
 dnf install \
   qemu-kvm libvirt virt-install \
-  cloud-utils python3-pyyaml \
+  cloud-init python3-pyyaml \
   libguestfs-tools libosinfo iproute
 ```
 
