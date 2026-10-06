@@ -35,9 +35,11 @@ RHEL / Rocky / Alma 系列：
 ```bash
 dnf install \
   qemu-kvm libvirt virt-install \
-  cloud-init python3-pyyaml \
+  genisoimage python3-pyyaml \
   libguestfs-tools libosinfo iproute
 ```
+
+建立 cloud-init seed 映像檔時，`kvm-vm` 會自動偵測並優先使用宿主機上可用的工具：`cloud-localds`（來自 `cloud-image-utils` 或 `cloud-utils`）、`genisoimage`、`mkisofs` 或 `xorriso`。
 
 `virt-sysprep` 與 `virt-customize` 僅在執行 `clone` 時需要，但仍建議在管理主機上安裝。
 

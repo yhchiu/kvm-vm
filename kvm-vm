@@ -98,6 +98,26 @@ def require_commands(names: List[str]) -> None:
         raise KVMError("Missing required command(s): " + ", ".join(missing))
 
 
+CLOUD_SEED_COMMANDS = ("cloud-localds", "genisoimage", "mkisofs", "xorrisofs", "xorriso")
+
+
+def find_cloud_seed_generator() -> Optional[str]:
+    for cmd in CLOUD_SEED_COMMANDS:
+        if shutil.which(cmd):
+            return cmd
+    return None
+
+
+def require_cloud_seed_generator() -> str:
+    tool = find_cloud_seed_generator()
+    if not tool:
+        raise KVMError(
+            "Missing cloud-init ISO generator: install cloud-localds (cloud-image-utils / cloud-utils), "
+            "genisoimage, mkisofs, or xorriso"
+        )
+    return tool
+
+
 def ensure_dirs() -> None:
     for p in (BASE_DIR, VM_DIR, STATE_DIR, CLOUD_DIR, DEF_DIR):
         p.mkdir(parents=True, exist_ok=True)
@@ -698,9 +718,38 @@ def make_cloud_files(cfg: Dict[str, Any], source_def_dir: Path) -> Tuple[Path, P
     network_config.write_text(yaml.safe_dump(network_data, sort_keys=False), encoding="utf-8")
 
     seed = cdir / "seed.img"
-    run(["cloud-localds", "--network-config", str(network_config), str(seed), str(user_data), str(meta_data)])
-    restore_selinux([seed])
+    create_cloud_seed(seed, user_data, meta_data, network_config)
     return user_data, meta_data, network_config, instance_id
+
+
+def build_cloud_seed_cmd(tool: str, seed: Path, user_data: Path, meta_data: Path, network_config: Path) -> List[str]:
+    if tool == "cloud-localds":
+        return ["cloud-localds", "--network-config", str(network_config), str(seed), str(user_data), str(meta_data)]
+    graft_args = [
+        "-quiet",
+        "-output", str(seed),
+        "-volid", "cidata",
+        "-joliet",
+        "-rock",
+        "-graft-points",
+        f"user-data={user_data}",
+        f"meta-data={meta_data}",
+        f"network-config={network_config}",
+    ]
+    if tool in ("genisoimage", "mkisofs", "xorrisofs"):
+        return [tool] + graft_args
+    if tool == "xorriso":
+        return ["xorriso", "-as", "mkisofs"] + graft_args
+    raise KVMError(f"Unsupported cloud-init generator: {tool}")
+
+
+def create_cloud_seed(seed: Path, user_data: Path, meta_data: Path, network_config: Path) -> None:
+    tool = require_cloud_seed_generator()
+    if seed.exists():
+        seed.unlink()
+    cmd = build_cloud_seed_cmd(tool, seed, user_data, meta_data, network_config)
+    run(cmd)
+    restore_selinux([seed])
 
 
 def restore_selinux(paths: List[Path]) -> None:
@@ -815,7 +864,8 @@ def cmd_validate(args: argparse.Namespace) -> int:
 
 
 def cmd_create(args: argparse.Namespace) -> int:
-    require_commands(["virsh", "virt-install", "qemu-img", "cloud-localds"])
+    require_commands(["virsh", "virt-install", "qemu-img"])
+    require_cloud_seed_generator()
     ensure_dirs()
     p = Path(args.definition)
     cfg = normalize_definition(yaml_load(p), for_clone=False)
@@ -865,7 +915,8 @@ def first_disk_source(name: str) -> Path:
 
 
 def cmd_clone(args: argparse.Namespace) -> int:
-    require_commands(["virsh", "virt-install", "qemu-img", "cloud-localds", "virt-sysprep", "virt-customize"])
+    require_commands(["virsh", "virt-install", "qemu-img", "virt-sysprep", "virt-customize"])
+    require_cloud_seed_generator()
     ensure_dirs()
     source_name = args.source
     if not domain_exists(source_name):

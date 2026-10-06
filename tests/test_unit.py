@@ -377,3 +377,87 @@ class TestSysprepCompatibility:
             with pytest.raises(kvm_vm.KVMError, match="not compatible with virt-sysprep: no operating system found"):
                 kvm_vm.verify_sysprep_compatibility(fake_disk)
 
+
+# --- cloud seed generator ---
+
+class TestCloudSeed:
+    def test_find_cloud_seed_generator_priority(self):
+        with patch("kvm_vm.shutil.which") as mock_which:
+            mock_which.side_effect = lambda cmd: "/usr/bin/" + cmd if cmd in ("cloud-localds", "genisoimage") else None
+            assert kvm_vm.find_cloud_seed_generator() == "cloud-localds"
+
+    def test_find_cloud_seed_generator_fallback_genisoimage(self):
+        with patch("kvm_vm.shutil.which") as mock_which:
+            mock_which.side_effect = lambda cmd: "/usr/bin/" + cmd if cmd in ("genisoimage", "xorriso") else None
+            assert kvm_vm.find_cloud_seed_generator() == "genisoimage"
+
+    def test_find_cloud_seed_generator_fallback_xorriso(self):
+        with patch("kvm_vm.shutil.which") as mock_which:
+            mock_which.side_effect = lambda cmd: "/usr/bin/xorriso" if cmd == "xorriso" else None
+            assert kvm_vm.find_cloud_seed_generator() == "xorriso"
+
+    def test_find_cloud_seed_generator_none(self):
+        with patch("kvm_vm.shutil.which", return_value=None):
+            assert kvm_vm.find_cloud_seed_generator() is None
+
+    def test_require_cloud_seed_generator_raises_when_missing(self):
+        with patch("kvm_vm.shutil.which", return_value=None):
+            with pytest.raises(kvm_vm.KVMError, match="Missing cloud-init ISO generator"):
+                kvm_vm.require_cloud_seed_generator()
+
+    def test_build_cloud_seed_cmd_cloud_localds(self, tmp_path):
+        seed = tmp_path / "seed.img"
+        ud = tmp_path / "user-data"
+        md = tmp_path / "meta-data"
+        nc = tmp_path / "network-config"
+        cmd = kvm_vm.build_cloud_seed_cmd("cloud-localds", seed, ud, md, nc)
+        assert cmd == ["cloud-localds", "--network-config", str(nc), str(seed), str(ud), str(md)]
+
+    def test_build_cloud_seed_cmd_genisoimage(self, tmp_path):
+        seed = tmp_path / "seed.img"
+        ud = tmp_path / "user-data"
+        md = tmp_path / "meta-data"
+        nc = tmp_path / "network-config"
+        cmd = kvm_vm.build_cloud_seed_cmd("genisoimage", seed, ud, md, nc)
+        assert cmd[0] == "genisoimage"
+        assert "-quiet" in cmd
+        assert "-volid" in cmd and "cidata" in cmd
+        assert "-graft-points" in cmd
+        assert f"user-data={ud}" in cmd
+        assert f"meta-data={md}" in cmd
+        assert f"network-config={nc}" in cmd
+
+    def test_build_cloud_seed_cmd_xorriso(self, tmp_path):
+        seed = tmp_path / "seed.img"
+        ud = tmp_path / "user-data"
+        md = tmp_path / "meta-data"
+        nc = tmp_path / "network-config"
+        cmd = kvm_vm.build_cloud_seed_cmd("xorriso", seed, ud, md, nc)
+        assert cmd[:3] == ["xorriso", "-as", "mkisofs"]
+        assert "-quiet" in cmd
+        assert "-volid" in cmd and "cidata" in cmd
+        assert f"user-data={ud}" in cmd
+
+    def test_build_cloud_seed_cmd_unsupported(self, tmp_path):
+        seed = tmp_path / "seed.img"
+        ud = tmp_path / "user-data"
+        md = tmp_path / "meta-data"
+        nc = tmp_path / "network-config"
+        with pytest.raises(kvm_vm.KVMError, match="Unsupported cloud-init generator"):
+            kvm_vm.build_cloud_seed_cmd("unknown-tool", seed, ud, md, nc)
+
+    def test_create_cloud_seed_unlinks_existing_and_restores_selinux(self, tmp_path):
+        seed = tmp_path / "seed.img"
+        seed.touch()
+        ud = tmp_path / "user-data"
+        md = tmp_path / "meta-data"
+        nc = tmp_path / "network-config"
+
+        with patch("kvm_vm.require_cloud_seed_generator", return_value="genisoimage"), \
+             patch("kvm_vm.run") as mock_run, \
+             patch("kvm_vm.restore_selinux") as mock_selinux:
+            kvm_vm.create_cloud_seed(seed, ud, md, nc)
+            assert not seed.exists()
+            mock_run.assert_called_once()
+            mock_selinux.assert_called_once_with([seed])
+
