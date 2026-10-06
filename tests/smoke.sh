@@ -5,6 +5,10 @@ python3 -m py_compile "$ROOT/kvm-vm"
 "$ROOT/kvm-vm" --help >/dev/null
 "$ROOT/kvm-vm" --version
 
+if python3 -m pytest --version >/dev/null 2>&1; then
+  python3 -m pytest "$ROOT/tests/test_unit.py" -q
+fi
+
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 cat > "$tmp/key.pub" <<'KEY'
