@@ -42,7 +42,7 @@ VM_DIR = Path(os.environ.get("KVM_VM_DISK_DIR", "/var/lib/libvirt/images/vm"))
 STATE_DIR = Path(os.environ.get("KVM_VM_STATE_DIR", "/var/lib/kvm-vm/state"))
 CLOUD_DIR = Path(os.environ.get("KVM_VM_CLOUD_DIR", "/var/lib/libvirt/images/cloud-init"))
 DEF_DIR = Path(os.environ.get("KVM_VM_DEF_DIR", "/etc/kvm-vm/definitions"))
-DEFAULT_BRIDGE = os.environ.get("KVM_VM_BRIDGE", "br0")
+DEFAULT_BRIDGE = "br0"
 
 DISTROS = {
     "ubuntu24.04": {
@@ -182,30 +182,65 @@ def normalize_definition(raw: Dict[str, Any], *, for_clone: bool = False) -> Dic
     ci = raw.get("cloud_init") or {}
     image = storage.get("image") or {}
 
-    name = vm.get("name")
+    env_name = os.environ.get("KVM_VM_NAME")
+    name = env_name if env_name is not None else vm.get("name")
     if not isinstance(name, str) or not NAME_RE.match(name):
         raise KVMError("vm.name is required and must match [A-Za-z0-9][A-Za-z0-9._-]{0,62}")
 
-    vcpus = int(vm.get("vcpus", 2))
-    memory_mib = int(vm.get("memory_mib", 2048))
+    env_vcpus = os.environ.get("KVM_VM_VCPUS")
+    if env_vcpus is not None:
+        try:
+            vcpus = int(env_vcpus)
+        except ValueError as exc:
+            raise KVMError(f"Invalid KVM_VM_VCPUS: {env_vcpus}") from exc
+    else:
+        vcpus = int(vm.get("vcpus", 2))
     if not (1 <= vcpus <= 1024):
         raise KVMError("vm.vcpus must be between 1 and 1024")
+
+    env_mem = os.environ.get("KVM_VM_MEMORY") or os.environ.get("KVM_VM_MEMORY_MIB")
+    if env_mem is not None:
+        try:
+            memory_mib = int(env_mem)
+        except ValueError as exc:
+            raise KVMError(f"Invalid KVM_VM_MEMORY: {env_mem}") from exc
+    else:
+        memory_mib = int(vm.get("memory_mib", 2048))
     if memory_mib < 256:
         raise KVMError("vm.memory_mib must be >= 256")
 
-    disk_gib = storage.get("disk_gib")
-    if disk_gib is not None:
-        disk_gib = int(disk_gib)
-        if disk_gib < 1:
-            raise KVMError("storage.disk_gib must be >= 1")
-    elif not for_clone:
-        disk_gib = 20
-    # When for_clone=True and the user omitted disk_gib, it stays None.
-    # make_disk_from_clone() interprets None as "keep the source virtual size".
+    env_disk = os.environ.get("KVM_VM_DISK") or os.environ.get("KVM_VM_DISK_GIB")
+    if env_disk is not None:
+        try:
+            disk_gib = int(env_disk)
+        except ValueError as exc:
+            raise KVMError(f"Invalid KVM_VM_DISK: {env_disk}") from exc
+    else:
+        disk_gib = storage.get("disk_gib")
+        if disk_gib is not None:
+            disk_gib = int(disk_gib)
+        elif not for_clone:
+            disk_gib = 20
 
+    if disk_gib is not None and disk_gib < 1:
+        raise KVMError("storage.disk_gib must be >= 1")
+
+    env_os = os.environ.get("KVM_VM_OS")
     distro = image.get("distro")
     url = image.get("url")
     local_path = image.get("path")
+    if env_os:
+        if not for_clone:
+            if env_os in DISTROS:
+                distro = env_os
+                url = None
+                local_path = None
+            else:
+                raise KVMError(f"Unsupported KVM_VM_OS '{env_os}'. Supported: {', '.join(sorted(DISTROS))}")
+        os_variant_val = env_os
+    else:
+        os_variant_val = vm.get("os_variant")
+
     if not for_clone:
         selected = sum(bool(x) for x in (distro, url, local_path))
         if selected != 1:
@@ -213,13 +248,19 @@ def normalize_definition(raw: Dict[str, Any], *, for_clone: bool = False) -> Dic
         if distro and distro not in DISTROS:
             raise KVMError(f"Unsupported distro '{distro}'. Supported: {', '.join(sorted(DISTROS))}")
 
+    env_bridge = os.environ.get("KVM_VM_BRIDGE")
     network_mode = str(network.get("mode", "bridge")).lower()
+    if env_bridge is not None:
+        network_mode = "bridge"
+        bridge = env_bridge
+    else:
+        bridge = network.get("bridge")
+        if bridge is None:
+            bridge = DEFAULT_BRIDGE
+
     if network_mode not in {"bridge", "nat"}:
         raise KVMError("network.mode must be bridge or nat")
 
-    bridge = network.get("bridge")
-    if bridge is None:
-        bridge = os.environ.get("KVM_VM_BRIDGE", DEFAULT_BRIDGE)
     libvirt_network = network.get("libvirt_network", "default")
     if network_mode == "bridge":
         if not isinstance(bridge, str) or not bridge.strip():
@@ -233,7 +274,28 @@ def normalize_definition(raw: Dict[str, Any], *, for_clone: bool = False) -> Dic
     if mac != "auto" and not MAC_RE.match(str(mac)):
         raise KVMError("network.mac must be 'auto' or a MAC address")
 
-    ipv4 = network.get("ipv4") or {"method": "dhcp"}
+    env_ipv4 = os.environ.get("KVM_VM_IPV4")
+    env_gw = os.environ.get("KVM_VM_GATEWAY")
+    env_dns = os.environ.get("KVM_VM_DNS")
+
+    ipv4 = dict(network.get("ipv4") or {"method": "dhcp"})
+    if env_ipv4:
+        env_ipv4_val = env_ipv4.strip()
+        env_ipv4_lower = env_ipv4_val.lower()
+        if env_ipv4_lower in {"dhcp", "disabled"}:
+            ipv4["method"] = env_ipv4_lower
+            ipv4.pop("address", None)
+        elif "/" in env_ipv4_val:
+            ipv4["method"] = "static"
+            ipv4["address"] = env_ipv4_val
+        else:
+            raise KVMError("KVM_VM_IPV4 must be 'dhcp', 'disabled', or an IP interface with CIDR prefix (e.g. 192.168.10.50/24)")
+
+    if env_gw:
+        ipv4["gateway"] = env_gw.strip()
+    if env_dns:
+        ipv4["dns"] = [d.strip() for d in env_dns.split(",") if d.strip()]
+
     method = ipv4.get("method", "dhcp")
     if method not in {"dhcp", "static", "disabled"}:
         raise KVMError("network.ipv4.method must be dhcp, static, or disabled")
@@ -277,7 +339,7 @@ def normalize_definition(raw: Dict[str, Any], *, for_clone: bool = False) -> Dic
             "cpu": vm.get("cpu", "host-passthrough"),
             "autostart": bool(vm.get("autostart", True)),
             "start": bool(vm.get("start", True)),
-            "os_variant": vm.get("os_variant"),
+            "os_variant": os_variant_val,
         },
         "storage": {
             "disk_gib": disk_gib,

@@ -68,7 +68,9 @@ available.
 
 ## Environment variables
 
-All storage paths, libvirt connection URI, and network defaults can be overridden with environment variables:
+All storage paths, libvirt connection URI, and VM definition values can be overridden with environment variables (taking precedence over YAML files and built-in defaults):
+
+### Paths & System Configuration
 
 | Variable | Default | Description |
 |---|---|---|
@@ -78,7 +80,20 @@ All storage paths, libvirt connection URI, and network defaults can be overridde
 | `KVM_VM_STATE_DIR` | `/var/lib/kvm-vm/state` | Tool state manifests |
 | `KVM_VM_CLOUD_DIR` | `/var/lib/libvirt/images/cloud-init` | Per-VM NoCloud seed and source files |
 | `KVM_VM_DEF_DIR` | `/etc/kvm-vm/definitions` | Effective YAML definitions |
-| `KVM_VM_BRIDGE` | `br0` | Linux bridge interface for bridge mode |
+
+### VM Definition Overrides
+
+| Variable | YAML Path | Example | Description |
+|---|---|---|---|
+| `KVM_VM_NAME` | `vm.name` | `web02` | Overrides VM name |
+| `KVM_VM_VCPUS` | `vm.vcpus` | `4` | Overrides vCPUs count (1-1024) |
+| `KVM_VM_MEMORY` / `KVM_VM_MEMORY_MIB` | `vm.memory_mib` | `4096` | Overrides memory in MiB (>= 256) |
+| `KVM_VM_DISK` / `KVM_VM_DISK_GIB` | `storage.disk_gib` | `50` | Overrides disk size in GiB (>= 1) |
+| `KVM_VM_OS` | `image.distro` / `os_variant` | `rocky9` | Overrides distro alias and `os_variant` |
+| `KVM_VM_BRIDGE` | `network.bridge` | `br0` | Default or override bridge interface for bridge mode |
+| `KVM_VM_IPV4` | `network.ipv4` | `dhcp`, `192.168.1.50/24` | Sets method (`dhcp`, `disabled`) or static CIDR address |
+| `KVM_VM_GATEWAY` | `network.ipv4.gateway` | `192.168.1.1` | Overrides default IPv4 gateway |
+| `KVM_VM_DNS` | `network.ipv4.dns` | `1.1.1.1,8.8.8.8` | Overrides DNS servers (comma-separated) |
 
 ## Create a VM
 

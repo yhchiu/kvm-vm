@@ -91,6 +91,25 @@ class TestNormalizeDefinition:
         cfg = kvm_vm.normalize_definition(_minimal_raw())
         assert cfg["network"]["bridge"] == "custombr0"
 
+    def test_env_override_bridge_overrides_yaml(self, monkeypatch):
+        monkeypatch.setenv("KVM_VM_BRIDGE", "overridebr0")
+        raw = _minimal_raw(network={"mode": "bridge", "bridge": "origbr99", "ipv4": {"method": "dhcp"}})
+        cfg = kvm_vm.normalize_definition(raw)
+        assert cfg["network"]["bridge"] == "overridebr0"
+
+    def test_env_override_bridge_switches_nat_mode(self, monkeypatch):
+        monkeypatch.setenv("KVM_VM_BRIDGE", "overridebr0")
+        raw = _minimal_raw(network={"mode": "nat", "libvirt_network": "default", "ipv4": {"method": "dhcp"}})
+        cfg = kvm_vm.normalize_definition(raw)
+        assert cfg["network"]["mode"] == "bridge"
+        assert cfg["network"]["bridge"] == "overridebr0"
+        assert "libvirt_network" not in cfg["network"]
+
+    def test_env_override_bridge_empty_raises(self, monkeypatch):
+        monkeypatch.setenv("KVM_VM_BRIDGE", "  ")
+        with pytest.raises(kvm_vm.KVMError, match="network.bridge must be a non-empty bridge"):
+            kvm_vm.normalize_definition(_minimal_raw())
+
     def test_invalid_name(self):
         with pytest.raises(kvm_vm.KVMError, match="vm.name"):
             kvm_vm.normalize_definition({"version": 1, "vm": {"name": "-bad"}})
@@ -149,6 +168,88 @@ class TestNormalizeDefinition:
         raw["vm"]["vcpus"] = 0
         with pytest.raises(kvm_vm.KVMError, match="vcpus"):
             kvm_vm.normalize_definition(raw)
+
+    def test_env_override_name(self, monkeypatch):
+        monkeypatch.setenv("KVM_VM_NAME", "envvm01")
+        cfg = kvm_vm.normalize_definition(_minimal_raw())
+        assert cfg["vm"]["name"] == "envvm01"
+
+    def test_env_override_vcpus(self, monkeypatch):
+        monkeypatch.setenv("KVM_VM_VCPUS", "8")
+        cfg = kvm_vm.normalize_definition(_minimal_raw())
+        assert cfg["vm"]["vcpus"] == 8
+
+    def test_env_override_vcpus_invalid(self, monkeypatch):
+        monkeypatch.setenv("KVM_VM_VCPUS", "not-a-number")
+        with pytest.raises(kvm_vm.KVMError, match="Invalid KVM_VM_VCPUS"):
+            kvm_vm.normalize_definition(_minimal_raw())
+
+    def test_env_override_memory(self, monkeypatch):
+        monkeypatch.setenv("KVM_VM_MEMORY", "8192")
+        cfg = kvm_vm.normalize_definition(_minimal_raw())
+        assert cfg["vm"]["memory_mib"] == 8192
+
+    def test_env_override_memory_mib_alias(self, monkeypatch):
+        monkeypatch.setenv("KVM_VM_MEMORY_MIB", "4096")
+        cfg = kvm_vm.normalize_definition(_minimal_raw())
+        assert cfg["vm"]["memory_mib"] == 4096
+
+    def test_env_override_memory_invalid(self, monkeypatch):
+        monkeypatch.setenv("KVM_VM_MEMORY", "128")
+        with pytest.raises(kvm_vm.KVMError, match="memory_mib must be >= 256"):
+            kvm_vm.normalize_definition(_minimal_raw())
+
+    def test_env_override_disk(self, monkeypatch):
+        monkeypatch.setenv("KVM_VM_DISK", "100")
+        cfg = kvm_vm.normalize_definition(_minimal_raw())
+        assert cfg["storage"]["disk_gib"] == 100
+
+    def test_env_override_disk_clone(self, monkeypatch):
+        monkeypatch.setenv("KVM_VM_DISK_GIB", "150")
+        raw = _minimal_raw()
+        raw["storage"] = {}
+        cfg = kvm_vm.normalize_definition(raw, for_clone=True)
+        assert cfg["storage"]["disk_gib"] == 150
+
+    def test_env_override_disk_invalid(self, monkeypatch):
+        monkeypatch.setenv("KVM_VM_DISK", "0")
+        with pytest.raises(kvm_vm.KVMError, match="disk_gib must be >= 1"):
+            kvm_vm.normalize_definition(_minimal_raw())
+
+    def test_env_override_os(self, monkeypatch):
+        monkeypatch.setenv("KVM_VM_OS", "rocky9")
+        cfg = kvm_vm.normalize_definition(_minimal_raw())
+        assert cfg["storage"]["image"]["distro"] == "rocky9"
+        assert cfg["vm"]["os_variant"] == "rocky9"
+
+    def test_env_override_os_unsupported(self, monkeypatch):
+        monkeypatch.setenv("KVM_VM_OS", "nonexistent-distro")
+        with pytest.raises(kvm_vm.KVMError, match="Unsupported KVM_VM_OS"):
+            kvm_vm.normalize_definition(_minimal_raw())
+
+    def test_env_override_ipv4_dhcp(self, monkeypatch):
+        monkeypatch.setenv("KVM_VM_IPV4", "dhcp")
+        raw = _minimal_raw(network={
+            "ipv4": {"method": "static", "address": "10.0.0.5/24", "gateway": "10.0.0.1"}
+        })
+        cfg = kvm_vm.normalize_definition(raw)
+        assert cfg["network"]["ipv4"]["method"] == "dhcp"
+        assert "address" not in cfg["network"]["ipv4"]
+
+    def test_env_override_ipv4_static(self, monkeypatch):
+        monkeypatch.setenv("KVM_VM_IPV4", "192.168.10.77/24")
+        monkeypatch.setenv("KVM_VM_GATEWAY", "192.168.10.1")
+        monkeypatch.setenv("KVM_VM_DNS", "1.1.1.1,8.8.8.8")
+        cfg = kvm_vm.normalize_definition(_minimal_raw())
+        assert cfg["network"]["ipv4"]["method"] == "static"
+        assert cfg["network"]["ipv4"]["address"] == "192.168.10.77/24"
+        assert cfg["network"]["ipv4"]["gateway"] == "192.168.10.1"
+        assert cfg["network"]["ipv4"]["dns"] == ["1.1.1.1", "8.8.8.8"]
+
+    def test_env_override_ipv4_invalid(self, monkeypatch):
+        monkeypatch.setenv("KVM_VM_IPV4", "invalid-ip-string")
+        with pytest.raises(kvm_vm.KVMError, match="KVM_VM_IPV4 must be 'dhcp', 'disabled', or an IP interface with CIDR"):
+            kvm_vm.normalize_definition(_minimal_raw())
 
 
 # --- resolve_ssh_keys() ---
