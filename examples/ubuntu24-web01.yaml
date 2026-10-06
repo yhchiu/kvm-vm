@@ -24,7 +24,7 @@ storage:
 
 network:
   mode: bridge
-  bridge: viifbr0
+  bridge: br0
   model: virtio
   mac: auto
   ipv4:

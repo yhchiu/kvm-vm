@@ -83,7 +83,13 @@ class TestNormalizeDefinition:
         assert cfg["vm"]["memory_mib"] == 2048
         assert cfg["storage"]["disk_gib"] == 20
         assert cfg["network"]["mode"] == "bridge"
+        assert cfg["network"]["bridge"] == "br0"
         assert cfg["network"]["mac"] == "auto"
+
+    def test_default_bridge_env_var(self, monkeypatch):
+        monkeypatch.setenv("KVM_VM_BRIDGE", "custombr0")
+        cfg = kvm_vm.normalize_definition(_minimal_raw())
+        assert cfg["network"]["bridge"] == "custombr0"
 
     def test_invalid_name(self):
         with pytest.raises(kvm_vm.KVMError, match="vm.name"):

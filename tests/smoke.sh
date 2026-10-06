@@ -15,14 +15,14 @@ cat > "$tmp/key.pub" <<'KEY'
 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIK111111111111111111111111111111111111111 smoke@test
 KEY
 
-# Bridge example remains valid and uses viifbr0.
+# Bridge example remains valid and uses br0.
 sed "s#file:/root/.ssh/id_ed25519.pub#file:$tmp/key.pub#" \
   "$ROOT/examples/ubuntu24-web01.yaml" > "$tmp/bridge.yaml"
 "$ROOT/kvm-vm" validate "$tmp/bridge.yaml" > "$tmp/bridge.out"
 grep -q '^  mode: bridge$' "$tmp/bridge.out"
-grep -q '^  bridge: viifbr0$' "$tmp/bridge.out"
+grep -q '^  bridge: br0$' "$tmp/bridge.out"
 
-# Omitting both mode and bridge must normalize to bridge + viifbr0.
+# Omitting both mode and bridge must normalize to bridge + br0.
 cat > "$tmp/default.yaml" <<EOF2
 version: 1
 vm:
@@ -39,7 +39,11 @@ cloud_init:
 EOF2
 "$ROOT/kvm-vm" validate "$tmp/default.yaml" > "$tmp/default.out"
 grep -q '^  mode: bridge$' "$tmp/default.out"
-grep -q '^  bridge: viifbr0$' "$tmp/default.out"
+grep -q '^  bridge: br0$' "$tmp/default.out"
+
+# KVM_VM_BRIDGE overrides default bridge.
+KVM_VM_BRIDGE="custombr9" "$ROOT/kvm-vm" validate "$tmp/default.yaml" > "$tmp/custombr.out"
+grep -q '^  bridge: custombr9$' "$tmp/custombr.out"
 
 # NAT example normalizes to the named libvirt virtual network. Validation is offline and
 # intentionally does not require a running libvirt daemon; create/clone do runtime checks.
