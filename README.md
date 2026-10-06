@@ -506,7 +506,10 @@ DISTROS = {
 ```
 
 Key considerations for newer distros:
-- **`os_variant` & `libosinfo`**: Check available OS variants on the host with `osinfo-query os`. If the host's `libosinfo` has not yet added the new release, fallback to the previous major release (e.g. `rocky9` for Rocky 10) to avoid `virt-install` errors.
+- **`os_variant` & `libosinfo` compatibility**:
+  - **Automatic fallback to `generic`**: `kvm-vm` automatically probes `osinfo-query os` before provisioning. If a specified `os_variant` is not recognized by the host's `libosinfo`, it logs a warning and gracefully falls back to `--os-variant generic` rather than failing.
+  - **Negligible impact on headless VMs**: Because `kvm-vm` explicitly configures headless console access (`--graphics none`), `virtio` disk bus, and `virtio` network interfaces, falling back to `generic` does not prevent the VM from booting or degrade standard server performance.
+  - **Recommendation**: To leverage tuned hardware topology profiles for newer distros before host `libosinfo` packages are updated, explicitly set `vm.os_variant` to the closest preceding major release (e.g., `rocky9` for Rocky Linux 10, or `ubuntu24.04` for Ubuntu 26.04).
 - **Sysprep support for cloning**: If using `kvm-vm clone`, ensure the host's `libguestfs-tools` / `virt-sysprep` version supports the guest OS layout (machine-id, network configs, etc.). See [Verifying virt-sysprep compatibility](#verifying-virt-sysprep-compatibility) for how to test.
 
 ## What this tool deliberately does not do
