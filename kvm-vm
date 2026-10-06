@@ -117,9 +117,32 @@ def is_running_state(state: str) -> bool:
     return s not in {"shut off", "shutoff", "crashed", "no state", "unknown"}
 
 
-def generate_mac() -> str:
+def virsh_names() -> List[str]:
+    text = output(["virsh", "-c", LIBVIRT_URI, "list", "--all", "--name"])
+    return [x.strip() for x in text.splitlines() if x.strip()]
+
+
+def existing_macs() -> set[str]:
+    """Collect MAC addresses already assigned to libvirt domains."""
+    macs: set[str] = set()
+    for name in virsh_names():
+        p = run(["virsh", "-c", LIBVIRT_URI, "domiflist", name], check=False, capture=True)
+        if p.returncode != 0:
+            continue
+        for line in p.stdout.splitlines():
+            cols = line.split()
+            if len(cols) >= 5 and MAC_RE.match(cols[-1]):
+                macs.add(cols[-1].lower())
+    return macs
+
+
+def generate_mac(*, exclude: Optional[set[str]] = None) -> str:
     # QEMU/libvirt OUI; locally generated unicast MAC.
-    return "52:54:00:%02x:%02x:%02x" % (random.randrange(256), random.randrange(256), random.randrange(256))
+    for _ in range(200):
+        mac = "52:54:00:%02x:%02x:%02x" % (random.randrange(256), random.randrange(256), random.randrange(256))
+        if exclude is None or mac.lower() not in exclude:
+            return mac
+    raise KVMError("Could not generate a unique MAC address after 200 attempts")
 
 
 def yaml_load(path: Path) -> Dict[str, Any]:
@@ -720,7 +743,7 @@ def cmd_create(args: argparse.Namespace) -> int:
         raise KVMError(f"Managed state already exists for {name}; resolve it before creating")
     validate_network_attachment(cfg["network"])
     if cfg["network"]["mac"] == "auto":
-        cfg["network"]["mac"] = generate_mac()
+        cfg["network"]["mac"] = generate_mac(exclude=existing_macs())
     resolve_ssh_keys(cfg["cloud_init"]["ssh_authorized_keys"], p.parent)
 
     base, default_variant = acquire_base_image(cfg, args.refresh_image)
@@ -772,7 +795,7 @@ def cmd_clone(args: argparse.Namespace) -> int:
         raise KVMError(f"Clone target already exists or has managed state: {name}")
     validate_network_attachment(cfg["network"])
     if cfg["network"]["mac"] == "auto":
-        cfg["network"]["mac"] = generate_mac()
+        cfg["network"]["mac"] = generate_mac(exclude=existing_macs())
     resolve_ssh_keys(cfg["cloud_init"]["ssh_authorized_keys"], p.parent)
 
     source_state = load_state(source_name)
@@ -799,11 +822,6 @@ def cmd_clone(args: argparse.Namespace) -> int:
     print(f"Cloned VM: {source_name} -> {name}")
     print(f"Disk: {disk}")
     return 0
-
-
-def virsh_names() -> List[str]:
-    text = output(["virsh", "-c", LIBVIRT_URI, "list", "--all", "--name"])
-    return [x.strip() for x in text.splitlines() if x.strip()]
 
 
 def dominfo_map(name: str) -> Dict[str, str]:
