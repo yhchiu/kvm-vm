@@ -1,0 +1,537 @@
+# kvm-vm
+
+`kvm-vm` 是一個專為長期運行的獨立 KVM/libvirt 主機設計的輕量宣告式虛擬機器（VM）管理工具。
+它使用標準工具（`virsh`、`virt-install`、`qemu-img`、cloud-init），並為所建立的每個虛擬機器儲存一份生效的 YAML 定義（effective YAML definition）以及小型的狀態清單（state manifest）。
+
+其設計刻意保持低於 OpenStack/Proxmox 等系統的複雜度，同時讓可重複執行的虛擬機器佈署比臨時拼湊的 `virt-install` 命令列更加安全可靠。
+
+## 指令
+
+```text
+kvm-vm create <vm.yaml> [--refresh-image] [--no-start] [--dry-run]
+kvm-vm clone <source-vm> <target.yaml> [--no-start] [--dry-run]
+kvm-vm list [--managed] [--ips]
+kvm-vm status <vm>
+kvm-vm console <vm>
+kvm-vm delete <vm> [--yes] [--force] [--keep-storage]
+kvm-vm validate <vm.yaml> [--clone]
+```
+
+## 主機依賴套件
+
+Debian / Ubuntu（套件名稱可能因發行版本而略有不同）：
+
+```bash
+apt install \
+  qemu-system-x86 qemu-utils \
+  libvirt-daemon-system libvirt-clients \
+  virtinst cloud-image-utils \
+  python3 python3-yaml \
+  libguestfs-tools libosinfo-bin iproute2
+```
+
+RHEL / Rocky / Alma 系列：
+
+```bash
+dnf install \
+  qemu-kvm libvirt virt-install \
+  cloud-utils python3-pyyaml \
+  libguestfs-tools libosinfo iproute
+```
+
+`virt-sysprep` 與 `virt-customize` 僅在執行 `clone` 時需要，但仍建議在管理主機上安裝。
+
+## 安裝
+
+```bash
+sudo ./install.sh
+```
+
+預設的 libvirt URI 為 `qemu:///system`。
+
+## 目錄結構
+
+```text
+/etc/kvm-vm/definitions/             生效的 YAML 定義
+/var/lib/kvm-vm/state/               工具狀態清單
+/var/lib/libvirt/images/base/        快取的發行版雲端映像檔
+/var/lib/libvirt/images/vm/          各虛擬機器獨立的 qcow2 系統磁碟
+/var/lib/libvirt/images/cloud-init/  各虛擬機器的 NoCloud seed 與來源檔案
+```
+
+Cloud-init 媒介檔案存放於 `/var/lib/libvirt/images` 目錄下，以自然符合常見的 libvirt/QEMU 檔案擁有權與 SELinux 策略。在啟用 SELinux 的主機上，若系統支援則會自動調用 `restorecon`。
+
+## 環境變數
+
+所有儲存路徑、libvirt 連線 URI 以及虛擬機器設定值皆可透過環境變數進行覆寫（優先權高於 YAML 定義與內建預設值）：
+
+### 路徑與系統配置
+
+| 變數 | 預設值 | 說明 |
+|---|---|---|
+| `KVM_VM_LIBVIRT_URI` | `qemu:///system` | libvirt 連線 URI |
+| `KVM_VM_BASE_DIR` | `/var/lib/libvirt/images/base` | 快取的發行版雲端映像檔目錄 |
+| `KVM_VM_DISK_DIR` | `/var/lib/libvirt/images/vm` | 各虛擬機器獨立的 qcow2 系統磁碟目錄 |
+| `KVM_VM_STATE_DIR` | `/var/lib/kvm-vm/state` | 工具狀態清單目錄 |
+| `KVM_VM_CLOUD_DIR` | `/var/lib/libvirt/images/cloud-init` | 各虛擬機器 NoCloud seed 與來源檔案目錄 |
+| `KVM_VM_DEF_DIR` | `/etc/kvm-vm/definitions` | 生效的 YAML 定義儲存目錄 |
+
+### 虛擬機器定義覆寫
+
+| 變數 | YAML 路徑 | 範例 | 說明 |
+|---|---|---|---|
+| `KVM_VM_NAME` | `vm.name` | `web02` | 覆寫虛擬機器名稱 |
+| `KVM_VM_VCPUS` | `vm.vcpus` | `4` | 覆寫 vCPU 核心數（1-1024） |
+| `KVM_VM_MEMORY` / `KVM_VM_MEMORY_MIB` | `vm.memory_mib` | `4096` | 覆寫記憶體容量（MiB，>= 256） |
+| `KVM_VM_DISK` / `KVM_VM_DISK_GIB` | `storage.disk_gib` | `50` | 覆寫磁碟大小（GiB，>= 1） |
+| `KVM_VM_OS` | `image.distro` / `os_variant` | `rocky9` | 覆寫發行版別名與 `os_variant` |
+| `KVM_VM_BRIDGE` | `network.bridge` | `br0` | 橋接模式下預設或覆寫使用的 Bridge 名稱 |
+| `KVM_VM_IPV4` | `network.ipv4` | `dhcp`, `192.168.1.50/24` | 設定 IP 取得方式（`dhcp`, `disabled`）或靜態 CIDR 位址 |
+| `KVM_VM_GATEWAY` | `network.ipv4.gateway` | `192.168.1.1` | 覆寫預設 IPv4 閘道 |
+| `KVM_VM_DNS` | `network.ipv4.dns` | `1.1.1.1,8.8.8.8` | 覆寫 DNS 伺服器列表（以逗號分隔） |
+
+## 建立虛擬機器
+
+可從 `examples/ubuntu24-web01.yaml` 開始，修改網路設定與 SSH 金鑰路徑。預設的網路模式為 `bridge`，預設橋接介面為 `br0`（可透過環境變數 `KVM_VM_BRIDGE` 自訂）。
+
+```bash
+kvm-vm validate web01.yaml
+sudo kvm-vm create web01.yaml
+```
+
+`create` 目前支援以下內建的便捷發行版別名（distro aliases）：
+
+```text
+ubuntu24.04
+debian13
+rocky9
+almalinux9
+```
+
+您也可以改為提供自訂的映像檔：
+
+```yaml
+storage:
+  disk_gib: 80
+  image:
+    path: /srv/images/company-ubuntu.qcow2
+    sha256: 0123456789abcdef...
+```
+
+或：
+
+```yaml
+storage:
+  disk_gib: 80
+  image:
+    url: https://images.example.com/company-ubuntu.qcow2
+    sha256: 0123456789abcdef...
+```
+
+若要在正式環境中達到可重複驗證的佈署，使用固定的 URL/本機映像檔路徑搭配 `sha256` 會比隨時間變動的 `current`/`latest` 發行版別名更加理想。
+
+每個虛擬機器都會取得一個**完整且獨立的 qcow2 磁碟**。已存在的虛擬機器不會依賴快取的基底映像檔，因此重新整理（refresh）或刪除基底映像檔都不會影響到它們。
+
+## YAML 定義範例
+
+範例：
+
+```yaml
+version: 1
+
+vm:
+  name: web01
+  vcpus: 4
+  memory_mib: 8192
+  cpu: host-passthrough
+  autostart: true
+  start: true
+  os_variant: ubuntu24.04
+
+storage:
+  disk_gib: 80
+  bus: virtio
+  cache: none
+  discard: unmap
+  image:
+    distro: ubuntu24.04
+
+network:
+  mode: bridge
+  bridge: br0
+  model: virtio
+  mac: auto
+  ipv4:
+    method: static
+    address: 192.168.10.51/24
+    gateway: 192.168.10.1
+    dns:
+      - 192.168.10.1
+      - 1.1.1.1
+  ipv6:
+    method: disabled
+
+cloud_init:
+  user: admin
+  ssh_authorized_keys:
+    - file:/root/.ssh/id_ed25519.pub
+  package_update: false
+  qemu_guest_agent: true
+  timezone: Asia/Taipei
+  packages:
+    - curl
+    - vim
+  runcmd: []
+```
+
+SSH 金鑰可以是純文字 OpenSSH 公鑰字串，或是 `file:/path/to/key.pub` 格式。相對的 `file:` 路徑會以該 YAML 檔案所在位置為基準進行解析。
+
+`mac: auto` 在儲存的生效 YAML 中會被替換為實際的 `52:54:00:*` 位址。靜態 cloud-init 網路設定會比對該 MAC 位址並將網路介面重新命名為 `eth0`，因此設定不會受到不同發行版將介面命名為 `ens3`、`enp1s0` 等差異的影響。
+
+## 網路模式
+
+`kvm-vm` 支援兩種單網卡（single-NIC）連接模式。
+
+### 橋接模式（Bridge mode）
+
+橋接模式為預設模式。如果省略 `network.mode` 與 `network.bridge`，虛擬機器將連接至 `br0`（或由 `KVM_VM_DEFAULT_BRIDGE` 指定的橋接介面）：
+
+```yaml
+network:
+  mode: bridge
+  bridge: br0
+  model: virtio
+  mac: auto
+  ipv4:
+    method: dhcp
+```
+
+這會產生等同於以下的指令參數：
+
+```text
+virt-install ... --network bridge=br0,model=virtio,mac=...
+```
+
+為了向後相容，僅包含 `network.bridge` 的現有 YAML 仍會採用橋接模式。預設橋接介面為 `br0`，亦可透過環境變數 `KVM_VM_BRIDGE` 在主機層級進行自訂。
+
+### NAT 模式（NAT mode）
+
+NAT 模式將虛擬機器連接至 libvirt 虛擬網路，而非直接連接至該虛擬網路的 Linux 橋接介面。常見的 libvirt `default` 網路通常底層由 `virbr0`、dnsmasq/DHCP 以及對外 NAT 所支援。
+
+```yaml
+network:
+  mode: nat
+  libvirt_network: default
+  model: virtio
+  mac: auto
+  ipv4:
+    method: dhcp
+  ipv6:
+    method: disabled
+```
+
+這會產生等同於以下的指令參數：
+
+```text
+virt-install ... --network network=default,model=virtio,mac=...
+```
+
+在執行 `create` 或 `clone` 之前，`kvm-vm` 會驗證所指定的 libvirt 網路是否存在、是否為啟動狀態（active），以及是否已設定 NAT 轉發。若網路存在但尚未啟動，可透過以下指令啟動：
+
+```bash
+virsh -c qemu:///system net-start default
+virsh -c qemu:///system net-autostart default
+```
+
+`examples/ubuntu24-nat.yaml` 提供了完整的 NAT 範例。對於 NAT 網路而言，DHCP 通常是最簡單的選擇，因為 IP 位址分配會由 libvirt 網路的 DHCP 服務負責管理。雖然系統也允許設定客體（Guest）靜態 IP，但您必須自行確保該位址位於 NAT 子網路內，且不會與 DHCP 分配或保留範圍發生衝突。
+
+## 列出與檢視狀態
+
+快速列出虛擬機器（不偵測 IP）：
+
+```bash
+kvm-vm list
+```
+
+僅列出由本工具管理的虛擬機器：
+
+```bash
+kvm-vm list --managed
+```
+
+包含 IP 偵測（較慢，因為會探查 guest-agent、DHCP 租約以及 ARP 資料）：
+
+```bash
+kvm-vm list --ips
+```
+
+詳細檢視：
+
+```bash
+kvm-vm status web01
+```
+
+`status` 會顯示 libvirt 網域資訊、kvm-vm 狀態清單、磁碟、網路介面以及 libvirt 已知的 IP 位址。
+
+## 序列主控台（Serial console）
+
+```bash
+kvm-vm console web01
+```
+
+使用 `Ctrl+]` 退出 `virsh console`。
+
+## 安全刪除機制
+
+```bash
+kvm-vm delete web01
+```
+
+此指令會要求輸入虛擬機器名稱以供確認。若要用於自動化流程：
+
+```bash
+kvm-vm delete web01 --yes
+```
+
+執行中的虛擬機器**不會**被隱式強制銷毀。請先將其關機，或明確指定：
+
+```bash
+kvm-vm delete web01 --force --yes
+```
+
+重要安全規則：`kvm-vm` **不會**使用 `virsh undefine --remove-all-storage`。
+它僅會刪除記錄於自身狀態清單中的系統磁碟與 cloud-init 媒介檔案。
+因此，管理員後續手動掛載的資料磁碟不會被意外刪除。
+
+對於非本工具管理（既有）的虛擬機器，系統會拒絕刪除儲存空間。您可以在保留所有磁碟不變的情況下取消定義（undefine）該虛擬機器：
+
+```bash
+kvm-vm delete legacy01 --keep-storage
+```
+
+對於由本工具管理的虛擬機器，您也可以選擇保留所有受管理的檔案：
+
+```bash
+kvm-vm delete web01 --keep-storage
+```
+
+在這種情況下，狀態與定義檔仍會保留，以避免儲存空間默默成為孤立檔案（orphan storage）。
+
+## 複製虛擬機器（Clone）
+
+複製目標的 YAML 格式請參閱 `examples/clone-target.yaml`。它刻意不需要 `storage.image` 欄位，因為來源虛擬機器的磁碟本身就是來源映像檔。
+
+```bash
+virsh shutdown web01
+# 等待狀態變更：virsh domstate web01 -> "shut off"
+kvm-vm validate --clone web02.yaml
+sudo kvm-vm clone web01 web02.yaml
+```
+
+複製功能刻意**僅支援離線操作（offline only）**。來源網域必須處於關機（shut off）狀態。
+
+處理流程如下：
+
+```text
+來源系統磁碟
+      |
+      +-- qemu-img convert --> 獨立的目標 qcow2
+                                  |
+                                  +-- virt-sysprep
+                                  |     machine-id
+                                  |     SSH 主機金鑰
+                                  |     hostname/網路殘留狀態
+                                  |     DHCP 狀態
+                                  |     隨機種子（random seed）
+                                  |
+                                  +-- cloud-init clean
+                                  |
+                                  +-- 新 MAC + 新 NoCloud instance-id
+                                  |
+                                  +-- 目標 YAML 的網路/使用者設定
+```
+
+此處僅執行經過明確挑選的安全 `virt-sysprep` 操作。腳本**不會**執行範圍廣泛的預設操作集，因為複製不應該無預警地清除使用者帳號或不相關的應用程式狀態。
+
+目前的複製限制均為刻意設計：
+
+- 僅支援 Linux 客體系統（`virt-sysprep` 的限制）。
+- 來源虛擬機器必須處於關機狀態。
+- 系統磁碟目前必須是一般檔案形式（file-backed）的磁碟。
+- 僅會複製系統磁碟；額外掛載的資料磁碟不會被複製。
+- 拒絕將目標虛擬磁碟縮小。允許設定較大的容量；擴充磁碟分割區與檔案系統仍由雲端映像檔或客體系統工具負責處理。
+
+### 驗證 virt-sysprep 相容性
+
+在進行複製之前，若要測試主機上的 `virt-sysprep` 是否支援目標客體作業系統：
+
+1. **檢查主機支援的操作**：
+   ```bash
+   virt-sysprep --list-operations
+   ```
+   `kvm-vm` 至少需要 `machine-id` 與 `ssh-hostkeys`。
+
+2. **測試作業系統探測（OS inspection）**：
+   `virt-sysprep` 仰賴 `libguestfs` 的探測功能。驗證客體作業系統結構是否能被正確辨識：
+   ```bash
+   virt-inspector -a /path/to/image.qcow2
+   ```
+   探測成功會輸出包含 `<operatingsystem>`、`<distro>`、`<version>` 與掛載點的 XML。
+
+3. **使用 `--dry-run` 模擬操作**：
+   使用 `kvm-vm` 所執行的完全相同操作集，對映像檔進行非破壞性的模擬測試：
+   ```bash
+   virt-sysprep --dry-run -a /path/to/image.qcow2 \
+     --operations machine-id,ssh-hostkeys,ssh-userdir,net-hostname,net-hwaddr,dhcp-client-state,random-seed
+   ```
+   若執行成功且無掛載錯誤或未辨識作業系統的警告，即表示 `virt-sysprep` 完全相容。
+
+## CPU 模型注意事項
+
+範例中設定：
+
+```yaml
+cpu: host-passthrough
+```
+
+這能最大程度使用主機 CPU 功能，適用於穩定的單一主機或同質硬體主機環境。若未來有在不同世代 CPU 之間進行即時遷移（live migration）的需求，請改為明確指定支援遷移的 CPU 模型。
+
+## 重新整理基底映像檔
+
+發行版別名映像檔會被快取。已存在的虛擬機器皆互相獨立，不會受到影響。
+
+```bash
+kvm-vm create newvm.yaml --refresh-image
+```
+
+## `--no-start`
+
+`create` 與 `clone` 皆支援：
+
+```bash
+kvm-vm create vm.yaml --no-start
+```
+
+虛擬機器網域會被定義（define）但維持關機狀態。若您想在首次開機前檢查 `virsh dumpxml` 或套用其他額外的 libvirt 策略，此選項非常實用。
+
+## `--dry-run`
+
+`create` 與 `clone` 皆支援：
+
+```bash
+kvm-vm create vm.yaml --dry-run
+kvm-vm clone source-vm target.yaml --dry-run
+```
+
+執行所有事前檢查（YAML 正規化、網域/狀態衝突檢查、橋接/NAT 驗證、MAC 位址分配以及 SSH 金鑰解析），並輸出正規化後的 YAML，過程中不會下載映像檔、不會異動磁碟，也不會定義 libvirt 網域。對於 `clone`，它還會在進行任何磁碟轉換前，使用 dry-run 檢查驗證來源磁碟與 `virt-sysprep` 的相容性。
+
+## 建議的維運工作流程
+
+將您撰寫的 YAML 檔案納入 Git 版控，例如：
+
+```text
+infra/
+  kvm/
+    web01.yaml
+    web02.yaml
+    db01.yaml
+```
+
+接著執行：
+
+```bash
+kvm-vm validate infra/kvm/web01.yaml
+kvm-vm create infra/kvm/web01.yaml
+kvm-vm status web01
+```
+
+請將 `/etc/kvm-vm/definitions/*.yaml` 視為工具產生的**生效佈署記錄（effective deployment record）**，而非主要的事實來源（source-of-truth）。這樣可以將經過審查的預期設定定義，與主機上實際使用的精確設定（包含自動產生的 MAC 位址）清楚分離。
+
+## 使用較新或自訂的 Linux 發行版
+
+`kvm-vm` 不受限於內建的發行版別名。支援較新的發行版本（例如 Ubuntu 26.04、Rocky Linux 10、AlmaLinux 10）或自訂映像檔有以下兩種方式：
+
+### 1. 直接指定 URL 或本機檔案路徑（無需修改程式碼）
+
+任何支援 cloud-init 的 qcow2/raw 映像檔都可以透過指定 `url` 或 `path` 直接使用：
+
+```yaml
+vm:
+  name: web01
+  # 選用：指定 os_variant 以利 virt-install 最佳化。
+  # 若主機的 libosinfo 尚未收錄該全新版本，可指定前一個版本或直接省略。
+  os_variant: ubuntu24.04
+
+storage:
+  disk_gib: 40
+  image:
+    url: https://cloud-images.ubuntu.com/resolute/current/resolute-server-cloudimg-amd64.img
+    # 或本機路徑：
+    # path: /var/lib/libvirt/images/base/Rocky-10-GenericCloud-Base.latest.x86_64.qcow2
+```
+
+### 2. 在 `kvm-vm` 中新增發行版別名
+
+若想使用如 `distro: ubuntu26.04` 或 `distro: rocky10` 這類簡短別名，可在 `kvm-vm` 腳本中的 `DISTROS` 字典加入項目：
+
+```python
+DISTROS = {
+    ...
+    "ubuntu26.04": {
+        "url": "https://cloud-images.ubuntu.com/resolute/current/resolute-server-cloudimg-amd64.img",
+        "cache": "ubuntu-26.04-server-cloudimg-amd64.img",
+        "os_variant": "ubuntu26.04",
+    },
+    "rocky10": {
+        "url": "https://download.rockylinux.org/pub/rocky/10/images/x86_64/Rocky-10-GenericCloud-Base.latest.x86_64.qcow2",
+        "cache": "Rocky-10-GenericCloud-Base.latest.x86_64.qcow2",
+        "os_variant": "rocky9",  # 若主機 libosinfo 尚未識別 rocky10，可回退使用
+    },
+}
+```
+
+較新發行版的重要注意事項：
+- **`os_variant` 與 `libosinfo` 相容性**：
+  - **自動降級至 `generic`**：`kvm-vm` 在建立 VM 前會自動透過 `osinfo-query os` 檢查。若指定的 `os_variant` 未被主機的 `libosinfo` 收錄，系統會記錄警告訊息並自動安全降級為 `--os-variant generic`，而不會造成建立失敗或中斷。
+  - **對伺服器 VM 幾乎無影響**：由於 `kvm-vm` 採用無圖形介面（`--graphics none`），且已明確指定使用高效能的 `virtio` 磁碟匯流排與 `virtio` 網卡模型，降級為 `generic` 不會影響開機，對標準伺服器效能亦無負面影響。
+  - **最佳實踐建議**：若希望 `virt-install` 能套用貼近目標系統的虛擬硬體拓撲最佳化，但在主機 `libosinfo` 更新前，建議在 YAML 的 `vm.os_variant` 明確指定前一個相容的主要版本（例如 Rocky Linux 10 指定為 `rocky9`，或 Ubuntu 26.04 指定為 `ubuntu24.04`）。
+- **複製時的 Sysprep 支援**：若使用 `kvm-vm clone`，請確保主機的 `libguestfs-tools` / `virt-sysprep` 版本支援該客體作業系統結構（machine-id、網路設定等）。測試方式請參閱[驗證 virt-sysprep 相容性](#驗證-virt-sysprep-相容性)。
+
+## 本工具刻意不處理的事項
+
+本工具並非叢集管理員（Cluster Manager）的替代品。目前**不**處理以下功能：
+
+- 即時遷移（live migration）
+- Ceph/RBD 儲存系統
+- 快照 / 備份（snapshots/backups）
+- 多張網路卡（multiple NICs）
+- 多個受管理的資料磁碟
+- VLAN 標籤（VLAN tagging）
+- Windows sysprep
+- 已建立虛擬機器的狀態調和 / 偏離校正（reconciliation / drift correction）
+
+上述功能未來可在不更動基本 YAML / 狀態模型的前提下擴充加入。
+
+## 測試
+
+### 前置需求
+
+```bash
+pip install pytest
+```
+
+### 單元測試
+
+單元測試涵蓋純 Python 函式（YAML 正規化、MAC 位址產生、SSH 金鑰解析、下載重試邏輯、CLI 參數解析），不需要 libvirt 環境或 root 權限。
+
+```bash
+python3 -m pytest tests/test_unit.py -v
+```
+
+### 冒煙測試（Smoke tests）
+
+冒煙測試腳本會編譯檢查主腳本語法、執行 `--help` / `--version`、在有安裝 pytest 時執行單元測試，並使用正規化器驗證範例 YAML 檔案。此測試不需要運行中的 libvirt 守護行程（daemon）。
+
+```bash
+bash tests/smoke.sh
+```
