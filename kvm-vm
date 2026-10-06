@@ -122,9 +122,9 @@ def yaml_load(path: Path) -> Dict[str, Any]:
     try:
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
-        raise KVMError(f"Definition not found: {path}")
+        raise KVMError(f"Definition not found: {path}") from None
     except yaml.YAMLError as exc:
-        raise KVMError(f"Invalid YAML {path}: {exc}")
+        raise KVMError(f"Invalid YAML {path}: {exc}") from exc
     if not isinstance(data, dict):
         raise KVMError("YAML root must be a mapping")
     return data
@@ -216,7 +216,7 @@ def normalize_definition(raw: Dict[str, Any], *, for_clone: bool = False) -> Dic
             for dns in ipv4.get("dns", []):
                 ipaddress.ip_address(dns)
         except ValueError as exc:
-            raise KVMError(f"Invalid IPv4 configuration: {exc}")
+            raise KVMError(f"Invalid IPv4 configuration: {exc}") from exc
 
     user = ci.get("user", "admin")
     if not re.match(r"^[a-z_][a-z0-9_-]*[$]?$", user):
@@ -292,7 +292,7 @@ def resolve_ssh_keys(items: List[Any], definition_dir: Path) -> List[str]:
             try:
                 lines = [x.strip() for x in p.read_text(encoding="utf-8").splitlines() if x.strip() and not x.lstrip().startswith("#")]
             except FileNotFoundError:
-                raise KVMError(f"SSH public key file not found: {p}")
+                raise KVMError(f"SSH public key file not found: {p}") from None
             result.extend(lines)
         else:
             result.append(item.strip())
@@ -333,7 +333,7 @@ def validate_nat_network(network_name: str) -> None:
     try:
         root = ET.fromstring(xml.stdout)
     except ET.ParseError as exc:
-        raise KVMError(f"Invalid libvirt network XML for '{network_name}': {exc}")
+        raise KVMError(f"Invalid libvirt network XML for '{network_name}': {exc}") from exc
     forward = root.find("forward")
     if forward is None:
         raise KVMError(f"Libvirt network '{network_name}' is isolated, not NAT")
@@ -418,7 +418,7 @@ def qemu_img_info(path: Path) -> Dict[str, Any]:
     try:
         return json.loads(output(["qemu-img", "info", "--output=json", str(path)]))
     except (subprocess.CalledProcessError, json.JSONDecodeError) as exc:
-        raise KVMError(f"qemu-img could not inspect {path}: {exc}")
+        raise KVMError(f"qemu-img could not inspect {path}: {exc}") from exc
 
 
 def make_disk_from_base(base: Path, dst: Path, disk_gib: int) -> None:
@@ -667,7 +667,7 @@ def load_state(name: str) -> Optional[Dict[str, Any]]:
     try:
         return json.loads(p.read_text(encoding="utf-8"))
     except Exception as exc:
-        raise KVMError(f"Invalid state file {p}: {exc}")
+        raise KVMError(f"Invalid state file {p}: {exc}") from exc
 
 
 def cleanup_failed(name: str, disk: Path) -> None:
