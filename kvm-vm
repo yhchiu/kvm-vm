@@ -35,7 +35,7 @@ except ImportError:
     print("ERROR: PyYAML is required (Debian/Ubuntu: apt install python3-yaml; RHEL-family: dnf install python3-pyyaml)", file=sys.stderr)
     sys.exit(2)
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 LIBVIRT_URI = os.environ.get("KVM_VM_LIBVIRT_URI", "qemu:///system")
 BASE_DIR = Path(os.environ.get("KVM_VM_BASE_DIR", "/var/lib/libvirt/images/base"))
 VM_DIR = Path(os.environ.get("KVM_VM_DISK_DIR", "/var/lib/libvirt/images/vm"))
