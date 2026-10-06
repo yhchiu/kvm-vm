@@ -12,6 +12,7 @@ import datetime as dt
 import hashlib
 import ipaddress
 import json
+import logging
 import os
 import random
 import re
@@ -24,6 +25,8 @@ import xml.etree.ElementTree as ET
 from urllib.parse import urlparse
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+log = logging.getLogger("kvm-vm")
 
 try:
     import yaml
@@ -610,7 +613,7 @@ def define_vm(cfg: Dict[str, Any], disk: Path, seed: Path, default_variant: Opti
     requested_variant = vm.get("os_variant") or default_variant or "generic"
     variant = requested_variant if requested_variant == "generic" or os_variant_available(requested_variant) else "generic"
     if variant != requested_variant:
-        eprint(f"WARN: osinfo variant '{requested_variant}' not available on this host; using 'generic'")
+        log.warning(f"osinfo variant '{requested_variant}' not available on this host; using 'generic'")
 
     disk_opts = f"path={disk},format=qcow2,bus={st['bus']},cache={st['cache']},discard={st['discard']}"
     if net["mode"] == "bridge":
@@ -932,7 +935,7 @@ def cmd_delete(args: argparse.Namespace) -> int:
                 if p.exists() and (str(p).startswith(str(VM_DIR) + os.sep) or str(p).startswith(str(CLOUD_DIR) + os.sep)):
                     p.unlink()
                 elif p.exists():
-                    eprint(f"WARN: tracked {key} is outside managed directories; not deleting: {p}")
+                    log.warning(f"tracked {key} is outside managed directories; not deleting: {p}")
         cdir = Path(state.get("cloud_dir", "")) if state.get("cloud_dir") else None
         if cdir and cdir.exists() and str(cdir).startswith(str(CLOUD_DIR) + os.sep):
             shutil.rmtree(cdir)
@@ -1008,20 +1011,21 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    logging.basicConfig(format="%(levelname)s: %(message)s", level=logging.INFO)
     try:
         parser = build_parser()
         args = parser.parse_args()
         return int(args.func(args))
     except KVMError as exc:
-        eprint(f"ERROR: {exc}")
+        log.error(f"{exc}")
         return 1
     except subprocess.CalledProcessError as exc:
-        eprint(f"ERROR: command failed ({exc.returncode}): {' '.join(map(str, exc.cmd))}")
+        log.error(f"command failed ({exc.returncode}): {' '.join(map(str, exc.cmd))}")
         if getattr(exc, "stderr", None):
-            eprint(exc.stderr.strip())
+            log.error(exc.stderr.strip())
         return exc.returncode or 1
     except KeyboardInterrupt:
-        eprint("Interrupted")
+        log.info("Interrupted")
         return 130
 
 
