@@ -199,6 +199,8 @@ def normalize_definition(raw: Dict[str, Any], *, for_clone: bool = False) -> Dic
             raise KVMError("storage.disk_gib must be >= 1")
     elif not for_clone:
         disk_gib = 20
+    # When for_clone=True and the user omitted disk_gib, it stays None.
+    # make_disk_from_clone() interprets None as "keep the source virtual size".
 
     distro = image.get("distro")
     url = image.get("url")
