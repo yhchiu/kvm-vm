@@ -412,15 +412,6 @@ Runs all pre-flight checks (YAML normalization, domain/state collision checks, b
 validation, MAC allocation, and SSH key resolution) and prints the normalized YAML without
 downloading images, touching disks, or defining libvirt domains.
 
-## Version notes
-
-### 1.1.0
-
-- Changed the default bridge from `br0` to `viifbr0`.
-- Added `network.mode: nat` with `libvirt_network: default`.
-- NAT definitions are validated against the active libvirt virtual network and its forward mode.
-- Existing bridge-mode YAML remains compatible.
-
 ## Recommended operational workflow
 
 Keep your authored YAML files in Git, for example:
@@ -459,3 +450,31 @@ It is not a replacement for a cluster manager. It does not currently manage:
 - reconciliation/drift correction of an already-created VM
 
 Those can be added later without changing the basic YAML/state model.
+
+## Testing
+
+### Prerequisites
+
+```bash
+pip install pytest
+```
+
+### Unit tests
+
+Unit tests cover pure-Python functions (YAML normalization, MAC generation, SSH key
+resolution, download retry logic, CLI argument parsing) and do not require libvirt or
+root privileges.
+
+```bash
+python3 -m pytest tests/test_unit.py -v
+```
+
+### Smoke tests
+
+The smoke test script compiles the main script, runs `--help` / `--version`, executes
+the unit tests if pytest is available, and validates the example YAML files against the
+normalizer. It does not require a running libvirt daemon.
+
+```bash
+bash tests/smoke.sh
+```
