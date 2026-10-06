@@ -1,0 +1,974 @@
+#!/usr/bin/env python3
+"""kvm-vm: small declarative KVM/libvirt VM manager.
+
+Designed for long-lived standalone KVM hosts.  It intentionally shells out to
+standard libvirt/qemu tools instead of requiring libvirt Python bindings.
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import hashlib
+import ipaddress
+import json
+import os
+import random
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import urllib.request
+from urllib.parse import urlparse
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+try:
+    import yaml
+except ImportError:
+    print("ERROR: PyYAML is required (Debian/Ubuntu: apt install python3-yaml; RHEL-family: dnf install python3-pyyaml)", file=sys.stderr)
+    sys.exit(2)
+
+VERSION = "1.0.0"
+LIBVIRT_URI = os.environ.get("KVM_VM_LIBVIRT_URI", "qemu:///system")
+BASE_DIR = Path(os.environ.get("KVM_VM_BASE_DIR", "/var/lib/libvirt/images/base"))
+VM_DIR = Path(os.environ.get("KVM_VM_DISK_DIR", "/var/lib/libvirt/images/vm"))
+STATE_DIR = Path(os.environ.get("KVM_VM_STATE_DIR", "/var/lib/kvm-vm/state"))
+CLOUD_DIR = Path(os.environ.get("KVM_VM_CLOUD_DIR", "/var/lib/libvirt/images/cloud-init"))
+DEF_DIR = Path(os.environ.get("KVM_VM_DEF_DIR", "/etc/kvm-vm/definitions"))
+
+DISTROS = {
+    "ubuntu24.04": {
+        "url": "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img",
+        "cache": "ubuntu-24.04-server-cloudimg-amd64.img",
+        "os_variant": "ubuntu24.04",
+    },
+    "debian13": {
+        "url": "https://cloud.debian.org/images/cloud/trixie/latest/debian-13-generic-amd64.qcow2",
+        "cache": "debian-13-generic-amd64.qcow2",
+        "os_variant": "debian13",
+    },
+    "rocky9": {
+        "url": "https://download.rockylinux.org/pub/rocky/9/images/x86_64/Rocky-9-GenericCloud-Base.latest.x86_64.qcow2",
+        "cache": "Rocky-9-GenericCloud-Base.latest.x86_64.qcow2",
+        "os_variant": "rocky9",
+    },
+    "almalinux9": {
+        "url": "https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/AlmaLinux-9-GenericCloud-latest.x86_64.qcow2",
+        "cache": "AlmaLinux-9-GenericCloud-latest.x86_64.qcow2",
+        "os_variant": "almalinux9",
+    },
+}
+
+NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$")
+MAC_RE = re.compile(r"^(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
+
+
+class KVMError(RuntimeError):
+    pass
+
+
+def eprint(*args: Any) -> None:
+    print(*args, file=sys.stderr)
+
+
+def run(cmd: List[str], *, check: bool = True, capture: bool = False, input_text: Optional[str] = None) -> subprocess.CompletedProcess:
+    env = os.environ.copy()
+    env["LC_ALL"] = "C"
+    if capture:
+        return subprocess.run(cmd, check=check, text=True, input=input_text, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+    return subprocess.run(cmd, check=check, text=True, input=input_text, env=env)
+
+
+def output(cmd: List[str], *, check: bool = True) -> str:
+    p = run(cmd, check=check, capture=True)
+    return p.stdout.strip()
+
+
+def require_commands(names: List[str]) -> None:
+    missing = [x for x in names if shutil.which(x) is None]
+    if missing:
+        raise KVMError("Missing required command(s): " + ", ".join(missing))
+
+
+def ensure_dirs() -> None:
+    for p in (BASE_DIR, VM_DIR, STATE_DIR, CLOUD_DIR, DEF_DIR):
+        p.mkdir(parents=True, exist_ok=True)
+
+
+def domain_exists(name: str) -> bool:
+    p = run(["virsh", "-c", LIBVIRT_URI, "dominfo", name], check=False, capture=True)
+    return p.returncode == 0
+
+
+def domain_state(name: str) -> str:
+    p = run(["virsh", "-c", LIBVIRT_URI, "domstate", name], check=False, capture=True)
+    return p.stdout.strip() if p.returncode == 0 else "unknown"
+
+
+def is_running_state(state: str) -> bool:
+    s = state.lower()
+    return s not in {"shut off", "shutoff", "crashed", "no state", "unknown"}
+
+
+def generate_mac() -> str:
+    # QEMU/libvirt OUI; locally generated unicast MAC.
+    return "52:54:00:%02x:%02x:%02x" % (random.randrange(256), random.randrange(256), random.randrange(256))
+
+
+def yaml_load(path: Path) -> Dict[str, Any]:
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        raise KVMError(f"Definition not found: {path}")
+    except yaml.YAMLError as exc:
+        raise KVMError(f"Invalid YAML {path}: {exc}")
+    if not isinstance(data, dict):
+        raise KVMError("YAML root must be a mapping")
+    return data
+
+
+def yaml_dump(path: Path, data: Dict[str, Any]) -> None:
+    path.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
+
+
+def dig(d: Dict[str, Any], *keys: str, default: Any = None) -> Any:
+    cur: Any = d
+    for key in keys:
+        if not isinstance(cur, dict) or key not in cur:
+            return default
+        cur = cur[key]
+    return cur
+
+
+def normalize_definition(raw: Dict[str, Any], *, for_clone: bool = False) -> Dict[str, Any]:
+    version = raw.get("version", 1)
+    if version != 1:
+        raise KVMError(f"Unsupported definition version: {version}")
+
+    vm = raw.get("vm") or {}
+    storage = raw.get("storage") or {}
+    network = raw.get("network") or {}
+    ci = raw.get("cloud_init") or {}
+    image = storage.get("image") or {}
+
+    name = vm.get("name")
+    if not isinstance(name, str) or not NAME_RE.match(name):
+        raise KVMError("vm.name is required and must match [A-Za-z0-9][A-Za-z0-9._-]{0,62}")
+
+    vcpus = int(vm.get("vcpus", 2))
+    memory_mib = int(vm.get("memory_mib", 2048))
+    if not (1 <= vcpus <= 1024):
+        raise KVMError("vm.vcpus must be between 1 and 1024")
+    if memory_mib < 256:
+        raise KVMError("vm.memory_mib must be >= 256")
+
+    disk_gib = storage.get("disk_gib")
+    if disk_gib is not None:
+        disk_gib = int(disk_gib)
+        if disk_gib < 1:
+            raise KVMError("storage.disk_gib must be >= 1")
+    elif not for_clone:
+        disk_gib = 20
+
+    distro = image.get("distro")
+    url = image.get("url")
+    local_path = image.get("path")
+    if not for_clone:
+        selected = sum(bool(x) for x in (distro, url, local_path))
+        if selected != 1:
+            raise KVMError("For create, storage.image must specify exactly one of distro, url, or path")
+        if distro and distro not in DISTROS:
+            raise KVMError(f"Unsupported distro '{distro}'. Supported: {', '.join(sorted(DISTROS))}")
+
+    bridge = network.get("bridge", "br0")
+    model = network.get("model", "virtio")
+    mac = network.get("mac") or "auto"
+    if mac != "auto" and not MAC_RE.match(str(mac)):
+        raise KVMError("network.mac must be 'auto' or a MAC address")
+
+    ipv4 = network.get("ipv4") or {"method": "dhcp"}
+    method = ipv4.get("method", "dhcp")
+    if method not in {"dhcp", "static", "disabled"}:
+        raise KVMError("network.ipv4.method must be dhcp, static, or disabled")
+    if method == "static":
+        address = ipv4.get("address")
+        gateway = ipv4.get("gateway")
+        if not address or not gateway:
+            raise KVMError("Static IPv4 requires network.ipv4.address and gateway")
+        try:
+            ipaddress.ip_interface(address)
+            ipaddress.ip_address(gateway)
+            for dns in ipv4.get("dns", []):
+                ipaddress.ip_address(dns)
+        except ValueError as exc:
+            raise KVMError(f"Invalid IPv4 configuration: {exc}")
+
+    user = ci.get("user", "admin")
+    if not re.match(r"^[a-z_][a-z0-9_-]*[$]?$", user):
+        raise KVMError(f"Invalid cloud_init.user: {user}")
+
+    keys = ci.get("ssh_authorized_keys", [])
+    if not isinstance(keys, list):
+        raise KVMError("cloud_init.ssh_authorized_keys must be a list")
+    if not keys:
+        raise KVMError("cloud_init.ssh_authorized_keys must contain at least one key (use file:/path/to/key.pub or a literal public key)")
+
+    packages = ci.get("packages", [])
+    if not isinstance(packages, list):
+        raise KVMError("cloud_init.packages must be a list")
+
+    runcmd = ci.get("runcmd", [])
+    if not isinstance(runcmd, list):
+        raise KVMError("cloud_init.runcmd must be a list")
+
+    effective: Dict[str, Any] = {
+        "version": 1,
+        "vm": {
+            "name": name,
+            "vcpus": vcpus,
+            "memory_mib": memory_mib,
+            "cpu": vm.get("cpu", "host-passthrough"),
+            "autostart": bool(vm.get("autostart", True)),
+            "start": bool(vm.get("start", True)),
+            "os_variant": vm.get("os_variant"),
+        },
+        "storage": {
+            "disk_gib": disk_gib,
+            "bus": storage.get("bus", "virtio"),
+            "cache": storage.get("cache", "none"),
+            "discard": storage.get("discard", "unmap"),
+            "image": {
+                "distro": distro,
+                "url": url,
+                "path": local_path,
+                "sha256": image.get("sha256"),
+            },
+        },
+        "network": {
+            "bridge": bridge,
+            "model": model,
+            "mac": mac,
+            "ipv4": ipv4,
+            "ipv6": network.get("ipv6", {"method": "disabled"}),
+        },
+        "cloud_init": {
+            "user": user,
+            "ssh_authorized_keys": keys,
+            "package_update": bool(ci.get("package_update", False)),
+            "qemu_guest_agent": bool(ci.get("qemu_guest_agent", True)),
+            "packages": packages,
+            "timezone": ci.get("timezone"),
+            "runcmd": runcmd,
+        },
+    }
+    return effective
+
+
+def resolve_ssh_keys(items: List[Any], definition_dir: Path) -> List[str]:
+    result: List[str] = []
+    for item in items:
+        if not isinstance(item, str):
+            raise KVMError("Each ssh_authorized_keys entry must be a string")
+        if item.startswith("file:"):
+            p = Path(item[5:])
+            if not p.is_absolute():
+                p = definition_dir / p
+            try:
+                lines = [x.strip() for x in p.read_text(encoding="utf-8").splitlines() if x.strip() and not x.lstrip().startswith("#")]
+            except FileNotFoundError:
+                raise KVMError(f"SSH public key file not found: {p}")
+            result.extend(lines)
+        else:
+            result.append(item.strip())
+    for key in result:
+        if not (key.startswith("ssh-") or key.startswith("ecdsa-") or key.startswith("sk-")):
+            raise KVMError(f"SSH key does not look like an OpenSSH public key: {key[:30]}...")
+    return result
+
+
+def validate_bridge(bridge: str) -> None:
+    # A libvirt bridge may exist even if /sys/class/net isn't visible in unusual namespaces,
+    # so only fail when ip is available and explicitly says it is missing.
+    if shutil.which("ip"):
+        p = run(["ip", "link", "show", "dev", bridge], check=False, capture=True)
+        if p.returncode != 0:
+            raise KVMError(f"Bridge/interface not found: {bridge}")
+
+
+def sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(8 * 1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def download(url: str, dst: Path) -> None:
+    tmp = dst.with_suffix(dst.suffix + ".part")
+    if tmp.exists():
+        tmp.unlink()
+    print(f"Downloading {url}\n       -> {dst}")
+    req = urllib.request.Request(url, headers={"User-Agent": f"kvm-vm/{VERSION}"})
+    with urllib.request.urlopen(req) as r, tmp.open("wb") as f:
+        total = int(r.headers.get("Content-Length", "0") or 0)
+        done = 0
+        while True:
+            buf = r.read(8 * 1024 * 1024)
+            if not buf:
+                break
+            f.write(buf)
+            done += len(buf)
+            if total:
+                print(f"\r  {done * 100 // total:3d}% ({done // (1024*1024)} MiB / {total // (1024*1024)} MiB)", end="", flush=True)
+        if total:
+            print()
+    tmp.replace(dst)
+
+
+def acquire_base_image(cfg: Dict[str, Any], refresh: bool) -> Tuple[Path, Optional[str]]:
+    image = cfg["storage"]["image"]
+    distro = image.get("distro")
+    url = image.get("url")
+    local_path = image.get("path")
+    expected_sha = image.get("sha256")
+    default_variant: Optional[str] = None
+
+    if distro:
+        meta = DISTROS[distro]
+        url = meta["url"]
+        cache_path = BASE_DIR / meta["cache"]
+        default_variant = meta["os_variant"]
+    elif url:
+        name = Path(urlparse(url).path).name
+        if not name:
+            name = hashlib.sha256(url.encode()).hexdigest()[:16] + ".qcow2"
+        cache_path = BASE_DIR / name
+    else:
+        p = Path(str(local_path)).expanduser().resolve()
+        if not p.is_file():
+            raise KVMError(f"Base image not found: {p}")
+        if expected_sha and sha256_file(p).lower() != str(expected_sha).lower():
+            raise KVMError(f"SHA256 mismatch for {p}")
+        qemu_img_info(p)
+        return p, default_variant
+
+    if refresh or not cache_path.exists():
+        download(str(url), cache_path)
+    if expected_sha and sha256_file(cache_path).lower() != str(expected_sha).lower():
+        raise KVMError(f"SHA256 mismatch for {cache_path}")
+    qemu_img_info(cache_path)
+    return cache_path, default_variant
+
+
+def qemu_img_info(path: Path) -> Dict[str, Any]:
+    try:
+        return json.loads(output(["qemu-img", "info", "--output=json", str(path)]))
+    except (subprocess.CalledProcessError, json.JSONDecodeError) as exc:
+        raise KVMError(f"qemu-img could not inspect {path}: {exc}")
+
+
+def make_disk_from_base(base: Path, dst: Path, disk_gib: int) -> None:
+    if dst.exists():
+        raise KVMError(f"Target disk already exists: {dst}")
+    info = qemu_img_info(base)
+    min_bytes = int(info.get("virtual-size", 0))
+    target_bytes = disk_gib * 1024**3
+    if min_bytes and target_bytes < min_bytes:
+        raise KVMError(f"Requested disk {disk_gib} GiB is smaller than base image virtual size {min_bytes / 1024**3:.1f} GiB")
+    tmp = dst.with_suffix(dst.suffix + ".tmp")
+    try:
+        run(["qemu-img", "convert", "-p", "-f", str(info.get("format", "qcow2")), "-O", "qcow2", str(base), str(tmp)])
+        if target_bytes > int(qemu_img_info(tmp).get("virtual-size", 0)):
+            run(["qemu-img", "resize", str(tmp), f"{disk_gib}G"])
+        tmp.replace(dst)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+
+
+def make_disk_from_clone(src: Path, dst: Path, disk_gib: Optional[int]) -> None:
+    if dst.exists():
+        raise KVMError(f"Target disk already exists: {dst}")
+    src_info = qemu_img_info(src)
+    src_virtual = int(src_info.get("virtual-size", 0))
+    if disk_gib is not None and disk_gib * 1024**3 < src_virtual:
+        raise KVMError(f"Clone target disk {disk_gib} GiB is smaller than source virtual size {src_virtual / 1024**3:.1f} GiB")
+    tmp = dst.with_suffix(dst.suffix + ".tmp")
+    try:
+        run(["qemu-img", "convert", "-p", "-f", str(src_info.get("format", "qcow2")), "-O", "qcow2", str(src), str(tmp)])
+        if disk_gib is not None and disk_gib * 1024**3 > int(qemu_img_info(tmp).get("virtual-size", 0)):
+            run(["qemu-img", "resize", str(tmp), f"{disk_gib}G"])
+        tmp.replace(dst)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+
+
+def supported_sysprep_ops() -> List[str]:
+    text = output(["virt-sysprep", "--list-operations"])
+    ops = []
+    for line in text.splitlines():
+        line = line.strip()
+        if line:
+            ops.append(line.split()[0])
+    return ops
+
+
+def sysprep_clone_disk(disk: Path) -> None:
+    wanted = [
+        "machine-id",
+        "ssh-hostkeys",
+        "net-hostname",
+        "dhcp-client-state",
+        "udev-persistent-net",
+        "lvm-system-devices",
+        "random-seed",
+    ]
+    available = set(supported_sysprep_ops())
+    critical = {"machine-id", "ssh-hostkeys"}
+    if not critical.issubset(available):
+        missing = sorted(critical - available)
+        raise KVMError("virt-sysprep is too old; missing critical operation(s): " + ", ".join(missing))
+    selected = [x for x in wanted if x in available]
+    print("Sysprep operations:", ",".join(selected))
+    run(["virt-sysprep", "-a", str(disk), "--operations", ",".join(selected)])
+
+    # cloud-init clean is the supported way to make a captured instance behave like first boot.
+    cleanup = (
+        "if command -v cloud-init >/dev/null 2>&1; then "
+        "cloud-init clean --logs --machine-id; "
+        "else rm -rf /var/lib/cloud/*; fi"
+    )
+    run(["virt-customize", "-a", str(disk), "--run-command", cleanup])
+
+
+def make_cloud_files(cfg: Dict[str, Any], source_def_dir: Path) -> Tuple[Path, Path, Path, str]:
+    name = cfg["vm"]["name"]
+    cdir = CLOUD_DIR / name
+    if cdir.exists():
+        shutil.rmtree(cdir)
+    cdir.mkdir(parents=True, exist_ok=True)
+
+    if cfg["network"]["mac"] == "auto":
+        cfg["network"]["mac"] = generate_mac()
+    mac = cfg["network"]["mac"].lower()
+
+    keys = resolve_ssh_keys(cfg["cloud_init"]["ssh_authorized_keys"], source_def_dir)
+    user = cfg["cloud_init"]["user"]
+    packages = list(cfg["cloud_init"]["packages"])
+    runcmd = list(cfg["cloud_init"]["runcmd"])
+    if cfg["cloud_init"]["qemu_guest_agent"]:
+        if "qemu-guest-agent" not in packages:
+            packages.append("qemu-guest-agent")
+        runcmd.append(["systemctl", "enable", "--now", "qemu-guest-agent"])
+
+    user_cfg: Dict[str, Any] = {
+        "hostname": name,
+        "preserve_hostname": False,
+        "users": [{
+            "name": user,
+            "lock_passwd": True,
+            "sudo": "ALL=(ALL) NOPASSWD:ALL",
+            "shell": "/bin/bash",
+            "ssh_authorized_keys": keys,
+        }],
+        "ssh_pwauth": False,
+        "disable_root": True,
+        "package_update": cfg["cloud_init"]["package_update"],
+    }
+    if packages:
+        user_cfg["packages"] = packages
+    if cfg["cloud_init"].get("timezone"):
+        user_cfg["timezone"] = cfg["cloud_init"]["timezone"]
+    if runcmd:
+        user_cfg["runcmd"] = runcmd
+
+    user_data = cdir / "user-data"
+    user_data.write_text("#cloud-config\n" + yaml.safe_dump(user_cfg, sort_keys=False, allow_unicode=True), encoding="utf-8")
+
+    instance_id = "iid-" + hashlib.sha256(f"{name}-{dt.datetime.now(dt.timezone.utc).isoformat()}-{random.random()}".encode()).hexdigest()[:24]
+    meta_data = cdir / "meta-data"
+    meta_data.write_text(yaml.safe_dump({"instance-id": instance_id, "local-hostname": name}, sort_keys=False), encoding="utf-8")
+
+    ipv4 = cfg["network"]["ipv4"]
+    ipv6 = cfg["network"].get("ipv6") or {"method": "disabled"}
+    eth: Dict[str, Any] = {
+        "match": {"macaddress": mac},
+        "set-name": "eth0",
+    }
+    if ipv4.get("method", "dhcp") == "dhcp":
+        eth["dhcp4"] = True
+    elif ipv4.get("method") == "static":
+        eth["dhcp4"] = False
+        eth["addresses"] = [ipv4["address"]]
+        eth["routes"] = [{"to": "default", "via": ipv4["gateway"]}]
+        if ipv4.get("dns"):
+            eth["nameservers"] = {"addresses": ipv4["dns"]}
+    else:
+        eth["dhcp4"] = False
+
+    if ipv6.get("method", "disabled") == "dhcp":
+        eth["dhcp6"] = True
+    elif ipv6.get("method") == "static":
+        eth["dhcp6"] = False
+        if ipv6.get("address"):
+            eth.setdefault("addresses", []).append(ipv6["address"])
+        if ipv6.get("gateway"):
+            eth.setdefault("routes", []).append({"to": "::/0", "via": ipv6["gateway"]})
+    else:
+        eth["dhcp6"] = False
+
+    network_data = {"version": 2, "ethernets": {"eth0": eth}}
+    network_config = cdir / "network-config"
+    network_config.write_text(yaml.safe_dump(network_data, sort_keys=False), encoding="utf-8")
+
+    seed = cdir / "seed.img"
+    run(["cloud-localds", "--network-config", str(network_config), str(seed), str(user_data), str(meta_data)])
+    restore_selinux([seed])
+    return user_data, meta_data, network_config, instance_id
+
+
+def restore_selinux(paths: List[Path]) -> None:
+    """Best-effort SELinux relabel for files under libvirt image directories."""
+    if not shutil.which("restorecon"):
+        return
+    existing = [str(p) for p in paths if p.exists()]
+    if existing:
+        run(["restorecon", "-F"] + existing, check=False, capture=True)
+
+
+def os_variant_available(variant: str) -> bool:
+    if not variant or not shutil.which("osinfo-query"):
+        return False
+    p = run(["osinfo-query", "os"], check=False, capture=True)
+    if p.returncode != 0:
+        return False
+    # Match short IDs conservatively; output format differs slightly by distro.
+    return re.search(rf"(^|\s|\|){re.escape(variant)}(\s|\||$)", p.stdout, re.MULTILINE) is not None
+
+
+def define_vm(cfg: Dict[str, Any], disk: Path, seed: Path, default_variant: Optional[str], *, no_start: bool = False) -> None:
+    vm = cfg["vm"]
+    st = cfg["storage"]
+    net = cfg["network"]
+    name = vm["name"]
+
+    requested_variant = vm.get("os_variant") or default_variant or "generic"
+    variant = requested_variant if requested_variant == "generic" or os_variant_available(requested_variant) else "generic"
+    if variant != requested_variant:
+        eprint(f"WARN: osinfo variant '{requested_variant}' not available on this host; using 'generic'")
+
+    disk_opts = f"path={disk},format=qcow2,bus={st['bus']},cache={st['cache']},discard={st['discard']}"
+    net_opts = f"bridge={net['bridge']},model={net['model']},mac={net['mac']}"
+    cmd = [
+        "virt-install", "--connect", LIBVIRT_URI,
+        "--name", name,
+        "--memory", str(vm["memory_mib"]),
+        "--vcpus", str(vm["vcpus"]),
+        "--cpu", str(vm["cpu"]),
+        "--import",
+        "--disk", disk_opts,
+        "--disk", f"path={seed},device=cdrom,readonly=on,format=raw",
+        "--network", net_opts,
+        "--os-variant", variant,
+        "--graphics", "none",
+        "--console", "pty,target.type=serial",
+        "--noautoconsole",
+    ]
+    if no_start or not vm["start"]:
+        cmd.append("--noreboot")
+    run(cmd)
+
+    if vm["autostart"]:
+        run(["virsh", "-c", LIBVIRT_URI, "autostart", name])
+
+
+def save_state(cfg: Dict[str, Any], disk: Path, source: Dict[str, Any], instance_id: str, original_def: Path) -> None:
+    name = cfg["vm"]["name"]
+    effective_def = DEF_DIR / f"{name}.yaml"
+    yaml_dump(effective_def, cfg)
+    state = {
+        "version": 1,
+        "managed_by": "kvm-vm",
+        "name": name,
+        "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "definition": str(effective_def),
+        "definition_source": str(original_def.resolve()),
+        "disk": str(disk),
+        "cloud_dir": str(CLOUD_DIR / name),
+        "seed": str(CLOUD_DIR / name / "seed.img"),
+        "instance_id": instance_id,
+        "source": source,
+    }
+    (STATE_DIR / f"{name}.json").write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+
+
+def load_state(name: str) -> Optional[Dict[str, Any]]:
+    p = STATE_DIR / f"{name}.json"
+    if not p.exists():
+        return None
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise KVMError(f"Invalid state file {p}: {exc}")
+
+
+def cleanup_failed(name: str, disk: Path) -> None:
+    # Best effort: remove domain if virt-install got far enough, then local managed files.
+    if domain_exists(name):
+        if is_running_state(domain_state(name)):
+            run(["virsh", "-c", LIBVIRT_URI, "destroy", name], check=False, capture=True)
+        run(["virsh", "-c", LIBVIRT_URI, "undefine", name, "--nvram"], check=False, capture=True)
+        run(["virsh", "-c", LIBVIRT_URI, "undefine", name], check=False, capture=True)
+    if disk.exists():
+        disk.unlink()
+    cdir = CLOUD_DIR / name
+    if cdir.exists():
+        shutil.rmtree(cdir)
+
+
+def cmd_validate(args: argparse.Namespace) -> int:
+    p = Path(args.definition)
+    raw = yaml_load(p)
+    cfg = normalize_definition(raw, for_clone=args.clone)
+    resolve_ssh_keys(cfg["cloud_init"]["ssh_authorized_keys"], p.parent)
+    print(yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True))
+    return 0
+
+
+def cmd_create(args: argparse.Namespace) -> int:
+    require_commands(["virsh", "virt-install", "qemu-img", "cloud-localds"])
+    ensure_dirs()
+    p = Path(args.definition)
+    cfg = normalize_definition(yaml_load(p), for_clone=False)
+    name = cfg["vm"]["name"]
+    if domain_exists(name):
+        raise KVMError(f"Domain already exists: {name}")
+    if load_state(name):
+        raise KVMError(f"Managed state already exists for {name}; resolve it before creating")
+    validate_bridge(cfg["network"]["bridge"])
+    if cfg["network"]["mac"] == "auto":
+        cfg["network"]["mac"] = generate_mac()
+    resolve_ssh_keys(cfg["cloud_init"]["ssh_authorized_keys"], p.parent)
+
+    base, default_variant = acquire_base_image(cfg, args.refresh_image)
+    disk = VM_DIR / f"{name}.qcow2"
+    try:
+        make_disk_from_base(base, disk, int(cfg["storage"]["disk_gib"]))
+        restore_selinux([disk])
+        _, _, _, instance_id = make_cloud_files(cfg, p.parent)
+        seed = CLOUD_DIR / name / "seed.img"
+        define_vm(cfg, disk, seed, default_variant, no_start=args.no_start)
+        save_state(cfg, disk, {"type": "base-image", "path": str(base)}, instance_id, p)
+    except Exception:
+        cleanup_failed(name, disk)
+        raise
+
+    print(f"Created VM: {name}")
+    print(f"Definition: {DEF_DIR / (name + '.yaml')}")
+    print(f"Disk:       {disk}")
+    if not args.no_start and cfg["vm"]["start"]:
+        print(f"Console:    kvm-vm console {name}")
+    return 0
+
+
+def first_disk_source(name: str) -> Path:
+    p = run(["virsh", "-c", LIBVIRT_URI, "domblklist", name, "--details"], capture=True)
+    for line in p.stdout.splitlines():
+        cols = line.split()
+        if len(cols) >= 4 and cols[0] == "file" and cols[1] == "disk" and cols[3] != "-":
+            return Path(cols[3])
+    raise KVMError(f"Could not find a file-backed system disk for {name}")
+
+
+def cmd_clone(args: argparse.Namespace) -> int:
+    require_commands(["virsh", "virt-install", "qemu-img", "cloud-localds", "virt-sysprep", "virt-customize"])
+    ensure_dirs()
+    source_name = args.source
+    if not domain_exists(source_name):
+        raise KVMError(f"Source domain does not exist: {source_name}")
+    state = domain_state(source_name)
+    if is_running_state(state):
+        raise KVMError(f"Source VM must be shut off before cloning (current state: {state})")
+
+    p = Path(args.definition)
+    cfg = normalize_definition(yaml_load(p), for_clone=True)
+    name = cfg["vm"]["name"]
+    if name == source_name:
+        raise KVMError("Clone target name must differ from source")
+    if domain_exists(name) or load_state(name):
+        raise KVMError(f"Clone target already exists or has managed state: {name}")
+    validate_bridge(cfg["network"]["bridge"])
+    if cfg["network"]["mac"] == "auto":
+        cfg["network"]["mac"] = generate_mac()
+    resolve_ssh_keys(cfg["cloud_init"]["ssh_authorized_keys"], p.parent)
+
+    source_state = load_state(source_name)
+    if source_state and source_state.get("disk"):
+        src_disk = Path(source_state["disk"])
+    else:
+        src_disk = first_disk_source(source_name)
+    if not src_disk.is_file():
+        raise KVMError(f"Clone currently supports regular file-backed system disks only: {src_disk}")
+
+    disk = VM_DIR / f"{name}.qcow2"
+    try:
+        make_disk_from_clone(src_disk, disk, cfg["storage"].get("disk_gib"))
+        restore_selinux([disk])
+        sysprep_clone_disk(disk)
+        _, _, _, instance_id = make_cloud_files(cfg, p.parent)
+        seed = CLOUD_DIR / name / "seed.img"
+        define_vm(cfg, disk, seed, None, no_start=args.no_start)
+        save_state(cfg, disk, {"type": "clone", "source_vm": source_name, "source_disk": str(src_disk)}, instance_id, p)
+    except Exception:
+        cleanup_failed(name, disk)
+        raise
+
+    print(f"Cloned VM: {source_name} -> {name}")
+    print(f"Disk: {disk}")
+    return 0
+
+
+def virsh_names() -> List[str]:
+    text = output(["virsh", "-c", LIBVIRT_URI, "list", "--all", "--name"])
+    return [x.strip() for x in text.splitlines() if x.strip()]
+
+
+def dominfo_map(name: str) -> Dict[str, str]:
+    p = run(["virsh", "-c", LIBVIRT_URI, "dominfo", name], capture=True)
+    out: Dict[str, str] = {}
+    for line in p.stdout.splitlines():
+        if ":" in line:
+            k, v = line.split(":", 1)
+            out[k.strip()] = v.strip()
+    return out
+
+
+def get_ips(name: str) -> List[str]:
+    found: List[str] = []
+    seen = set()
+    for src in ("agent", "lease", "arp"):
+        p = run(["virsh", "-c", LIBVIRT_URI, "domifaddr", name, "--source", src, "--full"], check=False, capture=True)
+        if p.returncode != 0:
+            continue
+        for line in p.stdout.splitlines():
+            cols = line.split()
+            if len(cols) >= 4 and ("ipv4" in cols or "ipv6" in cols):
+                addr = cols[-1]
+                if addr not in seen:
+                    seen.add(addr)
+                    found.append(addr)
+    return found
+
+
+def human_mem(info: Dict[str, str]) -> str:
+    raw = info.get("Max memory", "-")
+    m = re.match(r"(\d+)\s+KiB", raw)
+    if m:
+        mib = int(m.group(1)) // 1024
+        return f"{mib} MiB"
+    return raw
+
+
+def cmd_list(args: argparse.Namespace) -> int:
+    require_commands(["virsh"])
+    names = virsh_names()
+    rows: List[List[str]] = []
+    for name in names:
+        managed = "yes" if load_state(name) else "no"
+        if args.managed and managed == "no":
+            continue
+        info = dominfo_map(name)
+        ips = get_ips(name) if args.ips and is_running_state(info.get("State", "unknown")) else []
+        rows.append([
+            name,
+            info.get("State", "?"),
+            managed,
+            info.get("Autostart", "?"),
+            info.get("CPU(s)", "?"),
+            human_mem(info),
+            ",".join(ips) if ips else "-",
+        ])
+    headers = ["NAME", "STATE", "MANAGED", "AUTOSTART", "VCPU", "MEMORY", "IP"]
+    widths = [len(x) for x in headers]
+    for row in rows:
+        for i, val in enumerate(row):
+            widths[i] = max(widths[i], len(val))
+    print("  ".join(headers[i].ljust(widths[i]) for i in range(len(headers))))
+    print("  ".join("-" * widths[i] for i in range(len(headers))))
+    for row in rows:
+        print("  ".join(row[i].ljust(widths[i]) for i in range(len(row))))
+    return 0
+
+
+def print_section(title: str, text: str) -> None:
+    print(f"\n{title}")
+    print("-" * len(title))
+    print(text.strip() if text.strip() else "-")
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    require_commands(["virsh"])
+    name = args.name
+    if not domain_exists(name):
+        raise KVMError(f"Domain does not exist: {name}")
+    state = load_state(name)
+    info = output(["virsh", "-c", LIBVIRT_URI, "dominfo", name])
+    print_section("Domain", info)
+    if state:
+        print_section("kvm-vm state", json.dumps(state, indent=2))
+    else:
+        print_section("kvm-vm state", "Unmanaged domain")
+    print_section("Disks", output(["virsh", "-c", LIBVIRT_URI, "domblklist", name, "--details"]))
+    print_section("Interfaces", output(["virsh", "-c", LIBVIRT_URI, "domiflist", name]))
+    ips = get_ips(name)
+    print_section("IP addresses", "\n".join(ips) if ips else "No address reported (qemu-guest-agent/lease/ARP may not have data yet).")
+    return 0
+
+
+def confirm_delete(name: str, yes: bool) -> None:
+    if yes:
+        return
+    if not sys.stdin.isatty():
+        raise KVMError("Refusing destructive delete without --yes in non-interactive mode")
+    ans = input(f"Delete VM '{name}'? Type the VM name to confirm: ")
+    if ans != name:
+        raise KVMError("Delete cancelled")
+
+
+def undefine_domain(name: str) -> None:
+    # First handle common metadata. If NVRAM blocks undefine, retry with --nvram.
+    base = ["virsh", "-c", LIBVIRT_URI, "undefine", name, "--managed-save", "--snapshots-metadata"]
+    p = run(base, check=False, capture=True)
+    if p.returncode == 0:
+        return
+    p2 = run(base + ["--nvram"], check=False, capture=True)
+    if p2.returncode != 0:
+        raise KVMError(f"virsh undefine failed:\n{p.stderr.strip()}\n{p2.stderr.strip()}")
+
+
+def cmd_delete(args: argparse.Namespace) -> int:
+    require_commands(["virsh"])
+    name = args.name
+    if not domain_exists(name):
+        raise KVMError(f"Domain does not exist: {name}")
+    state = load_state(name)
+    if not state and not args.keep_storage:
+        raise KVMError("This VM is not managed by kvm-vm. Refusing to delete storage; use --keep-storage to undefine the domain only.")
+    confirm_delete(name, args.yes)
+
+    st = domain_state(name)
+    if is_running_state(st):
+        if not args.force:
+            raise KVMError(f"VM is running ({st}). Shut it down first, or use --force to destroy it before delete.")
+        run(["virsh", "-c", LIBVIRT_URI, "destroy", name])
+
+    undefine_domain(name)
+
+    if state and not args.keep_storage:
+        # Delete only paths created/tracked by this tool. Never use --remove-all-storage,
+        # because the VM may have additional user-attached data disks.
+        for key in ("disk", "seed"):
+            value = state.get(key)
+            if value:
+                p = Path(value)
+                if p.exists() and (str(p).startswith(str(VM_DIR) + os.sep) or str(p).startswith(str(CLOUD_DIR) + os.sep)):
+                    p.unlink()
+                elif p.exists():
+                    eprint(f"WARN: tracked {key} is outside managed directories; not deleting: {p}")
+        cdir = Path(state.get("cloud_dir", "")) if state.get("cloud_dir") else None
+        if cdir and cdir.exists() and str(cdir).startswith(str(CLOUD_DIR) + os.sep):
+            shutil.rmtree(cdir)
+        d = state.get("definition")
+        if d:
+            dp = Path(d)
+            if dp.exists() and dp.parent == DEF_DIR:
+                dp.unlink()
+        sp = STATE_DIR / f"{name}.json"
+        if sp.exists():
+            sp.unlink()
+    elif state:
+        print("Storage kept; managed state/definition retained for audit/recovery.")
+
+    print(f"Deleted domain: {name}" + (" (storage kept)" if args.keep_storage else ""))
+    return 0
+
+
+def cmd_console(args: argparse.Namespace) -> int:
+    require_commands(["virsh"])
+    if not domain_exists(args.name):
+        raise KVMError(f"Domain does not exist: {args.name}")
+    st = domain_state(args.name)
+    if not is_running_state(st):
+        raise KVMError(f"VM is not running (state: {st})")
+    print("Connecting to serial console. Press Ctrl+] to exit.")
+    return run(["virsh", "-c", LIBVIRT_URI, "console", args.name], check=False).returncode
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="kvm-vm", description="Declarative KVM/libvirt VM manager")
+    p.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
+    sp = p.add_subparsers(dest="command", required=True)
+
+    q = sp.add_parser("create", help="Create a VM from a YAML definition and cloud image")
+    q.add_argument("definition")
+    q.add_argument("--refresh-image", action="store_true", help="Redownload a URL/distro base image")
+    q.add_argument("--no-start", action="store_true", help="Define the VM but do not boot it")
+    q.set_defaults(func=cmd_create)
+
+    q = sp.add_parser("clone", help="Offline full clone of a VM, then sysprep and apply target YAML")
+    q.add_argument("source", help="Source libvirt domain name; must be shut off")
+    q.add_argument("definition", help="Target VM YAML definition")
+    q.add_argument("--no-start", action="store_true", help="Define the clone but do not boot it")
+    q.set_defaults(func=cmd_clone)
+
+    q = sp.add_parser("list", help="List libvirt VMs")
+    q.add_argument("--managed", action="store_true", help="Show only VMs managed by kvm-vm")
+    q.add_argument("--ips", action="store_true", help="Query IP addresses (slower)")
+    q.set_defaults(func=cmd_list)
+
+    q = sp.add_parser("status", help="Show detailed VM status")
+    q.add_argument("name")
+    q.set_defaults(func=cmd_status)
+
+    q = sp.add_parser("delete", help="Undefine a VM and, for managed VMs, delete only managed storage")
+    q.add_argument("name")
+    q.add_argument("--yes", action="store_true", help="Skip interactive confirmation")
+    q.add_argument("--force", action="store_true", help="Destroy a running VM before deleting")
+    q.add_argument("--keep-storage", action="store_true", help="Undefine domain but keep disks/state")
+    q.set_defaults(func=cmd_delete)
+
+    q = sp.add_parser("console", help="Attach to the VM serial console")
+    q.add_argument("name")
+    q.set_defaults(func=cmd_console)
+
+    q = sp.add_parser("validate", help="Validate and normalize a YAML definition without touching libvirt")
+    q.add_argument("definition")
+    q.add_argument("--clone", action="store_true", help="Validate as a clone target (image source optional)")
+    q.set_defaults(func=cmd_validate)
+
+    return p
+
+
+def main() -> int:
+    try:
+        parser = build_parser()
+        args = parser.parse_args()
+        return int(args.func(args))
+    except KVMError as exc:
+        eprint(f"ERROR: {exc}")
+        return 1
+    except subprocess.CalledProcessError as exc:
+        eprint(f"ERROR: command failed ({exc.returncode}): {' '.join(map(str, exc.cmd))}")
+        if getattr(exc, "stderr", None):
+            eprint(exc.stderr.strip())
+        return exc.returncode or 1
+    except KeyboardInterrupt:
+        eprint("Interrupted")
+        return 130
+
+
+if __name__ == "__main__":
+    sys.exit(main())
