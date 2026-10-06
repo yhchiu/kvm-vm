@@ -42,6 +42,7 @@ VM_DIR = Path(os.environ.get("KVM_VM_DISK_DIR", "/var/lib/libvirt/images/vm"))
 STATE_DIR = Path(os.environ.get("KVM_VM_STATE_DIR", "/var/lib/kvm-vm/state"))
 CLOUD_DIR = Path(os.environ.get("KVM_VM_CLOUD_DIR", "/var/lib/libvirt/images/cloud-init"))
 DEF_DIR = Path(os.environ.get("KVM_VM_DEF_DIR", "/etc/kvm-vm/definitions"))
+DEFAULT_BRIDGE = os.environ.get("KVM_VM_BRIDGE", "br0")
 
 DISTROS = {
     "ubuntu24.04": {
@@ -216,7 +217,9 @@ def normalize_definition(raw: Dict[str, Any], *, for_clone: bool = False) -> Dic
     if network_mode not in {"bridge", "nat"}:
         raise KVMError("network.mode must be bridge or nat")
 
-    bridge = network.get("bridge", "viifbr0")
+    bridge = network.get("bridge")
+    if bridge is None:
+        bridge = os.environ.get("KVM_VM_BRIDGE", DEFAULT_BRIDGE)
     libvirt_network = network.get("libvirt_network", "default")
     if network_mode == "bridge":
         if not isinstance(bridge, str) or not bridge.strip():

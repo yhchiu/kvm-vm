@@ -66,20 +66,23 @@ Cloud-init media is kept below `/var/lib/libvirt/images` so it naturally fits co
 libvirt/QEMU ownership and SELinux policies. `restorecon` is used on SELinux hosts when
 available.
 
-All locations can be overridden with environment variables:
+## Environment variables
 
-```text
-KVM_VM_LIBVIRT_URI
-KVM_VM_BASE_DIR
-KVM_VM_DISK_DIR
-KVM_VM_STATE_DIR
-KVM_VM_CLOUD_DIR
-KVM_VM_DEF_DIR
-```
+All storage paths, libvirt connection URI, and network defaults can be overridden with environment variables:
+
+| Variable | Default | Description |
+|---|---|---|
+| `KVM_VM_LIBVIRT_URI` | `qemu:///system` | libvirt connection URI |
+| `KVM_VM_BASE_DIR` | `/var/lib/libvirt/images/base` | Cached distribution cloud images |
+| `KVM_VM_DISK_DIR` | `/var/lib/libvirt/images/vm` | Independent VM qcow2 system disks |
+| `KVM_VM_STATE_DIR` | `/var/lib/kvm-vm/state` | Tool state manifests |
+| `KVM_VM_CLOUD_DIR` | `/var/lib/libvirt/images/cloud-init` | Per-VM NoCloud seed and source files |
+| `KVM_VM_DEF_DIR` | `/etc/kvm-vm/definitions` | Effective YAML definitions |
+| `KVM_VM_BRIDGE` | `br0` | Linux bridge interface for bridge mode |
 
 ## Create a VM
 
-Start with `examples/ubuntu24-web01.yaml` and edit the network and SSH key path. The default network mode is `bridge`, and the default bridge is `viifbr0`.
+Start with `examples/ubuntu24-web01.yaml` and edit the network and SSH key path. The default network mode is `bridge`, and the default bridge is `br0` (customizable via `KVM_VM_BRIDGE`).
 
 ```bash
 kvm-vm validate web01.yaml
@@ -147,7 +150,7 @@ storage:
 
 network:
   mode: bridge
-  bridge: viifbr0
+  bridge: br0
   model: virtio
   mac: auto
   ipv4:
@@ -188,12 +191,12 @@ the definition does not depend on whether a distribution originally calls it `en
 ### Bridge mode
 
 Bridge mode is the default. If `network.mode` and `network.bridge` are omitted, the VM is
-attached to `viifbr0`:
+attached to `br0` (or the custom bridge defined by `KVM_VM_BRIDGE`):
 
 ```yaml
 network:
   mode: bridge
-  bridge: viifbr0
+  bridge: br0
   model: virtio
   mac: auto
   ipv4:
@@ -203,11 +206,12 @@ network:
 This produces the equivalent of:
 
 ```text
-virt-install ... --network bridge=viifbr0,model=virtio,mac=...
+virt-install ... --network bridge=br0,model=virtio,mac=...
 ```
 
 For backward compatibility, existing YAML that contains only `network.bridge` still uses
-bridge mode. The default bridge changed from `br0` in v1.0.0 to `viifbr0` in v1.1.0.
+bridge mode. The default bridge is `br0`, and can be customized host-wide using the
+`KVM_VM_BRIDGE` environment variable.
 
 ### NAT mode
 
