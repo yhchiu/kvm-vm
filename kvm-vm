@@ -746,6 +746,11 @@ def cmd_create(args: argparse.Namespace) -> int:
         cfg["network"]["mac"] = generate_mac(exclude=existing_macs())
     resolve_ssh_keys(cfg["cloud_init"]["ssh_authorized_keys"], p.parent)
 
+    if args.dry_run:
+        print("dry-run: all pre-flight checks passed")
+        print(yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True))
+        return 0
+
     base, default_variant = acquire_base_image(cfg, args.refresh_image)
     disk = VM_DIR / f"{name}.qcow2"
     try:
@@ -805,6 +810,11 @@ def cmd_clone(args: argparse.Namespace) -> int:
         src_disk = first_disk_source(source_name)
     if not src_disk.is_file():
         raise KVMError(f"Clone currently supports regular file-backed system disks only: {src_disk}")
+
+    if args.dry_run:
+        print("dry-run: all pre-flight checks passed")
+        print(yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True))
+        return 0
 
     disk = VM_DIR / f"{name}.qcow2"
     try:
@@ -1004,12 +1014,14 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("definition")
     q.add_argument("--refresh-image", action="store_true", help="Redownload a URL/distro base image")
     q.add_argument("--no-start", action="store_true", help="Define the VM but do not boot it")
+    q.add_argument("--dry-run", action="store_true", help="Run all pre-flight checks but do not create the VM")
     q.set_defaults(func=cmd_create)
 
     q = sp.add_parser("clone", help="Offline full clone of a VM, then sysprep and apply target YAML")
     q.add_argument("source", help="Source libvirt domain name; must be shut off")
     q.add_argument("definition", help="Target VM YAML definition")
     q.add_argument("--no-start", action="store_true", help="Define the clone but do not boot it")
+    q.add_argument("--dry-run", action="store_true", help="Run all pre-flight checks but do not clone the VM")
     q.set_defaults(func=cmd_clone)
 
     q = sp.add_parser("list", help="List libvirt VMs")

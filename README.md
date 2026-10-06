@@ -10,8 +10,8 @@ repeatable VM provisioning much safer than ad-hoc `virt-install` command lines.
 ## Commands
 
 ```text
-kvm-vm create <vm.yaml> [--refresh-image] [--no-start]
-kvm-vm clone <source-vm> <target.yaml> [--no-start]
+kvm-vm create <vm.yaml> [--refresh-image] [--no-start] [--dry-run]
+kvm-vm clone <source-vm> <target.yaml> [--no-start] [--dry-run]
 kvm-vm list [--managed] [--ips]
 kvm-vm status <vm>
 kvm-vm console <vm>
@@ -398,6 +398,19 @@ kvm-vm create vm.yaml --no-start
 
 The domain is defined but left shut off, which is useful if you want to inspect `virsh
 dumpxml` or apply additional libvirt policy before first boot.
+
+## `--dry-run`
+
+Both `create` and `clone` support:
+
+```bash
+kvm-vm create vm.yaml --dry-run
+kvm-vm clone source-vm target.yaml --dry-run
+```
+
+Runs all pre-flight checks (YAML normalization, domain/state collision checks, bridge/NAT
+validation, MAC allocation, and SSH key resolution) and prints the normalized YAML without
+downloading images, touching disks, or defining libvirt domains.
 
 ## Version notes
 
