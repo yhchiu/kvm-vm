@@ -1,3 +1,5 @@
+[English](README.md) | 繁體中文
+
 # kvm-vm
 
 `kvm-vm` 是一個專為長期運行的獨立 KVM/libvirt 主機設計的輕量宣告式虛擬機器（VM）管理工具。
@@ -52,6 +54,14 @@ sudo ./install.sh
 
 預設的 libvirt URI 為 `qemu:///system`。
 
+### 升級
+
+```bash
+sudo ./install.sh
+```
+
+安裝腳本具有冪等性（idempotent），重複執行即可原地升級 `kvm-vm`。
+
 ## 目錄結構
 
 ```text
@@ -64,34 +74,7 @@ sudo ./install.sh
 
 Cloud-init 媒介檔案存放於 `/var/lib/libvirt/images` 目錄下，以自然符合常見的 libvirt/QEMU 檔案擁有權與 SELinux 策略。在啟用 SELinux 的主機上，若系統支援則會自動調用 `restorecon`。
 
-## 環境變數
-
-所有儲存路徑、libvirt 連線 URI 以及虛擬機器設定值皆可透過環境變數進行覆寫（優先權高於 YAML 定義與內建預設值）：
-
-### 路徑與系統配置
-
-| 變數 | 預設值 | 說明 |
-|---|---|---|
-| `KVM_VM_LIBVIRT_URI` | `qemu:///system` | libvirt 連線 URI |
-| `KVM_VM_BASE_DIR` | `/var/lib/libvirt/images/base` | 快取的發行版雲端映像檔目錄 |
-| `KVM_VM_DISK_DIR` | `/var/lib/libvirt/images/vm` | 各虛擬機器獨立的 qcow2 系統磁碟目錄 |
-| `KVM_VM_STATE_DIR` | `/var/lib/kvm-vm/state` | 工具狀態清單目錄 |
-| `KVM_VM_CLOUD_DIR` | `/var/lib/libvirt/images/cloud-init` | 各虛擬機器 NoCloud seed 與來源檔案目錄 |
-| `KVM_VM_DEF_DIR` | `/etc/kvm-vm/definitions` | 生效的 YAML 定義儲存目錄 |
-
-### 虛擬機器定義覆寫
-
-| 變數 | YAML 路徑 | 範例 | 說明 |
-|---|---|---|---|
-| `KVM_VM_NAME` | `vm.name` | `web02` | 覆寫虛擬機器名稱 |
-| `KVM_VM_VCPUS` | `vm.vcpus` | `4` | 覆寫 vCPU 核心數（1-1024） |
-| `KVM_VM_MEMORY` / `KVM_VM_MEMORY_MIB` | `vm.memory_mib` | `4096` | 覆寫記憶體容量（MiB，>= 256） |
-| `KVM_VM_DISK` / `KVM_VM_DISK_GIB` | `storage.disk_gib` | `50` | 覆寫磁碟大小（GiB，>= 1） |
-| `KVM_VM_OS` | `image.distro` / `os_variant` | `rocky9` | 覆寫發行版別名與 `os_variant` |
-| `KVM_VM_BRIDGE` | `network.bridge` | `br0` | 橋接模式下預設或覆寫使用的 Bridge 名稱 |
-| `KVM_VM_IPV4` | `network.ipv4` | `dhcp`, `192.168.1.50/24` | 設定 IP 取得方式（`dhcp`, `disabled`）或靜態 CIDR 位址 |
-| `KVM_VM_GATEWAY` | `network.ipv4.gateway` | `192.168.1.1` | 覆寫預設 IPv4 閘道 |
-| `KVM_VM_DNS` | `network.ipv4.dns` | `1.1.1.1,8.8.8.8` | 覆寫 DNS 伺服器列表（以逗號分隔） |
+所有儲存路徑皆可透過環境變數進行覆寫；詳見[環境變數](#環境變數)。
 
 ## 建立虛擬機器
 
@@ -101,6 +84,16 @@ Cloud-init 媒介檔案存放於 `/var/lib/libvirt/images` 目錄下，以自然
 kvm-vm validate web01.yaml
 sudo kvm-vm create web01.yaml
 ```
+
+環境變數可與 YAML 檔案搭配使用，在部署時覆寫特定的設定值（詳見[環境變數](#環境變數)）：
+
+```bash
+sudo KVM_VM_OS=debian13 KVM_VM_NAME=web02 KVM_VM_VCPUS=16 KVM_VM_DISK=100 \
+  KVM_VM_MEMORY=32000 KVM_VM_IPV4=192.168.10.52/24 \
+  kvm-vm create examples/ubuntu24-web01.yaml
+```
+
+此範例以 `examples/ubuntu24-web01.yaml` 作為基礎定義，透過環境變數覆寫了作業系統、名稱、資源規格與 IP 位址，在不需撰寫新 YAML 檔案的情況下建立一台完全不同的虛擬機器（`web02`）。
 
 `create` 目前支援以下內建的便捷發行版別名（distro aliases）：
 
@@ -190,6 +183,35 @@ cloud_init:
 SSH 金鑰可以是純文字 OpenSSH 公鑰字串，或是 `file:/path/to/key.pub` 格式。相對的 `file:` 路徑會以該 YAML 檔案所在位置為基準進行解析。
 
 `mac: auto` 在儲存的生效 YAML 中會被替換為實際的 `52:54:00:*` 位址。靜態 cloud-init 網路設定會比對該 MAC 位址並將網路介面重新命名為 `eth0`，因此設定不會受到不同發行版將介面命名為 `ens3`、`enp1s0` 等差異的影響。
+
+## 環境變數
+
+所有儲存路徑、libvirt 連線 URI 以及虛擬機器設定值皆可透過環境變數進行覆寫（優先權高於 YAML 定義與內建預設值）：
+
+### 路徑與系統配置
+
+| 變數 | 預設值 | 說明 |
+|---|---|---|
+| `KVM_VM_LIBVIRT_URI` | `qemu:///system` | libvirt 連線 URI |
+| `KVM_VM_BASE_DIR` | `/var/lib/libvirt/images/base` | 快取的發行版雲端映像檔目錄 |
+| `KVM_VM_DISK_DIR` | `/var/lib/libvirt/images/vm` | 各虛擬機器獨立的 qcow2 系統磁碟目錄 |
+| `KVM_VM_STATE_DIR` | `/var/lib/kvm-vm/state` | 工具狀態清單目錄 |
+| `KVM_VM_CLOUD_DIR` | `/var/lib/libvirt/images/cloud-init` | 各虛擬機器 NoCloud seed 與來源檔案目錄 |
+| `KVM_VM_DEF_DIR` | `/etc/kvm-vm/definitions` | 生效的 YAML 定義儲存目錄 |
+
+### 虛擬機器定義覆寫
+
+| 變數 | YAML 路徑 | 範例 | 說明 |
+|---|---|---|---|
+| `KVM_VM_NAME` | `vm.name` | `web02` | 覆寫虛擬機器名稱 |
+| `KVM_VM_VCPUS` | `vm.vcpus` | `4` | 覆寫 vCPU 核心數（1-1024） |
+| `KVM_VM_MEMORY` / `KVM_VM_MEMORY_MIB` | `vm.memory_mib` | `4096` | 覆寫記憶體容量（MiB，>= 256） |
+| `KVM_VM_DISK` / `KVM_VM_DISK_GIB` | `storage.disk_gib` | `50` | 覆寫磁碟大小（GiB，>= 1） |
+| `KVM_VM_OS` | `image.distro` / `os_variant` | `rocky9` | 覆寫發行版別名與 `os_variant` |
+| `KVM_VM_BRIDGE` | `network.bridge` | `br0` | 橋接模式下預設或覆寫使用的 Bridge 名稱 |
+| `KVM_VM_IPV4` | `network.ipv4` | `dhcp`, `192.168.1.50/24` | 設定 IP 取得方式（`dhcp`, `disabled`）或靜態 CIDR 位址 |
+| `KVM_VM_GATEWAY` | `network.ipv4.gateway` | `192.168.1.1` | 覆寫預設 IPv4 閘道 |
+| `KVM_VM_DNS` | `network.ipv4.dns` | `1.1.1.1,8.8.8.8` | 覆寫 DNS 伺服器列表（以逗號分隔） |
 
 ## 網路模式
 
@@ -430,11 +452,16 @@ cpu: host-passthrough
 
 ## 重新整理基底映像檔
 
-發行版別名映像檔會被快取。已存在的虛擬機器皆互相獨立，不會受到影響。
+在先前的 `create` 流程中所下載的發行版雲端映像檔會被快取於本地（預設路徑為 `/var/lib/libvirt/images/base/`）。後續建立 VM 時若快取已存在，預設會直接重用該映像檔，以避免重複下載。
+
+若上游發行版已有更新，且您希望拉取最新版本的映像檔來建立新 VM，可加上 `--refresh-image` 參數：
 
 ```bash
 kvm-vm create newvm.yaml --refresh-image
 ```
+
+- **不影響既有 VM**：此參數只會更新本地快取的基底映像檔。由於每個 VM 在建立時都會分配獨立的 qcow2 系統磁碟，因此重新下載或更新基底映像檔完全不會影響已建立運行的虛擬機器。
+- **無條件重新下載**：經程式碼確認，`--refresh-image` 執行時不會比對 HTTP `ETag` 或 `Last-Modified` 標頭；只要帶入此參數，系統就會無條件重新下載完整映像檔並覆蓋本地快取。因此即使本地快取的映像檔已經是最新版，依然會重新下載。
 
 ## `--no-start`
 

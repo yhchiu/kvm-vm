@@ -1,3 +1,5 @@
+English | [繁體中文](README.zh-TW.md)
+
 # kvm-vm
 
 `kvm-vm` is a small declarative VM manager for a long-lived standalone KVM/libvirt host.
@@ -55,6 +57,14 @@ sudo ./install.sh
 
 The default libvirt URI is `qemu:///system`.
 
+### Upgrade
+
+```bash
+sudo ./install.sh
+```
+
+The install script is idempotent; re-running it upgrades `kvm-vm` in place.
+
 ## Directory layout
 
 ```text
@@ -69,34 +79,7 @@ Cloud-init media is kept below `/var/lib/libvirt/images` so it naturally fits co
 libvirt/QEMU ownership and SELinux policies. `restorecon` is used on SELinux hosts when
 available.
 
-## Environment variables
-
-All storage paths, libvirt connection URI, and VM definition values can be overridden with environment variables (taking precedence over YAML files and built-in defaults):
-
-### Paths & System Configuration
-
-| Variable | Default | Description |
-|---|---|---|
-| `KVM_VM_LIBVIRT_URI` | `qemu:///system` | libvirt connection URI |
-| `KVM_VM_BASE_DIR` | `/var/lib/libvirt/images/base` | Cached distribution cloud images |
-| `KVM_VM_DISK_DIR` | `/var/lib/libvirt/images/vm` | Independent VM qcow2 system disks |
-| `KVM_VM_STATE_DIR` | `/var/lib/kvm-vm/state` | Tool state manifests |
-| `KVM_VM_CLOUD_DIR` | `/var/lib/libvirt/images/cloud-init` | Per-VM NoCloud seed and source files |
-| `KVM_VM_DEF_DIR` | `/etc/kvm-vm/definitions` | Effective YAML definitions |
-
-### VM Definition Overrides
-
-| Variable | YAML Path | Example | Description |
-|---|---|---|---|
-| `KVM_VM_NAME` | `vm.name` | `web02` | Overrides VM name |
-| `KVM_VM_VCPUS` | `vm.vcpus` | `4` | Overrides vCPUs count (1-1024) |
-| `KVM_VM_MEMORY` / `KVM_VM_MEMORY_MIB` | `vm.memory_mib` | `4096` | Overrides memory in MiB (>= 256) |
-| `KVM_VM_DISK` / `KVM_VM_DISK_GIB` | `storage.disk_gib` | `50` | Overrides disk size in GiB (>= 1) |
-| `KVM_VM_OS` | `image.distro` / `os_variant` | `rocky9` | Overrides distro alias and `os_variant` |
-| `KVM_VM_BRIDGE` | `network.bridge` | `br0` | Default or override bridge interface for bridge mode |
-| `KVM_VM_IPV4` | `network.ipv4` | `dhcp`, `192.168.1.50/24` | Sets method (`dhcp`, `disabled`) or static CIDR address |
-| `KVM_VM_GATEWAY` | `network.ipv4.gateway` | `192.168.1.1` | Overrides default IPv4 gateway |
-| `KVM_VM_DNS` | `network.ipv4.dns` | `1.1.1.1,8.8.8.8` | Overrides DNS servers (comma-separated) |
+All storage paths can be overridden with environment variables; see [Environment variables](#environment-variables).
 
 ## Create a VM
 
@@ -106,6 +89,16 @@ Start with `examples/ubuntu24-web01.yaml` and edit the network and SSH key path.
 kvm-vm validate web01.yaml
 sudo kvm-vm create web01.yaml
 ```
+
+Environment variables can be combined with a YAML file to override specific values at deploy time (see [Environment variables](#environment-variables)):
+
+```bash
+sudo KVM_VM_OS=debian13 KVM_VM_NAME=web02 KVM_VM_VCPUS=16 KVM_VM_DISK=100 \
+  KVM_VM_MEMORY=32000 KVM_VM_IPV4=192.168.10.52/24 \
+  kvm-vm create examples/ubuntu24-web01.yaml
+```
+
+This takes `examples/ubuntu24-web01.yaml` as the base definition and overrides the OS, name, resources, and IP address via environment variables, creating a completely different VM (`web02`) without writing a new YAML file.
 
 `create` currently knows these convenience distro aliases:
 
@@ -201,6 +194,35 @@ paths are resolved relative to the YAML file.
 Static cloud-init networking matches that MAC and renames the interface to `eth0`, so
 the definition does not depend on whether a distribution originally calls it `ens3`,
 `enp1s0`, etc.
+
+## Environment variables
+
+All storage paths, libvirt connection URI, and VM definition values can be overridden with environment variables (taking precedence over YAML files and built-in defaults):
+
+### Paths & System Configuration
+
+| Variable | Default | Description |
+|---|---|---|
+| `KVM_VM_LIBVIRT_URI` | `qemu:///system` | libvirt connection URI |
+| `KVM_VM_BASE_DIR` | `/var/lib/libvirt/images/base` | Cached distribution cloud images |
+| `KVM_VM_DISK_DIR` | `/var/lib/libvirt/images/vm` | Independent VM qcow2 system disks |
+| `KVM_VM_STATE_DIR` | `/var/lib/kvm-vm/state` | Tool state manifests |
+| `KVM_VM_CLOUD_DIR` | `/var/lib/libvirt/images/cloud-init` | Per-VM NoCloud seed and source files |
+| `KVM_VM_DEF_DIR` | `/etc/kvm-vm/definitions` | Effective YAML definitions |
+
+### VM Definition Overrides
+
+| Variable | YAML Path | Example | Description |
+|---|---|---|---|
+| `KVM_VM_NAME` | `vm.name` | `web02` | Overrides VM name |
+| `KVM_VM_VCPUS` | `vm.vcpus` | `4` | Overrides vCPUs count (1-1024) |
+| `KVM_VM_MEMORY` / `KVM_VM_MEMORY_MIB` | `vm.memory_mib` | `4096` | Overrides memory in MiB (>= 256) |
+| `KVM_VM_DISK` / `KVM_VM_DISK_GIB` | `storage.disk_gib` | `50` | Overrides disk size in GiB (>= 1) |
+| `KVM_VM_OS` | `image.distro` / `os_variant` | `rocky9` | Overrides distro alias and `os_variant` |
+| `KVM_VM_BRIDGE` | `network.bridge` | `br0` | Default or override bridge interface for bridge mode |
+| `KVM_VM_IPV4` | `network.ipv4` | `dhcp`, `192.168.1.50/24` | Sets method (`dhcp`, `disabled`) or static CIDR address |
+| `KVM_VM_GATEWAY` | `network.ipv4.gateway` | `192.168.1.1` | Overrides default IPv4 gateway |
+| `KVM_VM_DNS` | `network.ipv4.dns` | `1.1.1.1,8.8.8.8` | Overrides DNS servers (comma-separated) |
 
 ## Network modes
 
@@ -458,11 +480,16 @@ use a deliberately selected migratable CPU model instead.
 
 ## Base image refresh
 
-Distro aliases are cached. Existing VMs are independent and are not changed.
+Distribution cloud images downloaded during previous `create` runs are cached locally (by default in `/var/lib/libvirt/images/base/`). Subsequent VM creations reuse the cached image to avoid redundant downloads.
+
+If upstream releases an update and you want to fetch the latest cloud image to create a new VM, specify the `--refresh-image` flag:
 
 ```bash
 kvm-vm create newvm.yaml --refresh-image
 ```
+
+- **Existing VMs remain unaffected**: This flag only updates the cached base image in the local storage pool. Because each VM runs on its own independent qcow2 disk, re-downloading or updating the base image will never affect already created VMs.
+- **Unconditional re-download**: As confirmed from the source code, `--refresh-image` does not perform HTTP conditional checks (such as `ETag` or `Last-Modified`); whenever this flag is passed, the tool unconditionally re-downloads the complete image and overwrites the local cache, even if the cached image is already the latest version.
 
 ## `--no-start`
 
