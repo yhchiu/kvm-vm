@@ -115,6 +115,8 @@ sudo KVM_VM_OS=debian13 KVM_VM_NAME=web02 KVM_VM_VCPUS=16 KVM_VM_DISK=100 \
 
 This takes `examples/ubuntu24-web01.yaml` as the base definition and overrides the OS, name, resources, and IP address via environment variables, creating a completely different VM (`web02`) without writing a new YAML file.
 
+### Distro aliases
+
 `create` currently knows these convenience distro aliases:
 
 ```text
@@ -490,7 +492,7 @@ kvm-vm reinstall web01 --os debian13
 
 ### Options
 
-- `--os <distro|url|path>`: Distro alias (`ubuntu24.04`, `ubuntu26.04`, `debian12`, `debian13`, `rocky8`, `rocky9`, `rocky10`, `almalinux8`, `almalinux9`, `almalinux10`), custom image URL, or local image path.
+- `--os <distro|url|path>`: Distro alias (see [Distro aliases](#distro-aliases)), custom image URL, or local image path.
 - `--image-url <url>`: Explicitly specify a cloud image URL.
 - `--image-path <path>`: Explicitly specify a local cloud image path.
 - `--os-variant <variant>`: Specify a libosinfo OS variant for `virt-install`.
