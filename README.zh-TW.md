@@ -10,6 +10,7 @@
 ```text
 kvm-vm create <vm.yaml> [--refresh-image] [--no-start] [--dry-run]
 kvm-vm clone <source-vm> <target.yaml> [--no-start] [--dry-run]
+kvm-vm reinstall <vm> [--os <os>] [--image-url <url>] [--image-path <path>] [--refresh-image] [--no-start] [--dry-run] [--yes] [--force]
 kvm-vm list [--managed] [--ips]
 kvm-vm status <vm>
 kvm-vm console <vm>
@@ -319,6 +320,35 @@ kvm-vm delete web01 --keep-storage
 
 在這種情況下，狀態與定義檔仍會保留，以避免儲存空間默默成為孤立檔案（orphan storage）。
 
+## 重灌虛擬機器（Reinstall）
+
+重灌現有的受控虛擬機器，會從雲端基礎映像檔（base cloud image）重新佈署一份全新的乾淨作業系統磁碟，**同時保留該虛擬機器原本的所有其他配置**（vCPU 核心數、記憶體、磁碟容量大小、已分配的 MAC 位址、靜態/DHCP IP、cloud-init 使用者與 SSH 金鑰、網路模式與 Bridge 等）：
+
+```bash
+# 使用現有定義中的作業系統進行重灌
+kvm-vm reinstall web01
+
+# 重灌並更換為不同的作業系統
+kvm-vm reinstall web01 --os debian13
+```
+
+### 選項參數
+
+- `--os <distro|url|path>`：發行版別名（`ubuntu24.04`、`debian13`、`rocky9`、`almalinux9`）、自訂映像檔 URL 或本機映像檔路徑。
+- `--image-url <url>`：明確指定雲端映像檔下載 URL。
+- `--image-path <path>`：明確指定本機雲端映像檔路徑。
+- `--os-variant <variant>`：指定供 `virt-install` 最佳化使用的 libosinfo OS variant 名稱。
+- `--refresh-image`：強制重新下載雲端基礎映像檔（即使快取已存在）。
+- `--no-start`：重灌並在 libvirt 中完成定義，但不立即開機。
+- `--force`：若虛擬機器目前正在運行中，強制將其關閉並進行重灌（若未指定 `--force`，運行中的虛擬機器將拒絕重灌）。
+- `--yes`：略過互動式確認提示（在自動化腳本或非互動環境中必備）。
+- `--dry-run`：執行所有事前檢查並輸出生效的 YAML 定義，不會異動任何磁碟或 libvirt 網域。
+
+```bash
+# 自動化重灌範例（更換 OS 並強制關機執行）
+kvm-vm reinstall web01 --os rocky9 --force --yes
+```
+
 ## 複製虛擬機器（Clone）
 
 複製目標的 YAML 格式請參閱 `examples/clone-target.yaml`。它刻意不需要 `storage.image` 欄位，因為來源虛擬機器的磁碟本身就是來源映像檔。
@@ -408,21 +438,23 @@ kvm-vm create newvm.yaml --refresh-image
 
 ## `--no-start`
 
-`create` 與 `clone` 皆支援：
+`create`、`clone` 與 `reinstall` 皆支援：
 
 ```bash
 kvm-vm create vm.yaml --no-start
+kvm-vm reinstall web01 --no-start
 ```
 
 虛擬機器網域會被定義（define）但維持關機狀態。若您想在首次開機前檢查 `virsh dumpxml` 或套用其他額外的 libvirt 策略，此選項非常實用。
 
 ## `--dry-run`
 
-`create` 與 `clone` 皆支援：
+`create`、`clone` 與 `reinstall` 皆支援：
 
 ```bash
 kvm-vm create vm.yaml --dry-run
 kvm-vm clone source-vm target.yaml --dry-run
+kvm-vm reinstall web01 --os debian13 --dry-run
 ```
 
 執行所有事前檢查（YAML 正規化、網域/狀態衝突檢查、橋接/NAT 驗證、MAC 位址分配以及 SSH 金鑰解析），並輸出正規化後的 YAML，過程中不會下載映像檔、不會異動磁碟，也不會定義 libvirt 網域。對於 `clone`，它還會在進行任何磁碟轉換前，使用 dry-run 檢查驗證來源磁碟與 `virt-sysprep` 的相容性。

@@ -337,8 +337,28 @@ class TestParser:
         args_create_default = parser.parse_args(["create", "myvm.yaml"])
         assert args_create_default.dry_run is False
 
+        args_reinstall = parser.parse_args(["reinstall", "myvm", "--dry-run"])
+        assert args_reinstall.dry_run is True
+        assert args_reinstall.name == "myvm"
+
+        args_reinstall_opts = parser.parse_args([
+            "reinstall", "myvm", "--os", "debian13", "--os-variant", "debian13",
+            "--refresh-image", "--no-start", "--force", "--yes"
+        ])
+        assert args_reinstall_opts.os == "debian13"
+        assert args_reinstall_opts.os_variant == "debian13"
+        assert args_reinstall_opts.refresh_image is True
+        assert args_reinstall_opts.no_start is True
+        assert args_reinstall_opts.force is True
+        assert args_reinstall_opts.yes is True
+
+    def test_reinstall_mutually_exclusive_os(self):
+        parser = kvm_vm.build_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["reinstall", "myvm", "--os", "debian13", "--image-url", "https://example.com/img.qcow2"])
+
     def test_version(self):
-        assert kvm_vm.VERSION == "1.2.0"
+        assert kvm_vm.VERSION == "1.3.0"
 
 
 # --- sysprep compatibility verification ---
@@ -460,4 +480,342 @@ class TestCloudSeed:
             assert not seed.exists()
             mock_run.assert_called_once()
             mock_selinux.assert_called_once_with([seed])
+
+
+# --- reinstall tests ---
+
+class TestApplyOsOverride:
+    def test_distro_override(self):
+        raw = _minimal_raw()
+        kvm_vm.apply_os_override(raw, os_arg="debian13")
+        assert raw["storage"]["image"]["distro"] == "debian13"
+        assert raw["storage"]["image"]["url"] is None
+        assert raw["storage"]["image"]["path"] is None
+        assert raw["vm"]["os_variant"] == "debian13"
+
+    def test_url_override(self):
+        raw = _minimal_raw()
+        kvm_vm.apply_os_override(raw, os_arg="https://example.com/noble.img")
+        assert raw["storage"]["image"]["url"] == "https://example.com/noble.img"
+        assert raw["storage"]["image"]["distro"] is None
+        assert raw["storage"]["image"]["path"] is None
+
+    def test_local_file_override(self, tmp_path):
+        img = tmp_path / "base.qcow2"
+        img.touch()
+        raw = _minimal_raw()
+        kvm_vm.apply_os_override(raw, os_arg=str(img))
+        assert raw["storage"]["image"]["path"] == str(img.resolve())
+        assert raw["storage"]["image"]["distro"] is None
+
+    def test_unsupported_distro_raises(self):
+        raw = _minimal_raw()
+        with pytest.raises(kvm_vm.KVMError, match="Unsupported OS or distro"):
+            kvm_vm.apply_os_override(raw, os_arg="unknown-distro")
+
+    def test_missing_image_file_raises(self):
+        raw = _minimal_raw()
+        with pytest.raises(kvm_vm.KVMError, match="Base image not found"):
+            kvm_vm.apply_os_override(raw, os_arg="/nonexistent/dir/custom.qcow2")
+
+    def test_image_url_flag(self):
+        raw = _minimal_raw()
+        kvm_vm.apply_os_override(raw, image_url="https://example.com/cloud.qcow2")
+        assert raw["storage"]["image"]["url"] == "https://example.com/cloud.qcow2"
+        assert raw["storage"]["image"]["distro"] is None
+
+    def test_image_path_flag_missing_raises(self):
+        raw = _minimal_raw()
+        with pytest.raises(kvm_vm.KVMError, match="Base image not found"):
+            kvm_vm.apply_os_override(raw, image_path="/nonexistent/cloud.qcow2")
+
+    def test_os_variant_flag(self):
+        raw = _minimal_raw()
+        kvm_vm.apply_os_override(raw, os_variant="centos-stream9")
+        assert raw["vm"]["os_variant"] == "centos-stream9"
+
+    def test_no_override_leaves_original(self):
+        raw = _minimal_raw()
+        orig_distro = raw["storage"]["image"]["distro"]
+        kvm_vm.apply_os_override(raw)
+        assert raw["storage"]["image"]["distro"] == orig_distro
+
+
+class TestConfirmReinstall:
+    def test_confirm_yes(self):
+        kvm_vm.confirm_reinstall("web01", yes=True)
+
+    def test_confirm_non_interactive_raises(self):
+        with patch("sys.stdin.isatty", return_value=False):
+            with pytest.raises(kvm_vm.KVMError, match="Refusing destructive reinstall without --yes in non-interactive mode"):
+                kvm_vm.confirm_reinstall("web01", yes=False)
+
+    def test_confirm_interactive_success(self):
+        with patch("sys.stdin.isatty", return_value=True), patch("builtins.input", return_value="web01"):
+            kvm_vm.confirm_reinstall("web01", yes=False)
+
+    def test_confirm_interactive_cancelled(self):
+        with patch("sys.stdin.isatty", return_value=True), patch("builtins.input", return_value="no"):
+            with pytest.raises(kvm_vm.KVMError, match="Reinstall cancelled"):
+                kvm_vm.confirm_reinstall("web01", yes=False)
+
+
+class TestCmdReinstall:
+    def test_domain_not_found_raises(self):
+        args = MagicMock()
+        args.name = "missing01"
+        with patch("kvm_vm.require_commands"), \
+             patch("kvm_vm.require_cloud_seed_generator"), \
+             patch("kvm_vm.ensure_dirs"), \
+             patch("kvm_vm.domain_exists", return_value=False):
+            with pytest.raises(kvm_vm.KVMError, match="Domain does not exist: missing01"):
+                kvm_vm.cmd_reinstall(args)
+
+    def test_domain_not_managed_raises(self):
+        args = MagicMock()
+        args.name = "unmanaged01"
+        with patch("kvm_vm.require_commands"), \
+             patch("kvm_vm.require_cloud_seed_generator"), \
+             patch("kvm_vm.ensure_dirs"), \
+             patch("kvm_vm.domain_exists", return_value=True), \
+             patch("kvm_vm.load_state", return_value=None), \
+             patch("pathlib.Path.exists", return_value=False):
+            with pytest.raises(kvm_vm.KVMError, match="is not managed by kvm-vm"):
+                kvm_vm.cmd_reinstall(args)
+
+    def test_running_without_force_raises(self, tmp_path):
+        def_file = tmp_path / "web01.yaml"
+        def_file.write_text("dummy", encoding="utf-8")
+        args = MagicMock()
+        args.name = "web01"
+        args.force = False
+        with patch("kvm_vm.require_commands"), \
+             patch("kvm_vm.require_cloud_seed_generator"), \
+             patch("kvm_vm.ensure_dirs"), \
+             patch("kvm_vm.domain_exists", return_value=True), \
+             patch("kvm_vm.load_state", return_value={"definition": str(def_file)}), \
+             patch("kvm_vm.domain_state", return_value="running"):
+            with pytest.raises(kvm_vm.KVMError, match="VM is running .* Shut it down first, or use --force"):
+                kvm_vm.cmd_reinstall(args)
+
+    def test_no_base_image_raises(self, tmp_path):
+        raw = {
+            "version": 1,
+            "vm": {"name": "cloned01"},
+            "storage": {"disk_gib": 20},
+            "network": {"mac": "52:54:00:11:22:33", "ipv4": {"method": "dhcp"}},
+            "cloud_init": {"ssh_authorized_keys": ["ssh-ed25519 AAAA... test"]},
+        }
+        def_file = tmp_path / "cloned01.yaml"
+        kvm_vm.yaml_dump(def_file, raw)
+
+        args = MagicMock()
+        args.name = "cloned01"
+        args.force = False
+        args.os = None
+        args.image_url = None
+        args.image_path = None
+        args.os_variant = None
+
+        with patch("kvm_vm.require_commands"), \
+             patch("kvm_vm.require_cloud_seed_generator"), \
+             patch("kvm_vm.ensure_dirs"), \
+             patch("kvm_vm.domain_exists", return_value=True), \
+             patch("kvm_vm.load_state", return_value={"definition": str(def_file)}), \
+             patch("kvm_vm.domain_state", return_value="shut off"):
+            with pytest.raises(kvm_vm.KVMError, match="has no base image configured. Please specify --os"):
+                kvm_vm.cmd_reinstall(args)
+
+    def test_dry_run_updates_os_and_keeps_other_configs(self, tmp_path, capsys):
+        raw = {
+            "version": 1,
+            "vm": {
+                "name": "web01",
+                "vcpus": 4,
+                "memory_mib": 4096,
+                "cpu": "host-passthrough",
+                "autostart": True,
+                "start": True,
+                "os_variant": "ubuntu24.04",
+            },
+            "storage": {
+                "disk_gib": 35,
+                "bus": "virtio",
+                "cache": "none",
+                "discard": "unmap",
+                "image": {"distro": "ubuntu24.04"},
+            },
+            "network": {
+                "mode": "bridge",
+                "bridge": "br0",
+                "model": "virtio",
+                "mac": "52:54:00:aa:bb:cc",
+                "ipv4": {
+                    "method": "static",
+                    "address": "192.168.1.100/24",
+                    "gateway": "192.168.1.1",
+                    "dns": ["1.1.1.1"],
+                },
+                "ipv6": {"method": "disabled"},
+            },
+            "cloud_init": {
+                "user": "sysadmin",
+                "ssh_authorized_keys": ["ssh-ed25519 AAAA... sysadmin@kvm"],
+                "package_update": True,
+                "qemu_guest_agent": True,
+                "packages": ["nginx", "curl"],
+                "timezone": "Asia/Taipei",
+                "runcmd": [["echo", "hello"]],
+            },
+        }
+        def_file = tmp_path / "web01.yaml"
+        kvm_vm.yaml_dump(def_file, raw)
+
+        args = MagicMock()
+        args.name = "web01"
+        args.os = "debian13"
+        args.image_url = None
+        args.image_path = None
+        args.os_variant = None
+        args.dry_run = True
+        args.force = False
+
+        with patch("kvm_vm.require_commands"), \
+             patch("kvm_vm.require_cloud_seed_generator"), \
+             patch("kvm_vm.ensure_dirs"), \
+             patch("kvm_vm.domain_exists", return_value=True), \
+             patch("kvm_vm.load_state", return_value={"definition": str(def_file), "definition_source": str(def_file)}), \
+             patch("kvm_vm.domain_state", return_value="shut off"), \
+             patch("kvm_vm.validate_network_attachment"):
+            ret = kvm_vm.cmd_reinstall(args)
+            assert ret == 0
+
+        captured = capsys.readouterr().out
+        assert "dry-run: all pre-flight checks passed" in captured
+        # Parse the output YAML after the header line
+        yaml_text = "\n".join(captured.splitlines()[1:])
+        cfg = kvm_vm.yaml.safe_load(yaml_text)
+
+        # OS changed to debian13
+        assert cfg["storage"]["image"]["distro"] == "debian13"
+        assert cfg["vm"]["os_variant"] == "debian13"
+
+        # All other configs unchanged!
+        assert cfg["vm"]["name"] == "web01"
+        assert cfg["vm"]["vcpus"] == 4
+        assert cfg["vm"]["memory_mib"] == 4096
+        assert cfg["storage"]["disk_gib"] == 35
+        assert cfg["network"]["mac"] == "52:54:00:aa:bb:cc"
+        assert cfg["network"]["mode"] == "bridge"
+        assert cfg["network"]["bridge"] == "br0"
+        assert cfg["network"]["ipv4"]["method"] == "static"
+        assert cfg["network"]["ipv4"]["address"] == "192.168.1.100/24"
+        assert cfg["cloud_init"]["user"] == "sysadmin"
+        assert cfg["cloud_init"]["packages"] == ["nginx", "curl"]
+        assert cfg["cloud_init"]["timezone"] == "Asia/Taipei"
+
+    def test_reinstall_execution_flow(self, tmp_path):
+        raw = _minimal_raw(network={"mac": "52:54:00:99:88:77", "ipv4": {"method": "dhcp"}})
+        def_file = tmp_path / "test01.yaml"
+        kvm_vm.yaml_dump(def_file, raw)
+
+        disk = tmp_path / "test01.qcow2"
+        disk.touch()
+
+        args = MagicMock()
+        args.name = "test01"
+        args.os = "rocky9"
+        args.image_url = None
+        args.image_path = None
+        args.os_variant = None
+        args.dry_run = False
+        args.yes = True
+        args.force = True
+        args.refresh_image = False
+        args.no_start = False
+
+        mock_base = tmp_path / "base.qcow2"
+        mock_base.touch()
+
+        with patch("kvm_vm.require_commands"), \
+             patch("kvm_vm.require_cloud_seed_generator"), \
+             patch("kvm_vm.ensure_dirs"), \
+             patch("kvm_vm.domain_exists", return_value=True), \
+             patch("kvm_vm.load_state", return_value={"definition": str(def_file), "disk": str(disk)}), \
+             patch("kvm_vm.domain_state", return_value="running"), \
+             patch("kvm_vm.validate_network_attachment"), \
+             patch("kvm_vm.acquire_base_image", return_value=(mock_base, "rocky9")), \
+             patch("kvm_vm.make_disk_from_base") as mock_make_disk, \
+             patch("kvm_vm.restore_selinux"), \
+             patch("kvm_vm.run") as mock_run, \
+             patch("kvm_vm.undefine_domain") as mock_undefine, \
+             patch("kvm_vm.make_cloud_files", return_value=(None, None, None, "iid-123")), \
+             patch("kvm_vm.define_vm") as mock_define, \
+             patch("kvm_vm.save_state") as mock_save:
+
+            # Make make_disk_from_base create the tmp_disk so tmp_disk.replace succeeds
+            def fake_make_disk(base, target, gib):
+                target.touch()
+            mock_make_disk.side_effect = fake_make_disk
+
+            ret = kvm_vm.cmd_reinstall(args)
+            assert ret == 0
+
+            # Verifications
+            mock_make_disk.assert_called_once()
+            called_tmp_disk = mock_make_disk.call_args[0][1]
+            assert str(called_tmp_disk).endswith(".reinstall.tmp")
+
+            mock_run.assert_any_call(["virsh", "-c", kvm_vm.LIBVIRT_URI, "destroy", "test01"])
+            mock_undefine.assert_called_once_with("test01")
+            mock_define.assert_called_once()
+            mock_save.assert_called_once()
+            saved_cfg = mock_save.call_args[0][0]
+            assert saved_cfg["storage"]["image"]["distro"] == "rocky9"
+            assert saved_cfg["network"]["mac"] == "52:54:00:99:88:77"
+
+    def test_make_disk_failure_does_not_destroy_or_undefine_vm(self, tmp_path):
+        raw = _minimal_raw()
+        def_file = tmp_path / "test01.yaml"
+        kvm_vm.yaml_dump(def_file, raw)
+
+        disk = tmp_path / "test01.qcow2"
+        disk.touch()
+
+        args = MagicMock()
+        args.name = "test01"
+        args.os = "debian13"
+        args.image_url = None
+        args.image_path = None
+        args.os_variant = None
+        args.dry_run = False
+        args.yes = True
+        args.force = True
+        args.refresh_image = False
+        args.no_start = False
+
+        mock_base = tmp_path / "base.qcow2"
+        mock_base.touch()
+
+        with patch("kvm_vm.require_commands"), \
+             patch("kvm_vm.require_cloud_seed_generator"), \
+             patch("kvm_vm.ensure_dirs"), \
+             patch("kvm_vm.domain_exists", return_value=True), \
+             patch("kvm_vm.load_state", return_value={"definition": str(def_file), "disk": str(disk)}), \
+             patch("kvm_vm.domain_state", return_value="running"), \
+             patch("kvm_vm.validate_network_attachment"), \
+             patch("kvm_vm.acquire_base_image", return_value=(mock_base, "debian13")), \
+             patch("kvm_vm.make_disk_from_base", side_effect=kvm_vm.KVMError("Out of disk space")), \
+             patch("kvm_vm.run") as mock_run, \
+             patch("kvm_vm.undefine_domain") as mock_undefine:
+
+            with pytest.raises(kvm_vm.KVMError, match="Out of disk space"):
+                kvm_vm.cmd_reinstall(args)
+
+            # Crucial assertion: VM was NOT destroyed and NOT undefined!
+            mock_run.assert_not_called()
+            mock_undefine.assert_not_called()
+            # Original disk still exists
+            assert disk.exists()
+
 

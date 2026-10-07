@@ -35,7 +35,7 @@ except ImportError:
     print("ERROR: PyYAML is required (Debian/Ubuntu: apt install python3-yaml; RHEL-family: dnf install python3-pyyaml)", file=sys.stderr)
     sys.exit(2)
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 LIBVIRT_URI = os.environ.get("KVM_VM_LIBVIRT_URI", "qemu:///system")
 BASE_DIR = Path(os.environ.get("KVM_VM_BASE_DIR", "/var/lib/libvirt/images/base"))
 VM_DIR = Path(os.environ.get("KVM_VM_DISK_DIR", "/var/lib/libvirt/images/vm"))
@@ -970,6 +970,184 @@ def cmd_clone(args: argparse.Namespace) -> int:
     return 0
 
 
+def apply_os_override(
+    raw: Dict[str, Any],
+    os_arg: Optional[str] = None,
+    image_url: Optional[str] = None,
+    image_path: Optional[str] = None,
+    os_variant: Optional[str] = None,
+) -> None:
+    storage = raw.setdefault("storage", {})
+    image = storage.setdefault("image", {})
+    vm = raw.setdefault("vm", {})
+
+    if os_arg:
+        val = os_arg.strip()
+        if val in DISTROS:
+            image["distro"] = val
+            image["url"] = None
+            image["path"] = None
+            image["sha256"] = None
+            vm["os_variant"] = DISTROS[val]["os_variant"]
+        elif val.startswith(("http://", "https://")):
+            image["distro"] = None
+            image["url"] = val
+            image["path"] = None
+            image["sha256"] = None
+        elif Path(val).is_file():
+            image["distro"] = None
+            image["url"] = None
+            image["path"] = str(Path(val).expanduser().resolve())
+            image["sha256"] = None
+        elif "/" in val or "\\" in val or val.endswith((".qcow2", ".img", ".raw")):
+            p = Path(val).expanduser().resolve()
+            if not p.is_file():
+                raise KVMError(f"Base image not found: {val}")
+            image["distro"] = None
+            image["url"] = None
+            image["path"] = str(p)
+            image["sha256"] = None
+        else:
+            distro_list = ", ".join(sorted(DISTROS))
+            raise KVMError(f"Unsupported OS or distro '{val}'. Supported distros: {distro_list}")
+    elif image_url:
+        image["distro"] = None
+        image["url"] = image_url.strip()
+        image["path"] = None
+        image["sha256"] = None
+    elif image_path:
+        p = Path(image_path).expanduser().resolve()
+        if not p.is_file():
+            raise KVMError(f"Base image not found: {p}")
+        image["distro"] = None
+        image["url"] = None
+        image["path"] = str(p)
+        image["sha256"] = None
+
+    if os_variant:
+        vm["os_variant"] = os_variant.strip()
+
+
+def confirm_reinstall(name: str, yes: bool) -> None:
+    if yes:
+        return
+    if not sys.stdin.isatty():
+        raise KVMError("Refusing destructive reinstall without --yes in non-interactive mode")
+    ans = input(f"Reinstall VM '{name}'? Type the VM name to confirm: ")
+    if ans != name:
+        raise KVMError("Reinstall cancelled")
+
+
+def cmd_reinstall(args: argparse.Namespace) -> int:
+    require_commands(["virsh", "virt-install", "qemu-img"])
+    require_cloud_seed_generator()
+    ensure_dirs()
+    name = args.name
+    if not domain_exists(name):
+        raise KVMError(f"Domain does not exist: {name}")
+
+    state = load_state(name)
+    def_path = Path(state["definition"]) if state and state.get("definition") else DEF_DIR / f"{name}.yaml"
+    if not def_path.exists():
+        def_path = DEF_DIR / f"{name}.yaml"
+    if not state and not def_path.exists():
+        raise KVMError(f"VM '{name}' is not managed by kvm-vm")
+    if not def_path.exists():
+        raise KVMError(f"Definition file not found for VM '{name}': {def_path}")
+
+    st = domain_state(name)
+    if is_running_state(st) and not args.force:
+        raise KVMError(f"VM is running ({st}). Shut it down first, or use --force to destroy it before reinstall.")
+
+    raw_cfg = yaml_load(def_path)
+    apply_os_override(
+        raw_cfg,
+        os_arg=getattr(args, "os", None),
+        image_url=getattr(args, "image_url", None),
+        image_path=getattr(args, "image_path", None),
+        os_variant=getattr(args, "os_variant", None),
+    )
+
+    img = dig(raw_cfg, "storage", "image", default={})
+    if not (img.get("distro") or img.get("url") or img.get("path")):
+        raise KVMError(f"VM '{name}' has no base image configured. Please specify --os to reinstall.")
+
+    # Preserve all existing VM configurations; prevent host env vars from altering configs during reinstall.
+    env_keys = [
+        "KVM_VM_NAME", "KVM_VM_VCPUS", "KVM_VM_MEMORY", "KVM_VM_MEMORY_MIB",
+        "KVM_VM_DISK", "KVM_VM_DISK_GIB", "KVM_VM_BRIDGE",
+        "KVM_VM_IPV4", "KVM_VM_GATEWAY", "KVM_VM_DNS", "KVM_VM_OS",
+    ]
+    saved_env: Dict[str, str] = {}
+    for k in env_keys:
+        if k in os.environ:
+            saved_env[k] = os.environ.pop(k)
+    try:
+        cfg = normalize_definition(raw_cfg, for_clone=False)
+    finally:
+        os.environ.update(saved_env)
+
+    if cfg["vm"]["name"] != name:
+        raise KVMError(f"Definition VM name '{cfg['vm']['name']}' does not match target VM '{name}'")
+
+    validate_network_attachment(cfg["network"])
+
+    source_dir = def_path.parent
+    if state and state.get("definition_source"):
+        cand = Path(state["definition_source"]).parent
+        if cand.exists():
+            source_dir = cand
+    resolve_ssh_keys(cfg["cloud_init"]["ssh_authorized_keys"], source_dir)
+
+    if args.dry_run:
+        print("dry-run: all pre-flight checks passed")
+        print(yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True))
+        return 0
+
+    confirm_reinstall(name, args.yes)
+
+    base, default_variant = acquire_base_image(cfg, args.refresh_image)
+    disk = Path(state["disk"]) if state and state.get("disk") else (VM_DIR / f"{name}.qcow2")
+    tmp_disk = disk.with_name(f"{disk.name}.reinstall.tmp")
+    if tmp_disk.exists():
+        tmp_disk.unlink()
+
+    try:
+        make_disk_from_base(base, tmp_disk, int(cfg["storage"]["disk_gib"]))
+        restore_selinux([tmp_disk])
+    except Exception:
+        if tmp_disk.exists():
+            tmp_disk.unlink()
+        raise
+
+    try:
+        if is_running_state(domain_state(name)):
+            run(["virsh", "-c", LIBVIRT_URI, "destroy", name])
+        undefine_domain(name)
+        if disk.exists():
+            disk.unlink()
+        tmp_disk.replace(disk)
+        restore_selinux([disk])
+        _, _, _, instance_id = make_cloud_files(cfg, source_dir)
+        seed = CLOUD_DIR / name / "seed.img"
+        define_vm(cfg, disk, seed, default_variant, no_start=args.no_start)
+        orig_def = Path(state["definition_source"]) if state and state.get("definition_source") else def_path
+        save_state(cfg, disk, {"type": "base-image", "path": str(base)}, instance_id, orig_def)
+    except Exception:
+        cleanup_failed(name, disk)
+        raise
+    finally:
+        if tmp_disk.exists():
+            tmp_disk.unlink()
+
+    print(f"Reinstalled VM: {name}")
+    print(f"Definition:     {DEF_DIR / (name + '.yaml')}")
+    print(f"Disk:           {disk}")
+    if not args.no_start and cfg["vm"]["start"]:
+        print(f"Console:        kvm-vm console {name}")
+    return 0
+
+
 def dominfo_map(name: str) -> Dict[str, str]:
     p = run(["virsh", "-c", LIBVIRT_URI, "dominfo", name], capture=True)
     out: Dict[str, str] = {}
@@ -1159,6 +1337,20 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--no-start", action="store_true", help="Define the clone but do not boot it")
     q.add_argument("--dry-run", action="store_true", help="Run all pre-flight checks but do not clone the VM")
     q.set_defaults(func=cmd_clone)
+
+    q = sp.add_parser("reinstall", help="Reinstall an existing VM OS while keeping other configurations unchanged")
+    q.add_argument("name", help="VM domain name to reinstall")
+    os_grp = q.add_mutually_exclusive_group()
+    os_grp.add_argument("--os", help=f"New operating system distro ({', '.join(sorted(DISTROS))}) or cloud image URL/path")
+    os_grp.add_argument("--image-url", help="Cloud image URL to reinstall with")
+    os_grp.add_argument("--image-path", help="Local cloud image path to reinstall with")
+    q.add_argument("--os-variant", help="libvirt/osinfo OS variant name")
+    q.add_argument("--refresh-image", action="store_true", help="Redownload a URL/distro base image")
+    q.add_argument("--no-start", action="store_true", help="Define the VM but do not boot it")
+    q.add_argument("--force", action="store_true", help="Destroy a running VM before reinstalling")
+    q.add_argument("--yes", action="store_true", help="Skip interactive confirmation")
+    q.add_argument("--dry-run", action="store_true", help="Run all pre-flight checks but do not reinstall the VM")
+    q.set_defaults(func=cmd_reinstall)
 
     q = sp.add_parser("list", help="List libvirt VMs")
     q.add_argument("--managed", action="store_true", help="Show only VMs managed by kvm-vm")
