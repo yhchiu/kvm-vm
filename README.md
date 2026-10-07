@@ -156,6 +156,47 @@ preferable to a moving `current`/`latest` distro alias.
 Each VM receives a **full independent qcow2 disk**. Existing VMs do not depend on the
 cached base image, so refreshing or deleting a base image cannot break them.
 
+### Connect to a VM
+
+After the VM is created and cloud-init completes its initial provisioning:
+
+1. **Find the assigned IP address**:
+
+```bash
+kvm-vm list --ips
+# or detailed status:
+kvm-vm status web01
+```
+
+2. **Connect via SSH**:
+
+Connect using the username defined in `cloud_init.user` (default in examples: `admin`) and your matching private key:
+
+```bash
+ssh admin@<vm-ip> -i ~/.ssh/id_ed25519
+```
+
+### Security policy (SSH key-only)
+
+By default, `kvm-vm` provisions instances with a strict production-grade security policy:
+- **SSH key-only**: `ssh_pwauth: false` disables password login over SSH.
+- **Locked password**: `lock_passwd: true` locks the default user account password.
+- **Root login disabled**: `disable_root: true` prevents direct root login.
+
+> [!IMPORTANT]
+> **Console login requires manual password configuration**:
+> Because user passwords are locked by default, you **cannot** log into the serial console (`kvm-vm console <vm>`) with a password out-of-the-box.
+> If you need console login access (e.g. for emergency out-of-band recovery without network connectivity), you must explicitly set a password in the YAML definition prior to creation via `runcmd`:
+>
+> ```yaml
+> cloud_init:
+>   user: admin
+>   ssh_authorized_keys:
+>     - file:~/.ssh/id_ed25519.pub
+>   runcmd:
+>     - "echo 'admin:YourPasswordHere' | chpasswd"
+> ```
+
 ## YAML definition
 
 Example:
@@ -347,6 +388,8 @@ kvm-vm console web01
 ```
 
 Exit `virsh console` with `Ctrl+]`.
+
+> **Note**: As detailed in [Security policy](#security-policy-ssh-key-only), user passwords are locked by default (`lock_passwd: true`). If you need to log into the console via keyboard, you must explicitly set a password in `cloud_init.runcmd` before creating the VM.
 
 ## Safe delete behavior
 
