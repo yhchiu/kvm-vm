@@ -24,16 +24,26 @@ kvm-vm validate <vm.yaml> [--clone]
 
 ## Host dependencies
 
+### Python requirements
+- **Python 3.8+**
+- **Runtime dependencies**: `PyYAML` (`python3-yaml` on Debian/Ubuntu, `python3-pyyaml` on RHEL-family, or `pip install pyyaml`). All other modules use the Python standard library.
+- **No C bindings required**: `kvm-vm` intentionally uses standard CLI tools (`virsh`, `virt-install`, `qemu-img`) via subprocess and does **not** require `libvirt-python` C bindings, avoiding compilation and ABI mismatch issues.
+- **Testing (optional)**: `pytest` (`python3-pytest` or `pip install pytest`) for running the test suite.
+
+### System packages
+
 Debian / Ubuntu (package names may vary slightly by release):
 
 ```bash
 apt install \
   qemu-system-x86 qemu-utils \
   libvirt-daemon-system libvirt-clients \
-  virtinst cloud-image-utils \
+  virt-install cloud-image-utils \
   python3 python3-yaml \
-  libguestfs-tools libosinfo-bin iproute2
+  guestfs-tools libosinfo-bin iproute2 openssh-client
 ```
+
+*(Note: On Debian 11 or older releases, use `virtinst` instead of `virt-install`, and `libguestfs-tools` instead of `guestfs-tools`)*
 
 RHEL / Rocky / Alma family:
 
@@ -41,7 +51,7 @@ RHEL / Rocky / Alma family:
 dnf install \
   qemu-kvm libvirt virt-install \
   genisoimage python3-pyyaml \
-  libguestfs-tools libosinfo iproute
+  libguestfs-tools libosinfo iproute openssh-clients
 ```
 
 For building cloud-init seed images, `kvm-vm` automatically detects and uses any available tool: `cloud-localds` (from `cloud-image-utils` / `cloud-utils`), `genisoimage`, `mkisofs`, or `xorriso`.

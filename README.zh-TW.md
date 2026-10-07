@@ -22,16 +22,26 @@ kvm-vm validate <vm.yaml> [--clone]
 
 ## 主機依賴套件
 
+### Python 需求
+- **Python 3.8+**
+- **執行期相依套件**：`PyYAML`（Debian/Ubuntu 為 `python3-yaml`，RHEL 系列為 `python3-pyyaml`，或 `pip install pyyaml`）。其餘模組全數使用 Python 標準函式庫。
+- **無須 C 語言綁定套件**：`kvm-vm` 刻意透過 subprocess 調用系統標準 CLI 工具（`virsh`、`virt-install`、`qemu-img`），**不依賴 `libvirt-python`**，避免因宿主機 libvirt 版本不同產生編譯或 ABI 相容性問題。
+- **測試相依套件（選用）**：`pytest`（Debian/Ubuntu 為 `python3-pytest`，或 `pip install pytest`），用於執行單元測試與 E2E 測試。
+
+### 系統套件
+
 Debian / Ubuntu（套件名稱可能因發行版本而略有不同）：
 
 ```bash
 apt install \
   qemu-system-x86 qemu-utils \
   libvirt-daemon-system libvirt-clients \
-  virtinst cloud-image-utils \
+  virt-install cloud-image-utils \
   python3 python3-yaml \
-  libguestfs-tools libosinfo-bin iproute2
+  guestfs-tools libosinfo-bin iproute2 openssh-client
 ```
+
+*(附註：在 Debian 11 或較舊的發行版上，請使用 `virtinst` 代替 `virt-install`，並使用 `libguestfs-tools` 代替 `guestfs-tools`)*
 
 RHEL / Rocky / Alma 系列：
 
@@ -39,7 +49,7 @@ RHEL / Rocky / Alma 系列：
 dnf install \
   qemu-kvm libvirt virt-install \
   genisoimage python3-pyyaml \
-  libguestfs-tools libosinfo iproute
+  libguestfs-tools libosinfo iproute openssh-clients
 ```
 
 建立 cloud-init seed 映像檔時，`kvm-vm` 會自動偵測並優先使用宿主機上可用的工具：`cloud-localds`（來自 `cloud-image-utils` 或 `cloud-utils`）、`genisoimage`、`mkisofs` 或 `xorriso`。
