@@ -635,3 +635,33 @@ normalizer. It does not require a running libvirt daemon.
 ```bash
 bash tests/smoke.sh
 ```
+
+### End-to-end (E2E) tests
+
+Real-machine E2E tests execute actual VM provisioning against libvirt/KVM:
+- Download cloud base image (default: Debian 12)
+- Generate cloud-init seed ISO and deploy VM with NAT networking
+- Wait for DHCP lease IP and verify SSH connectivity, hostname, and user creation
+- Verify `kvm-vm status` and `kvm-vm list` outputs
+- Offline VM cloning with `virt-sysprep` and verify cloned guest connectivity
+- In-place OS reinstallation with `--force --yes`
+- Complete deletion and storage cleanup verification
+
+**Prerequisites:**
+- Linux host with hardware virtualization (`/dev/kvm`)
+- `root` privileges (run with `sudo`)
+- Running libvirt daemon with active `default` NAT virtual network
+- Required CLI tools (`virsh`, `virt-install`, `qemu-img`, `virt-sysprep`, `cloud-localds`/`genisoimage`/`xorriso`, `ssh`)
+
+Run the pre-flight checks and E2E test suite:
+
+```bash
+sudo bash tests/run_e2e.sh
+```
+
+Or target a specific distro:
+
+```bash
+sudo bash tests/run_e2e.sh --distro ubuntu24.04 -v
+```
+
