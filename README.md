@@ -176,26 +176,10 @@ Connect using the username defined in `cloud_init.user` (default in examples: `a
 ssh admin@<vm-ip> -i ~/.ssh/id_ed25519
 ```
 
-### Security policy (SSH key-only)
-
-By default, `kvm-vm` provisions instances with a strict production-grade security policy:
-- **SSH key-only**: `ssh_pwauth: false` disables password login over SSH.
-- **Locked password**: `lock_passwd: true` locks the default user account password.
-- **Root login disabled**: `disable_root: true` prevents direct root login.
-
-> [!IMPORTANT]
-> **Console login requires manual password configuration**:
-> Because user passwords are locked by default, you **cannot** log into the serial console (`kvm-vm console <vm>`) with a password out-of-the-box.
-> If you need console login access (e.g. for emergency out-of-band recovery without network connectivity), you must explicitly set a password in the YAML definition prior to creation via `runcmd`:
->
-> ```yaml
-> cloud_init:
->   user: admin
->   ssh_authorized_keys:
->     - file:~/.ssh/id_ed25519.pub
->   runcmd:
->     - "echo 'admin:YourPasswordHere' | chpasswd"
-> ```
+> [!NOTE]
+> **SSH key-only security policy**:
+> `kvm-vm` provisions instances with SSH password authentication and direct root login disabled (`lock_passwd: true`, `ssh_pwauth: false`, `disable_root: true`).
+> See [Security policy & out-of-band recovery](#security-policy-and-out-of-band-recovery) for details on root password configuration, console login, and emergency SSH key recovery.
 
 ## YAML definition
 
@@ -389,7 +373,71 @@ kvm-vm console web01
 
 Exit `virsh console` with `Ctrl+]`.
 
-> **Note**: As detailed in [Security policy](#security-policy-ssh-key-only), user passwords are locked by default (`lock_passwd: true`). If you need to log into the console via keyboard, you must explicitly set a password in `cloud_init.runcmd` before creating the VM.
+> **Note**: As detailed in [Security policy](#security-policy-and-out-of-band-recovery), user passwords are locked by default (`lock_passwd: true`). If you need to log into the console via keyboard, see [Root password configuration](#root-password-configuration) below.
+
+## Security policy and out-of-band recovery
+
+By default, `kvm-vm` provisions instances with a strict production-grade security policy via cloud-init:
+- **SSH key-only**: `ssh_pwauth: false` disables password login over SSH.
+- **Locked password**: `lock_passwd: true` locks the default user account password.
+- **Root login disabled**: `disable_root: true` prevents direct root login.
+
+Because passwords are locked by default, you **cannot** log into the serial console (`kvm-vm console <vm>`) with a password out-of-the-box. When you need emergency console access or need to recover from lost credentials, use the out-of-band methods below.
+
+### Root password configuration
+
+To configure a root password for local serial console login:
+
+1. **Recommended method (out-of-band via `virt-customize`)**:
+   Shut down the VM, then inject the root password from standard input. This is strongly recommended because it avoids leaking plaintext passwords in definition YAML files, shell history (`~/.bash_history`), or process tables (`ps`):
+
+   ```bash
+   # 1. Shut down the VM first
+   virsh shutdown web01
+
+   # 2. Securely inject root password from stdin
+   virt-customize -d web01 --root-password file:/dev/stdin
+   # (enter your password and press Enter, then Ctrl+D)
+   ```
+
+   Alternatively, pass a secured temporary file or target the disk image directly:
+
+   ```bash
+   virt-customize -a /var/lib/libvirt/images/vm/web01.qcow2 --root-password file:/path/to/file
+   ```
+
+2. **During initial creation (via `runcmd`)**:
+   You can also set a password during creation in the YAML definition (note: the password is stored in plaintext in the YAML file):
+
+   ```yaml
+   cloud_init:
+     user: admin
+     ssh_authorized_keys:
+       - file:~/.ssh/id_ed25519.pub
+     runcmd:
+       - "echo 'root:YourPasswordHere' | chpasswd"
+   ```
+
+### SSH key recovery
+
+If you lose your private SSH key or need to authorize a new key without console access:
+
+1. Shut down the VM:
+   ```bash
+   virsh shutdown web01
+   ```
+
+2. Inject the new public key directly into the VM disk using `virt-customize`:
+   ```bash
+   virt-customize -d web01 --ssh-inject admin:file:/path/to/new_key.pub
+   ```
+   *(Or by disk path: `virt-customize -a /var/lib/libvirt/images/vm/web01.qcow2 --ssh-inject admin:file:~/.ssh/id_ed25519.pub`)*
+
+3. Start the VM and log in with your new key:
+   ```bash
+   virsh start web01
+   ssh admin@<vm-ip> -i /path/to/new_key
+   ```
 
 ## Safe delete behavior
 
