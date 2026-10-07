@@ -729,7 +729,7 @@ def make_cloud_files(cfg: Dict[str, Any], source_def_dir: Path) -> Tuple[Path, P
     elif ipv4.get("method") == "static":
         eth["dhcp4"] = False
         eth["addresses"] = [ipv4["address"]]
-        eth["routes"] = [{"to": "default", "via": ipv4["gateway"]}]
+        eth["routes"] = [{"to": "0.0.0.0/0", "via": ipv4["gateway"]}]
         if ipv4.get("dns"):
             eth["nameservers"] = {"addresses": ipv4["dns"]}
     else:
