@@ -49,10 +49,15 @@ RHEL / Rocky / Alma family:
 
 ```bash
 dnf install \
-  qemu-kvm libvirt virt-install \
-  genisoimage python3-pyyaml \
-  libguestfs-tools libosinfo iproute openssh-clients
+  qemu-kvm qemu-img libvirt virt-install \
+  xorriso python3 python3-pyyaml \
+  guestfs-tools libosinfo iproute openssh-clients
+
+# Start and enable libvirt daemon (RHEL does not start services automatically)
+sudo systemctl enable --now libvirtd
 ```
+
+*(Note: On RHEL 8 / Rocky 8 or older releases, use `genisoimage` instead of `xorriso`, and `libguestfs-tools` instead of `guestfs-tools`)*
 
 For building cloud-init seed images, `kvm-vm` automatically detects and uses any available tool: `cloud-localds` (from `cloud-image-utils` / `cloud-utils`), `genisoimage`, `mkisofs`, or `xorriso`.
 
