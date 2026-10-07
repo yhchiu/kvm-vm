@@ -482,7 +482,86 @@ class TestCloudSeed:
             mock_selinux.assert_called_once_with([seed])
 
 
+class TestMakeCloudFiles:
+    def test_static_ipv4_uses_cidr_default_route(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(kvm_vm, "CLOUD_DIR", tmp_path / "cloud-init")
+        raw = _minimal_raw(
+            network={
+                "mode": "bridge",
+                "bridge": "br0",
+                "mac": "52:54:00:11:22:33",
+                "ipv4": {
+                    "method": "static",
+                    "address": "192.168.10.50/24",
+                    "gateway": "192.168.10.1",
+                    "dns": ["8.8.8.8"],
+                },
+            }
+        )
+        cfg = kvm_vm.normalize_definition(raw)
+        with patch("kvm_vm.create_cloud_seed"):
+            ud, md, nc, iid = kvm_vm.make_cloud_files(cfg, tmp_path)
+
+        import yaml
+        net_data = yaml.safe_load(nc.read_text(encoding="utf-8"))
+        assert net_data["version"] == 2
+        eth0 = net_data["ethernets"]["eth0"]
+        assert eth0["dhcp4"] is False
+        assert eth0["addresses"] == ["192.168.10.50/24"]
+        # Must be 0.0.0.0/0 rather than 'default' so cloud-init's NetworkState parser accepts it
+        assert eth0["routes"] == [{"to": "0.0.0.0/0", "via": "192.168.10.1"}]
+        assert eth0["nameservers"]["addresses"] == ["8.8.8.8"]
+
+    def test_static_ipv6_uses_cidr_default_route(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(kvm_vm, "CLOUD_DIR", tmp_path / "cloud-init")
+        raw = _minimal_raw(
+            network={
+                "mode": "bridge",
+                "bridge": "br0",
+                "mac": "52:54:00:11:22:33",
+                "ipv4": {"method": "disabled"},
+                "ipv6": {
+                    "method": "static",
+                    "address": "2001:db8::10/64",
+                    "gateway": "2001:db8::1",
+                },
+            }
+        )
+        cfg = kvm_vm.normalize_definition(raw)
+        with patch("kvm_vm.create_cloud_seed"):
+            ud, md, nc, iid = kvm_vm.make_cloud_files(cfg, tmp_path)
+
+        import yaml
+        net_data = yaml.safe_load(nc.read_text(encoding="utf-8"))
+        eth0 = net_data["ethernets"]["eth0"]
+        assert eth0["dhcp4"] is False
+        assert eth0["dhcp6"] is False
+        assert eth0["addresses"] == ["2001:db8::10/64"]
+        assert eth0["routes"] == [{"to": "::/0", "via": "2001:db8::1"}]
+
+    def test_dhcp_network_config(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(kvm_vm, "CLOUD_DIR", tmp_path / "cloud-init")
+        raw = _minimal_raw(
+            network={
+                "mode": "nat",
+                "libvirt_network": "default",
+                "mac": "52:54:00:11:22:33",
+                "ipv4": {"method": "dhcp"},
+            }
+        )
+        cfg = kvm_vm.normalize_definition(raw)
+        with patch("kvm_vm.create_cloud_seed"):
+            ud, md, nc, iid = kvm_vm.make_cloud_files(cfg, tmp_path)
+
+        import yaml
+        net_data = yaml.safe_load(nc.read_text(encoding="utf-8"))
+        eth0 = net_data["ethernets"]["eth0"]
+        assert eth0["dhcp4"] is True
+        assert "routes" not in eth0
+
+
 # --- reinstall tests ---
+
 
 class TestApplyOsOverride:
     def test_distro_override(self):
