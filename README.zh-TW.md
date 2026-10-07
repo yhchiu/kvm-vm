@@ -47,10 +47,15 @@ RHEL / Rocky / Alma 系列：
 
 ```bash
 dnf install \
-  qemu-kvm libvirt virt-install \
-  genisoimage python3-pyyaml \
-  libguestfs-tools libosinfo iproute openssh-clients
+  qemu-kvm qemu-img libvirt virt-install \
+  xorriso python3 python3-pyyaml \
+  guestfs-tools libosinfo iproute openssh-clients
+
+# 啟動並設定開機自啟 libvirt 服務（RHEL 系列安裝後預設不會自動啟動服務）
+sudo systemctl enable --now libvirtd
 ```
+
+*(附註：在 RHEL 8 / Rocky 8 等較舊的發行版上，請使用 `genisoimage` 代替 `xorriso`，並使用 `libguestfs-tools` 代替 `guestfs-tools`)*
 
 建立 cloud-init seed 映像檔時，`kvm-vm` 會自動偵測並優先使用宿主機上可用的工具：`cloud-localds`（來自 `cloud-image-utils` 或 `cloud-utils`）、`genisoimage`、`mkisofs` 或 `xorriso`。
 
