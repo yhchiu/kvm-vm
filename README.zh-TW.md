@@ -110,6 +110,8 @@ sudo KVM_VM_OS=debian13 KVM_VM_NAME=web02 KVM_VM_VCPUS=16 KVM_VM_DISK=100 \
 
 此範例以 `examples/ubuntu24-web01.yaml` 作為基礎定義，透過環境變數覆寫了作業系統、名稱、資源規格與 IP 位址，在不需撰寫新 YAML 檔案的情況下建立一台完全不同的虛擬機器（`web02`）。
 
+### 發行版別名
+
 `create` 目前支援以下內建的便捷發行版別名（distro aliases）：
 
 ```text
@@ -468,7 +470,7 @@ kvm-vm reinstall web01 --os debian13
 
 ### 選項參數
 
-- `--os <distro|url|path>`：發行版別名（`ubuntu24.04`、`ubuntu26.04`、`debian12`、`debian13`、`rocky8`、`rocky9`、`rocky10`、`almalinux8`、`almalinux9`、`almalinux10`）、自訂映像檔 URL 或本機映像檔路徑。
+- `--os <distro|url|path>`：發行版別名（詳見[發行版別名](#發行版別名)）、自訂映像檔 URL 或本機映像檔路徑。
 - `--image-url <url>`：明確指定雲端映像檔下載 URL。
 - `--image-path <path>`：明確指定本機雲端映像檔路徑。
 - `--os-variant <variant>`：指定供 `virt-install` 最佳化使用的 libosinfo OS variant 名稱。
