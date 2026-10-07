@@ -149,6 +149,47 @@ storage:
 
 每個虛擬機器都會取得一個**完整且獨立的 qcow2 磁碟**。已存在的虛擬機器不會依賴快取的基底映像檔，因此重新整理（refresh）或刪除基底映像檔都不會影響到它們。
 
+### 連線至虛擬機器
+
+虛擬機器建立並完成 cloud-init 首次初始化後：
+
+1. **查詢獲配的 IP 位址**：
+
+```bash
+kvm-vm list --ips
+# 或檢視詳細狀態：
+kvm-vm status web01
+```
+
+2. **透過 SSH 連線**：
+
+使用定義檔中 `cloud_init.user` 所設定的使用者名稱（範例預設為 `admin`）及對應的 SSH 私鑰連線：
+
+```bash
+ssh admin@<vm-ip> -i ~/.ssh/id_ed25519
+```
+
+### 安全策略（僅限 SSH 金鑰登入）
+
+`kvm-vm` 預設透過 cloud-init 套用嚴格的生產級安全策略：
+- **僅限 SSH 金鑰**：`ssh_pwauth: false` 禁用 SSH 密碼認證。
+- **使用者密碼鎖定**：`lock_passwd: true` 鎖定預設使用者的密碼。
+- **禁用 root 登入**：`disable_root: true` 防止直接以 root 身分登入。
+
+> [!IMPORTANT]
+> **主控台登入需手動設定密碼**：
+> 由於使用者密碼預設為鎖定狀態，剛建立的虛擬機器**無法直接透過序列主控台（`kvm-vm console <vm>`）進行密碼登入**。
+> 若需要主控台登入權限（例如無網路時的帶外救援維護），請在建立 VM 前於 YAML 定義檔中透過 `runcmd` 自行設定密碼：
+>
+> ```yaml
+> cloud_init:
+>   user: admin
+>   ssh_authorized_keys:
+>     - file:~/.ssh/id_ed25519.pub
+>   runcmd:
+>     - "echo 'admin:YourPasswordHere' | chpasswd"
+> ```
+
 ## YAML 定義範例
 
 範例：
@@ -326,6 +367,8 @@ kvm-vm console web01
 ```
 
 使用 `Ctrl+]` 退出 `virsh console`。
+
+> **附註**：如[安全策略](#安全策略僅限-ssh-金鑰登入)所述，使用者密碼預設為鎖定狀態（`lock_passwd: true`）。若需從主控台登入，請於建立前在 `cloud_init.runcmd` 設定密碼。
 
 ## 安全刪除機制
 
