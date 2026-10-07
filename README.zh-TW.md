@@ -99,9 +99,15 @@ sudo KVM_VM_OS=debian13 KVM_VM_NAME=web02 KVM_VM_VCPUS=16 KVM_VM_DISK=100 \
 
 ```text
 ubuntu24.04
+ubuntu26.04
+debian12
 debian13
+rocky8
 rocky9
+rocky10
+almalinux8
 almalinux9
+almalinux10
 ```
 
 您也可以改為提供自訂的映像檔：
@@ -356,7 +362,7 @@ kvm-vm reinstall web01 --os debian13
 
 ### 選項參數
 
-- `--os <distro|url|path>`：發行版別名（`ubuntu24.04`、`debian13`、`rocky9`、`almalinux9`）、自訂映像檔 URL 或本機映像檔路徑。
+- `--os <distro|url|path>`：發行版別名（`ubuntu24.04`、`ubuntu26.04`、`debian12`、`debian13`、`rocky8`、`rocky9`、`rocky10`、`almalinux8`、`almalinux9`、`almalinux10`）、自訂映像檔 URL 或本機映像檔路徑。
 - `--image-url <url>`：明確指定雲端映像檔下載 URL。
 - `--image-path <path>`：明確指定本機雲端映像檔路徑。
 - `--os-variant <variant>`：指定供 `virt-install` 最佳化使用的 libosinfo OS variant 名稱。
@@ -533,20 +539,15 @@ storage:
 
 ### 2. 在 `kvm-vm` 中新增發行版別名
 
-若想使用如 `distro: ubuntu26.04` 或 `distro: rocky10` 這類簡短別名，可在 `kvm-vm` 腳本中的 `DISTROS` 字典加入項目：
+若想為其他發行版使用簡短別名（例如 `distro: fedora41`），可在 `kvm-vm` 腳本中的 `DISTROS` 字典加入項目：
 
 ```python
 DISTROS = {
     ...
-    "ubuntu26.04": {
-        "url": "https://cloud-images.ubuntu.com/resolute/current/resolute-server-cloudimg-amd64.img",
-        "cache": "ubuntu-26.04-server-cloudimg-amd64.img",
-        "os_variant": "ubuntu26.04",
-    },
-    "rocky10": {
-        "url": "https://download.rockylinux.org/pub/rocky/10/images/x86_64/Rocky-10-GenericCloud-Base.latest.x86_64.qcow2",
-        "cache": "Rocky-10-GenericCloud-Base.latest.x86_64.qcow2",
-        "os_variant": "rocky9",  # 若主機 libosinfo 尚未識別 rocky10，可回退使用
+    "fedora41": {
+        "url": "https://download.fedoraproject.org/pub/fedora/linux/releases/41/Cloud/x86_64/images/Fedora-Cloud-Base-Generic.x86_64-41-1.4.qcow2",
+        "cache": "Fedora-Cloud-Base-Generic.x86_64-41-1.4.qcow2",
+        "os_variant": "fedora41",
     },
 }
 ```

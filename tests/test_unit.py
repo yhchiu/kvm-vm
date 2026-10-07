@@ -819,3 +819,37 @@ class TestCmdReinstall:
             assert disk.exists()
 
 
+# --- distro support tests ---
+
+class TestSupportedDistros:
+    @pytest.mark.parametrize("distro", [
+        "debian12", "debian13",
+        "ubuntu24.04", "ubuntu26.04",
+        "rocky8", "rocky9", "rocky10",
+        "almalinux8", "almalinux9", "almalinux10",
+    ])
+    def test_distro_metadata_complete(self, distro):
+        assert distro in kvm_vm.DISTROS
+        meta = kvm_vm.DISTROS[distro]
+        assert meta["url"].startswith("https://")
+        assert meta["cache"].endswith((".img", ".qcow2"))
+        assert isinstance(meta["os_variant"], str) and len(meta["os_variant"]) > 0
+
+    @pytest.mark.parametrize("distro", [
+        "debian12", "ubuntu26.04", "rocky8", "rocky10", "almalinux8", "almalinux10",
+    ])
+    def test_new_distros_normalize_definition(self, distro):
+        raw = _minimal_raw(storage={"image": {"distro": distro}})
+        cfg = kvm_vm.normalize_definition(raw)
+        assert cfg["storage"]["image"]["distro"] == distro
+
+    @pytest.mark.parametrize("distro", [
+        "debian12", "ubuntu26.04", "rocky8", "rocky10", "almalinux8", "almalinux10",
+    ])
+    def test_new_distros_apply_os_override(self, distro):
+        raw = _minimal_raw()
+        kvm_vm.apply_os_override(raw, os_arg=distro)
+        assert raw["storage"]["image"]["distro"] == distro
+        assert raw["vm"]["os_variant"] == kvm_vm.DISTROS[distro]["os_variant"]
+
+

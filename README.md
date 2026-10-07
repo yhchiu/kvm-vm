@@ -104,9 +104,15 @@ This takes `examples/ubuntu24-web01.yaml` as the base definition and overrides t
 
 ```text
 ubuntu24.04
+ubuntu26.04
+debian12
 debian13
+rocky8
 rocky9
+rocky10
+almalinux8
 almalinux9
+almalinux10
 ```
 
 You may instead provide your own image:
@@ -378,7 +384,7 @@ kvm-vm reinstall web01 --os debian13
 
 ### Options
 
-- `--os <distro|url|path>`: Distro alias (`ubuntu24.04`, `debian13`, `rocky9`, `almalinux9`), custom image URL, or local image path.
+- `--os <distro|url|path>`: Distro alias (`ubuntu24.04`, `ubuntu26.04`, `debian12`, `debian13`, `rocky8`, `rocky9`, `rocky10`, `almalinux8`, `almalinux9`, `almalinux10`), custom image URL, or local image path.
 - `--image-url <url>`: Explicitly specify a cloud image URL.
 - `--image-path <path>`: Explicitly specify a local cloud image path.
 - `--os-variant <variant>`: Specify a libosinfo OS variant for `virt-install`.
@@ -567,20 +573,15 @@ storage:
 
 ### 2. Adding new distro aliases to `kvm-vm`
 
-To enable convenient shorthand like `distro: ubuntu26.04` or `distro: rocky10`, add an entry to the `DISTROS` dictionary in `kvm-vm`:
+To enable convenient shorthand for other distributions (e.g. `distro: fedora41`), add an entry to the `DISTROS` dictionary in `kvm-vm`:
 
 ```python
 DISTROS = {
     ...
-    "ubuntu26.04": {
-        "url": "https://cloud-images.ubuntu.com/resolute/current/resolute-server-cloudimg-amd64.img",
-        "cache": "ubuntu-26.04-server-cloudimg-amd64.img",
-        "os_variant": "ubuntu26.04",
-    },
-    "rocky10": {
-        "url": "https://download.rockylinux.org/pub/rocky/10/images/x86_64/Rocky-10-GenericCloud-Base.latest.x86_64.qcow2",
-        "cache": "Rocky-10-GenericCloud-Base.latest.x86_64.qcow2",
-        "os_variant": "rocky9",  # Fallback if host libosinfo does not recognize rocky10 yet
+    "fedora41": {
+        "url": "https://download.fedoraproject.org/pub/fedora/linux/releases/41/Cloud/x86_64/images/Fedora-Cloud-Base-Generic.x86_64-41-1.4.qcow2",
+        "cache": "Fedora-Cloud-Base-Generic.x86_64-41-1.4.qcow2",
+        "os_variant": "fedora41",
     },
 }
 ```
