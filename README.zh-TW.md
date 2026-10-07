@@ -597,3 +597,33 @@ python3 -m pytest tests/test_unit.py -v
 ```bash
 bash tests/smoke.sh
 ```
+
+### 端到端測試（E2E tests）
+
+實機端到端測試會在真實的 Linux KVM/libvirt 主機上執行完整的 VM 生命週期驗證：
+- 下載雲端基礎映像檔（預設：Debian 12）
+- 產生 cloud-init seed ISO 並透過 NAT 虛擬網路建立虛擬機
+- 等待 DHCP 租約 IP 並驗證 SSH 連線、主機名設定與使用者建立
+- 驗證 `kvm-vm status` 與 `kvm-vm list` 輸出結果
+- 停機進行 `kvm-vm clone` 複製並由 `virt-sysprep` 重置系統後開機連線
+- 測試 `kvm-vm reinstall --force --yes` 線上重裝作業系統
+- 完整刪除與儲存檔案清理驗證
+
+**前置需求：**
+- 具備硬體虛擬化（`/dev/kvm`）的 Linux 主機
+- `root` 執行權限（需使用 `sudo`）
+- 運作中的 libvirt 守護行程以及已啟動的 `default` NAT 虛擬網路
+- 必要 CLI 工具（`virsh`、`virt-install`、`qemu-img`、`virt-sysprep`、`cloud-localds`/`genisoimage`/`xorriso`、`ssh`）
+
+執行前置環境檢查與 E2E 測試：
+
+```bash
+sudo bash tests/run_e2e.sh
+```
+
+或指定特定發行版與詳細輸出：
+
+```bash
+sudo bash tests/run_e2e.sh --distro ubuntu24.04 -v
+```
+
