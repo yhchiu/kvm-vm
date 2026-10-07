@@ -12,6 +12,7 @@ repeatable VM provisioning much safer than ad-hoc `virt-install` command lines.
 ```text
 kvm-vm create <vm.yaml> [--refresh-image] [--no-start] [--dry-run]
 kvm-vm clone <source-vm> <target.yaml> [--no-start] [--dry-run]
+kvm-vm reinstall <vm> [--os <os>] [--image-url <url>] [--image-path <path>] [--refresh-image] [--no-start] [--dry-run] [--yes] [--force]
 kvm-vm list [--managed] [--ips]
 kvm-vm status <vm>
 kvm-vm console <vm>
@@ -341,6 +342,35 @@ kvm-vm delete web01 --keep-storage
 
 The state/definition is retained in this case to avoid silently orphaning storage.
 
+## Reinstall a VM
+
+Reinstalling an existing managed VM provisions a fresh operating system disk from a base cloud image while preserving all other VM configurations (vCPUs, RAM, disk capacity, assigned MAC address, static/DHCP IP, cloud-init user/SSH keys, network mode/bridge):
+
+```bash
+# Reinstall using the existing OS from the VM definition
+kvm-vm reinstall web01
+
+# Reinstall and switch to a different operating system
+kvm-vm reinstall web01 --os debian13
+```
+
+### Options
+
+- `--os <distro|url|path>`: Distro alias (`ubuntu24.04`, `debian13`, `rocky9`, `almalinux9`), custom image URL, or local image path.
+- `--image-url <url>`: Explicitly specify a cloud image URL.
+- `--image-path <path>`: Explicitly specify a local cloud image path.
+- `--os-variant <variant>`: Specify a libosinfo OS variant for `virt-install`.
+- `--refresh-image`: Redownload the base cloud image even if already cached.
+- `--no-start`: Reinstall and define the domain in libvirt without booting it.
+- `--force`: If the VM is currently running, destroy it before reinstalling (without `--force`, a running VM refuses reinstallation).
+- `--yes`: Skip interactive confirmation (required in non-interactive/automation environments).
+- `--dry-run`: Run all pre-flight checks and display the resulting effective YAML definition without touching libvirt or disks.
+
+```bash
+# Automation example with different OS and force destroy
+kvm-vm reinstall web01 --os rocky9 --force --yes
+```
+
 ## Clone
 
 A clone target YAML looks like `examples/clone-target.yaml`. It intentionally does not
@@ -436,10 +466,11 @@ kvm-vm create newvm.yaml --refresh-image
 
 ## `--no-start`
 
-Both `create` and `clone` support:
+`create`, `clone`, and `reinstall` support:
 
 ```bash
 kvm-vm create vm.yaml --no-start
+kvm-vm reinstall web01 --no-start
 ```
 
 The domain is defined but left shut off, which is useful if you want to inspect `virsh
@@ -447,11 +478,12 @@ dumpxml` or apply additional libvirt policy before first boot.
 
 ## `--dry-run`
 
-Both `create` and `clone` support:
+`create`, `clone`, and `reinstall` support:
 
 ```bash
 kvm-vm create vm.yaml --dry-run
 kvm-vm clone source-vm target.yaml --dry-run
+kvm-vm reinstall web01 --os debian13 --dry-run
 ```
 
 Runs all pre-flight checks (YAML normalization, domain/state collision checks, bridge/NAT

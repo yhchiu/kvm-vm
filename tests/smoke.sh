@@ -3,6 +3,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 python3 -m py_compile "$ROOT/kvm-vm"
 "$ROOT/kvm-vm" --help >/dev/null
+"$ROOT/kvm-vm" reinstall --help >/dev/null
 "$ROOT/kvm-vm" --version
 
 if python3 -m pytest --version >/dev/null 2>&1; then
