@@ -169,26 +169,10 @@ kvm-vm status web01
 ssh admin@<vm-ip> -i ~/.ssh/id_ed25519
 ```
 
-### 安全策略（僅限 SSH 金鑰登入）
-
-`kvm-vm` 預設透過 cloud-init 套用嚴格的生產級安全策略：
-- **僅限 SSH 金鑰**：`ssh_pwauth: false` 禁用 SSH 密碼認證。
-- **使用者密碼鎖定**：`lock_passwd: true` 鎖定預設使用者的密碼。
-- **禁用 root 登入**：`disable_root: true` 防止直接以 root 身分登入。
-
-> [!IMPORTANT]
-> **主控台登入需手動設定密碼**：
-> 由於使用者密碼預設為鎖定狀態，剛建立的虛擬機器**無法直接透過序列主控台（`kvm-vm console <vm>`）進行密碼登入**。
-> 若需要主控台登入權限（例如無網路時的帶外救援維護），請在建立 VM 前於 YAML 定義檔中透過 `runcmd` 自行設定密碼：
->
-> ```yaml
-> cloud_init:
->   user: admin
->   ssh_authorized_keys:
->     - file:~/.ssh/id_ed25519.pub
->   runcmd:
->     - "echo 'admin:YourPasswordHere' | chpasswd"
-> ```
+> [!NOTE]
+> **僅限 SSH 金鑰登入安全策略**：
+> `kvm-vm` 建立的虛擬機器預設禁用 SSH 密碼認證與 root 直接登入（`lock_passwd: true`, `ssh_pwauth: false`, `disable_root: true`）。
+> 詳細的 root 密碼設定、主控台登入方式以及緊急 SSH 金鑰救援，請參閱[安全策略與帶外救援維護](#安全策略與帶外救援維護)。
 
 ## YAML 定義範例
 
@@ -368,7 +352,71 @@ kvm-vm console web01
 
 使用 `Ctrl+]` 退出 `virsh console`。
 
-> **附註**：如[安全策略](#安全策略僅限-ssh-金鑰登入)所述，使用者密碼預設為鎖定狀態（`lock_passwd: true`）。若需從主控台登入，請於建立前在 `cloud_init.runcmd` 設定密碼。
+> **附註**：如[安全策略](#安全策略與帶外救援維護)所述，使用者與 root 密碼預設為鎖定狀態（`lock_passwd: true`）。若需從主控台鍵盤登入，請參閱下方的 [Root 密碼設定](#root-密碼設定root-password-configuration)。
+
+## 安全策略與帶外救援維護
+
+`kvm-vm` 預設透過 cloud-init 套用嚴格的生產級安全策略：
+- **僅限 SSH 金鑰**：`ssh_pwauth: false` 禁用 SSH 密碼認證。
+- **使用者密碼鎖定**：`lock_passwd: true` 鎖定預設使用者的密碼。
+- **禁用 root 登入**：`disable_root: true` 防止直接以 root 身分登入。
+
+由於密碼預設鎖定，剛建立的虛擬機器**無法直接透過序列主控台（`kvm-vm console <vm>`）進行密碼登入**。當遇到無網路環境需本機登入或私鑰遺失時，請透過以下帶外（out-of-band）方式處理：
+
+### Root 密碼設定（Root password configuration）
+
+若需要設定 root 密碼以供本機序列主控台登入：
+
+1. **推薦方式（停機透過 `virt-customize` 帶外注入）**：
+   將虛擬機器關機後，透過標準輸入（stdin）安全寫入 root 密碼。強烈推薦此方式，因為它能**避免明文密碼外洩於 YAML 定義檔、Shell 歷史紀錄（`~/.bash_history`）或系統行程列表（`ps`）**：
+
+   ```bash
+   # 1. 先將虛擬機器正常關機
+   virsh shutdown web01
+
+   # 2. 透過 stdin 安全設定 root 密碼
+   virt-customize -d web01 --root-password file:/dev/stdin
+   # （輸入密碼後按 Enter，再按 Ctrl+D 結束）
+   ```
+
+   亦可直接指定虛擬磁碟路徑或從具備權限保護的臨時檔案讀取：
+
+   ```bash
+   virt-customize -a /var/lib/libvirt/images/vm/web01.qcow2 --root-password file:/path/to/file
+   ```
+
+2. **建立時設定（透過 `runcmd`）**：
+   在建立 VM 前，亦可直接於 YAML 定義檔中透過 cloud-init 設定（注意：密碼將以明文留存於 YAML 檔案中）：
+
+   ```yaml
+   cloud_init:
+     user: admin
+     ssh_authorized_keys:
+       - file:~/.ssh/id_ed25519.pub
+     runcmd:
+       - "echo 'root:YourPasswordHere' | chpasswd"
+   ```
+
+### SSH 金鑰遺失救援（SSH key recovery）
+
+若您遺失了 SSH 私鑰，或因設定錯誤被鎖在系統外且無法登入主控台：
+
+1. 將虛擬機器關機：
+   ```bash
+   virsh shutdown web01
+   ```
+
+2. 使用 `virt-customize` 直接將新的公鑰注入至虛擬磁碟中的使用者帳號：
+   ```bash
+   virt-customize -d web01 --ssh-inject admin:file:/path/to/new_key.pub
+   ```
+   *（或直接指定磁碟路徑：`virt-customize -a /var/lib/libvirt/images/vm/web01.qcow2 --ssh-inject admin:file:~/.ssh/id_ed25519.pub`）*
+
+3. 重新啟動虛擬機器並以新金鑰連線：
+   ```bash
+   virsh start web01
+   ssh admin@<vm-ip> -i /path/to/new_key
+   ```
 
 ## 安全刪除機制
 
