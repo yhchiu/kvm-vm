@@ -627,6 +627,7 @@ WANTED_SYSPREP_OPS = [
     "machine-id",
     "ssh-hostkeys",
     "net-hostname",
+    "net-hwaddr",
     "dhcp-client-state",
     "udev-persistent-net",
     "lvm-system-devices",
@@ -661,8 +662,10 @@ def sysprep_clone_disk(disk: Path) -> None:
     # cloud-init clean is the supported way to make a captured instance behave like first boot.
     cleanup = (
         "if command -v cloud-init >/dev/null 2>&1; then "
-        "cloud-init clean --logs --machine-id; "
-        "else rm -rf /var/lib/cloud/*; fi"
+        "cloud-init clean --logs; "
+        "else rm -rf /var/lib/cloud/*; fi; "
+        "rm -f /etc/netplan/* /etc/network/interfaces.d/*; "
+        "systemd-machine-id-setup 2>/dev/null || touch /etc/machine-id"
     )
     run(["virt-customize", "-a", str(disk), "--run-command", cleanup])
 
@@ -713,7 +716,7 @@ def make_cloud_files(cfg: Dict[str, Any], source_def_dir: Path) -> Tuple[Path, P
 
     instance_id = "iid-" + hashlib.sha256(f"{name}-{dt.datetime.now(dt.timezone.utc).isoformat()}-{random.random()}".encode()).hexdigest()[:24]
     meta_data = cdir / "meta-data"
-    meta_data.write_text(yaml.safe_dump({"instance-id": instance_id, "local-hostname": name}, sort_keys=False), encoding="utf-8")
+    meta_data.write_text(yaml.safe_dump({"instance-id": instance_id, "local-hostname": name, "dsmode": "local"}, sort_keys=False), encoding="utf-8")
 
     ipv4 = cfg["network"]["ipv4"]
     ipv6 = cfg["network"].get("ipv6") or {"method": "disabled"}
