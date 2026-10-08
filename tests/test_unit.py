@@ -252,7 +252,51 @@ class TestNormalizeDefinition:
             kvm_vm.normalize_definition(_minimal_raw())
 
 
-# --- resolve_ssh_keys() ---
+# --- resolve_ssh_keys() & resolve_file_path() ---
+
+class TestResolveFilePath:
+    def test_absolute_path(self):
+        p = kvm_vm.resolve_file_path("/etc/ssh/id.pub")
+        assert p == Path("/etc/ssh/id.pub")
+
+    def test_relative_path_with_base(self, tmp_path):
+        p = kvm_vm.resolve_file_path("keys/id.pub", tmp_path)
+        assert p == tmp_path / "keys" / "id.pub"
+
+    def test_tilde_without_sudo(self, monkeypatch):
+        monkeypatch.delenv("SUDO_USER", raising=False)
+        p = kvm_vm.resolve_file_path("~/.ssh/id_ed25519.pub")
+        assert p == Path("~/.ssh/id_ed25519.pub").expanduser()
+
+    def test_tilde_with_sudo_user_pwd(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("SUDO_USER", "mockuser")
+        fake_home = tmp_path / "home" / "mockuser"
+        fake_home.mkdir(parents=True)
+
+        mock_pwnam = MagicMock()
+        mock_pwnam.pw_dir = str(fake_home)
+        mock_pwd = MagicMock()
+        mock_pwd.getpwnam.return_value = mock_pwnam
+
+        monkeypatch.setattr(kvm_vm, "pwd", mock_pwd)
+        p = kvm_vm.resolve_file_path("~/.ssh/id_ed25519.pub")
+        assert p == fake_home / ".ssh" / "id_ed25519.pub"
+
+    def test_tilde_with_sudo_user_pwd_missing_fallback(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("SUDO_USER", "mockuser")
+        fake_home = tmp_path / "mockuser"
+        fake_home.mkdir()
+        monkeypatch.setattr(kvm_vm, "pwd", None)
+
+        with patch("os.path.expanduser", return_value=str(fake_home)):
+            p = kvm_vm.resolve_file_path("~/.ssh/id_ed25519.pub")
+            assert p == fake_home / ".ssh" / "id_ed25519.pub"
+
+    def test_explicit_user_tilde_ignores_sudo(self, monkeypatch):
+        monkeypatch.setenv("SUDO_USER", "alice")
+        p = kvm_vm.resolve_file_path("~bob/.ssh/id.pub")
+        assert p == Path("~bob/.ssh/id.pub").expanduser()
+
 
 class TestResolveSshKeys:
     def test_literal_key(self, tmp_path):
@@ -265,9 +309,37 @@ class TestResolveSshKeys:
         keys = kvm_vm.resolve_ssh_keys([f"file:{pub}"], tmp_path)
         assert keys == ["ssh-ed25519 AAAA... fromfile"]
 
+    def test_tilde_ssh_key_sudo_user(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("SUDO_USER", "mockuser")
+        fake_home = tmp_path / "home" / "mockuser"
+        ssh_dir = fake_home / ".ssh"
+        ssh_dir.mkdir(parents=True)
+        key_file = ssh_dir / "id_ed25519.pub"
+        key_file.write_text("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI... mock@test\n", encoding="utf-8")
+
+        mock_pwnam = MagicMock()
+        mock_pwnam.pw_dir = str(fake_home)
+        mock_pwd = MagicMock()
+        mock_pwd.getpwnam.return_value = mock_pwnam
+        monkeypatch.setattr(kvm_vm, "pwd", mock_pwd)
+
+        keys = kvm_vm.resolve_ssh_keys(["file:~/.ssh/id_ed25519.pub"], tmp_path)
+        assert keys == ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI... mock@test"]
+
     def test_missing_file(self, tmp_path):
         with pytest.raises(kvm_vm.KVMError, match="not found"):
             kvm_vm.resolve_ssh_keys(["file:/nonexistent/key.pub"], tmp_path)
+
+    def test_permission_error(self, tmp_path, monkeypatch):
+        pub = tmp_path / "id.pub"
+        pub.write_text("ssh-ed25519 AAAA... fromfile\n", encoding="utf-8")
+
+        def mock_read_text(*args, **kwargs):
+            raise PermissionError("Access denied")
+
+        monkeypatch.setattr(Path, "read_text", mock_read_text)
+        with pytest.raises(kvm_vm.KVMError, match="Permission denied"):
+            kvm_vm.resolve_ssh_keys([f"file:{pub}"], tmp_path)
 
     def test_non_ssh_key_rejected(self, tmp_path):
         with pytest.raises(kvm_vm.KVMError, match="does not look like"):
@@ -279,6 +351,7 @@ class TestResolveSshKeys:
         pub.write_text("ssh-rsa AAAA... reltest\n", encoding="utf-8")
         keys = kvm_vm.resolve_ssh_keys(["file:keys/id.pub"], tmp_path)
         assert keys == ["ssh-rsa AAAA... reltest"]
+
 
 
 # --- download() ---

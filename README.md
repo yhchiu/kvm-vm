@@ -225,7 +225,7 @@ network:
 cloud_init:
   user: admin
   ssh_authorized_keys:
-    - file:/root/.ssh/id_ed25519.pub
+    - file:~/.ssh/id_ed25519.pub
   package_update: false
   qemu_guest_agent: true
   timezone: Asia/Taipei
@@ -236,7 +236,9 @@ cloud_init:
 ```
 
 SSH keys can be literal OpenSSH public keys or `file:/path/to/key.pub`. Relative `file:`
-paths are resolved relative to the YAML file.
+paths are resolved relative to the YAML file. Tilde expansion (`file:~/.ssh/...`) is
+supported, and when running under `sudo`, it automatically resolves to `$SUDO_USER`'s
+home directory.
 
 `mac: auto` is replaced by an actual `52:54:00:*` address in the stored effective YAML.
 Static cloud-init networking matches that MAC and renames the interface to `eth0`, so

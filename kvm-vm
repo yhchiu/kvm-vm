@@ -27,6 +27,11 @@ from urllib.parse import urlparse
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+try:
+    import pwd
+except ImportError:
+    pwd = None
+
 log = logging.getLogger("kvm-vm")
 
 try:
@@ -424,19 +429,58 @@ def normalize_definition(raw: Dict[str, Any], *, for_clone: bool = False) -> Dic
     return effective
 
 
+def resolve_file_path(path_str: str, definition_dir: Optional[Path] = None) -> Path:
+    """Resolve a file path string.
+
+    Supports:
+    - '~/' or '~': current user's home directory. If running under sudo,
+      automatically resolves to $SUDO_USER's home directory.
+    - '~username/...': specified user's home directory.
+    - Relative paths: resolved relative to definition_dir (if provided).
+    - Absolute paths: used as-is.
+    """
+    raw = path_str.strip()
+    if raw.startswith("~"):
+        sudo_user = os.environ.get("SUDO_USER")
+        if sudo_user and (raw == "~" or raw.startswith("~/") or raw.startswith("~\\")):
+            user_home: Optional[Path] = None
+            if pwd is not None:
+                try:
+                    user_home = Path(pwd.getpwnam(sudo_user).pw_dir)
+                except (KeyError, TypeError):
+                    pass
+            if user_home is None:
+                expanded = os.path.expanduser(f"~{sudo_user}")
+                if not expanded.startswith("~"):
+                    user_home = Path(expanded)
+                elif Path(f"/home/{sudo_user}").is_dir():
+                    user_home = Path(f"/home/{sudo_user}")
+            if user_home is not None:
+                if raw == "~":
+                    return user_home
+                rel = raw[2:]
+                return user_home / rel
+        return Path(raw).expanduser()
+
+    p = Path(raw)
+    if not p.is_absolute() and definition_dir is not None:
+        p = definition_dir / p
+    return p
+
+
 def resolve_ssh_keys(items: List[Any], definition_dir: Path) -> List[str]:
     result: List[str] = []
     for item in items:
         if not isinstance(item, str):
             raise KVMError("Each ssh_authorized_keys entry must be a string")
         if item.startswith("file:"):
-            p = Path(item[5:])
-            if not p.is_absolute():
-                p = definition_dir / p
+            p = resolve_file_path(item[5:], definition_dir)
             try:
                 lines = [x.strip() for x in p.read_text(encoding="utf-8").splitlines() if x.strip() and not x.lstrip().startswith("#")]
             except FileNotFoundError:
                 raise KVMError(f"SSH public key file not found: {p}") from None
+            except PermissionError as exc:
+                raise KVMError(f"Permission denied reading SSH public key file: {p}") from exc
             result.extend(lines)
         else:
             result.append(item.strip())
@@ -553,7 +597,7 @@ def acquire_base_image(cfg: Dict[str, Any], refresh: bool) -> Tuple[Path, Option
             name = hashlib.sha256(url.encode()).hexdigest()[:16] + ".qcow2"
         cache_path = BASE_DIR / name
     else:
-        p = Path(str(local_path)).expanduser().resolve()
+        p = resolve_file_path(str(local_path)).resolve()
         if not p.is_file():
             raise KVMError(f"Base image not found: {p}")
         if expected_sha and sha256_file(p).lower() != str(expected_sha).lower():
@@ -1027,13 +1071,13 @@ def apply_os_override(
             image["url"] = val
             image["path"] = None
             image["sha256"] = None
-        elif Path(val).is_file():
+        elif resolve_file_path(val).is_file():
             image["distro"] = None
             image["url"] = None
-            image["path"] = str(Path(val).expanduser().resolve())
+            image["path"] = str(resolve_file_path(val).resolve())
             image["sha256"] = None
         elif "/" in val or "\\" in val or val.endswith((".qcow2", ".img", ".raw")):
-            p = Path(val).expanduser().resolve()
+            p = resolve_file_path(val).resolve()
             if not p.is_file():
                 raise KVMError(f"Base image not found: {val}")
             image["distro"] = None
@@ -1049,7 +1093,7 @@ def apply_os_override(
         image["path"] = None
         image["sha256"] = None
     elif image_path:
-        p = Path(image_path).expanduser().resolve()
+        p = resolve_file_path(image_path).resolve()
         if not p.is_file():
             raise KVMError(f"Base image not found: {p}")
         image["distro"] = None
