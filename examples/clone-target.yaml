@@ -32,6 +32,6 @@ network:
 cloud_init:
   user: admin
   ssh_authorized_keys:
-    - file:/root/.ssh/id_ed25519.pub
+    - file:~/.ssh/id_ed25519.pub
   qemu_guest_agent: true
   timezone: Asia/Taipei
