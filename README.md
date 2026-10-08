@@ -64,6 +64,18 @@ For building cloud-init seed images, `kvm-vm` automatically detects and uses any
 `virt-sysprep` and `virt-customize` are needed only for `clone`, but installing them on
 a management host is recommended.
 
+### SSH key
+
+The example VM definitions (`examples/*.yaml`) configure default cloud-init access using `~/.ssh/id_ed25519.pub`. Ensure this public key exists on your host before creating VMs with the provided examples.
+
+If you do not have an Ed25519 key pair, generate one with:
+
+```bash
+ssh-keygen -t ed25519
+```
+
+Press `Enter` to accept the default file path (`~/.ssh/id_ed25519`).
+
 ## Install
 
 ```bash
@@ -268,7 +280,7 @@ All storage paths, libvirt connection URI, and VM definition values can be overr
 | `KVM_VM_VCPUS` | `vm.vcpus` | `4` | Overrides vCPUs count (1-1024) |
 | `KVM_VM_MEMORY` / `KVM_VM_MEMORY_MIB` | `vm.memory_mib` | `4096` | Overrides memory in MiB (>= 256) |
 | `KVM_VM_DISK` / `KVM_VM_DISK_GIB` | `storage.disk_gib` | `50` | Overrides disk size in GiB (>= 1) |
-| `KVM_VM_OS` | `image.distro` / `os_variant` | `rocky9` | Overrides distro alias and `os_variant` |
+| `KVM_VM_OS` | `image.distro` / `os_variant` | `rocky9` | Overrides distro alias (see [Distro aliases](#distro-aliases)) and `os_variant` |
 | `KVM_VM_BRIDGE` | `network.bridge` | `br0` | Default or override bridge interface for bridge mode |
 | `KVM_VM_IPV4` | `network.ipv4` | `dhcp`, `192.168.1.50/24` | Sets method (`dhcp`, `disabled`) or static CIDR address |
 | `KVM_VM_GATEWAY` | `network.ipv4.gateway` | `192.168.1.1` | Overrides default IPv4 gateway |
