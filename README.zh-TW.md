@@ -61,6 +61,18 @@ sudo systemctl enable --now libvirtd
 
 `virt-sysprep` 與 `virt-customize` 僅在執行 `clone` 時需要，但仍建議在管理主機上安裝。
 
+### SSH 金鑰
+
+範例 VM 定義檔（`examples/*.yaml`）及預設 cloud-init 設定皆引用 `~/.ssh/id_ed25519.pub` 作為虛擬機器使用者的 SSH 登入公鑰。使用範例建立虛擬機器前，請確保主機上已存在此公鑰。
+
+若主機上尚未建立 Ed25519 金鑰對，可使用以下指令產生：
+
+```bash
+ssh-keygen -t ed25519
+```
+
+依照提示直接按 `Enter` 接受預設儲存路徑（`~/.ssh/id_ed25519`）即可。
+
 ## 安裝
 
 ```bash
@@ -255,7 +267,7 @@ SSH 金鑰可以是純文字 OpenSSH 公鑰字串，或是 `file:/path/to/key.pu
 | `KVM_VM_VCPUS` | `vm.vcpus` | `4` | 覆寫 vCPU 核心數（1-1024） |
 | `KVM_VM_MEMORY` / `KVM_VM_MEMORY_MIB` | `vm.memory_mib` | `4096` | 覆寫記憶體容量（MiB，>= 256） |
 | `KVM_VM_DISK` / `KVM_VM_DISK_GIB` | `storage.disk_gib` | `50` | 覆寫磁碟大小（GiB，>= 1） |
-| `KVM_VM_OS` | `image.distro` / `os_variant` | `rocky9` | 覆寫發行版別名與 `os_variant` |
+| `KVM_VM_OS` | `image.distro` / `os_variant` | `rocky9` | 覆寫發行版別名（詳見[發行版別名](#發行版別名)）與 `os_variant` |
 | `KVM_VM_BRIDGE` | `network.bridge` | `br0` | 橋接模式下預設或覆寫使用的 Bridge 名稱 |
 | `KVM_VM_IPV4` | `network.ipv4` | `dhcp`, `192.168.1.50/24` | 設定 IP 取得方式（`dhcp`, `disabled`）或靜態 CIDR 位址 |
 | `KVM_VM_GATEWAY` | `network.ipv4.gateway` | `192.168.1.1` | 覆寫預設 IPv4 閘道 |
