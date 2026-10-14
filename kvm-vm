@@ -773,6 +773,10 @@ def make_cloud_files(cfg: Dict[str, Any], source_def_dir: Path) -> Tuple[Path, P
         "preserve_hostname": False,
         "users": [{
             "name": user,
+            # Ubuntu images may already contain the admin group. Explicitly
+            # reuse it, while groups ensures creation on images without it.
+            "primary_group": user,
+            "groups": [user],
             "lock_passwd": True,
             "sudo": "ALL=(ALL) NOPASSWD:ALL",
             "shell": "/bin/bash",

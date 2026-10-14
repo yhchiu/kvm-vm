@@ -632,6 +632,18 @@ esac
 
 
 class TestMakeCloudFiles:
+    @pytest.mark.parametrize("user", ["admin", "sysadmin"])
+    def test_user_has_explicit_primary_group(self, tmp_path, monkeypatch, user):
+        monkeypatch.setattr(kvm_vm, "CLOUD_DIR", tmp_path / "cloud-init")
+        raw = _minimal_raw()
+        raw["cloud_init"]["user"] = user
+        cfg = kvm_vm.normalize_definition(raw)
+        with patch("kvm_vm.create_cloud_seed"):
+            ud, _, _, _ = kvm_vm.make_cloud_files(cfg, tmp_path)
+        data = kvm_vm.yaml.safe_load(ud.read_text(encoding="utf-8"))
+        assert data["users"][0]["primary_group"] == user
+        assert user in data["users"][0]["groups"]
+
     @pytest.mark.parametrize("port", [None, 22, 2222])
     def test_ssh_port_provisioning(self, tmp_path, monkeypatch, port):
         monkeypatch.setattr(kvm_vm, "CLOUD_DIR", tmp_path / "cloud-init")

@@ -422,6 +422,8 @@ def test_e2e_primary_lifecycle(tmp_path: Path, ssh_keypair: Dict[str, Any], vm_c
 
     in_guest_user = E2EHelper.ssh_exec(src_ip, key_priv, "whoami", user="admin", port=ssh_port)
     assert in_guest_user == "admin"
+    in_guest_group = E2EHelper.ssh_exec(src_ip, key_priv, "id -gn", user="admin", port=ssh_port)
+    assert in_guest_group == "admin"
     E2EHelper.ssh_exec(src_ip, key_priv, "sudo cloud-init status --wait", port=ssh_port)
     listeners = E2EHelper.ssh_exec(src_ip, key_priv, "sudo ss -ltnH 'sport = :22'", port=ssh_port)
     assert listeners == "", "Default port 22 must no longer accept connections"
