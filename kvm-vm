@@ -735,7 +735,8 @@ sed -i '1iPort {port}' /etc/ssh/sshd_config
 /usr/sbin/sshd -t
 if systemctl is-active --quiet ssh.socket || systemctl is-enabled --quiet ssh.socket; then
     mkdir -p /etc/systemd/system/ssh.socket.d
-    printf '[Socket]\\nListenStream=\\nListenStream={port}\\n' > /etc/systemd/system/ssh.socket.d/zz-kvm-vm-port.conf
+    # Ubuntu's socket uses BindIPv6Only=ipv6-only, so both addresses are needed.
+    printf '[Socket]\\nListenStream=\\nListenStream=0.0.0.0:{port}\\nListenStream=[::]:{port}\\nBindIPv6Only=ipv6-only\\n' > /etc/systemd/system/ssh.socket.d/zz-kvm-vm-port.conf
     systemctl daemon-reload
     systemctl restart ssh.socket
     systemctl try-restart ssh.service

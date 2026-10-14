@@ -623,7 +623,7 @@ esac
         assert calls[0] == "sshd -t"
         if mode.startswith("socket"):
             override = tmp_path / "system/ssh.socket.d/zz-kvm-vm-port.conf"
-            assert override.read_text(encoding="utf-8") == "[Socket]\nListenStream=\nListenStream=2222\n"
+            assert override.read_text(encoding="utf-8") == "[Socket]\nListenStream=\nListenStream=0.0.0.0:2222\nListenStream=[::]:2222\nBindIPv6Only=ipv6-only\n"
             assert calls.index("daemon-reload") < calls.index("restart ssh.socket")
             assert "try-restart ssh.service" in calls
         else:
@@ -667,7 +667,9 @@ class TestMakeCloudFiles:
         command = data["runcmd"][-1]
         assert command[:2] == ["sh", "-c"]
         assert f"1iPort {port}" in command[2]
-        assert f"ListenStream={port}" in command[2]
+        assert f"ListenStream=0.0.0.0:{port}" in command[2]
+        assert f"ListenStream=[::]:{port}" in command[2]
+        assert "BindIPv6Only=ipv6-only" in command[2]
         assert "ListenStream=\\nListenStream=" in command[2]
         assert command[2].index("/usr/sbin/sshd -t") < command[2].index("systemctl restart")
         assert "systemctl restart ssh.socket" in command[2]
