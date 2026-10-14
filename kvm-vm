@@ -371,6 +371,10 @@ def normalize_definition(raw: Dict[str, Any], *, for_clone: bool = False) -> Dic
     if not re.match(r"^[a-z_][a-z0-9_-]*[$]?$", user):
         raise KVMError(f"Invalid cloud_init.user: {user}")
 
+    ssh_port = ci.get("ssh_port", 22)
+    if type(ssh_port) is not int or not 1 <= ssh_port <= 65535:
+        raise KVMError("cloud_init.ssh_port must be an integer between 1 and 65535")
+
     keys = ci.get("ssh_authorized_keys", [])
     if not isinstance(keys, list):
         raise KVMError("cloud_init.ssh_authorized_keys must be a list")
@@ -418,6 +422,7 @@ def normalize_definition(raw: Dict[str, Any], *, for_clone: bool = False) -> Dic
         },
         "cloud_init": {
             "user": user,
+            "ssh_port": ssh_port,
             "ssh_authorized_keys": keys,
             "package_update": bool(ci.get("package_update", False)),
             "qemu_guest_agent": bool(ci.get("qemu_guest_agent", True)),
@@ -714,6 +719,34 @@ def sysprep_clone_disk(disk: Path) -> None:
     run(["virt-customize", "-a", str(disk), "--run-command", cleanup])
 
 
+def ssh_port_command(port: int) -> str:
+    """Configure the guest's SSH listener after user commands and package installs.
+
+    Update the main config for older images without sshd_config.d support too.
+    Remove previous Port directives because OpenSSH allows multiple listeners,
+    including when cloning a guest that used a different port.
+    """
+    return f"""set -eu
+for config in /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf; do
+    [ -f "$config" ] || continue
+    sed -i -E '/^[[:space:]]*[Pp][Oo][Rr][Tt]([[:space:]]|=)/d' "$config"
+done
+sed -i '1iPort {port}' /etc/ssh/sshd_config
+/usr/sbin/sshd -t
+if systemctl is-active --quiet ssh.socket || systemctl is-enabled --quiet ssh.socket; then
+    mkdir -p /etc/systemd/system/ssh.socket.d
+    printf '[Socket]\\nListenStream=\\nListenStream={port}\\n' > /etc/systemd/system/ssh.socket.d/zz-kvm-vm-port.conf
+    systemctl daemon-reload
+    systemctl restart ssh.socket
+    systemctl try-restart ssh.service
+elif [ "$(systemctl show -p LoadState --value ssh.service)" = loaded ]; then
+    systemctl restart ssh.service
+else
+    systemctl restart sshd.service
+fi
+"""
+
+
 def make_cloud_files(cfg: Dict[str, Any], source_def_dir: Path) -> Tuple[Path, Path, Path, str]:
     name = cfg["vm"]["name"]
     cdir = CLOUD_DIR / name
@@ -733,6 +766,7 @@ def make_cloud_files(cfg: Dict[str, Any], source_def_dir: Path) -> Tuple[Path, P
         if "qemu-guest-agent" not in packages:
             packages.append("qemu-guest-agent")
         runcmd.append(["systemctl", "enable", "--now", "qemu-guest-agent"])
+    runcmd.append(["sh", "-c", ssh_port_command(cfg["cloud_init"].get("ssh_port", 22))])
 
     user_cfg: Dict[str, Any] = {
         "hostname": name,

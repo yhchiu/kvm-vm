@@ -39,6 +39,7 @@ network:
 
 cloud_init:
   user: admin
+  ssh_port: 22  # Optional; use e.g. 2222 and connect with ssh -p 2222.
   ssh_authorized_keys:
     - file:~/.ssh/id_ed25519.pub
   package_update: false

@@ -190,6 +190,12 @@ Connect using the username defined in `cloud_init.user` (default in examples: `a
 ssh admin@<vm-ip> -i ~/.ssh/id_ed25519
 ```
 
+If `cloud_init.ssh_port` is set to a custom port, add it to the connection command:
+
+```bash
+ssh -p 2222 admin@<vm-ip> -i ~/.ssh/id_ed25519
+```
+
 > [!NOTE]
 > **SSH key-only security policy**:
 > `kvm-vm` provisions instances with SSH password authentication and direct root login disabled (`lock_passwd: true`, `ssh_pwauth: false`, `disable_root: true`).
@@ -236,6 +242,7 @@ network:
 
 cloud_init:
   user: admin
+  ssh_port: 22
   ssh_authorized_keys:
     - file:~/.ssh/id_ed25519.pub
   package_update: false
@@ -246,6 +253,29 @@ cloud_init:
     - vim
   runcmd: []
 ```
+
+`cloud_init.ssh_port` accepts an integer from `1` to `65535` and defaults to `22`.
+For example, set `ssh_port: 2222` to listen on TCP port 2222. During first-boot
+provisioning, after your `runcmd` commands, the tool replaces active `Port` directives
+in `/etc/ssh/sshd_config` and `/etc/ssh/sshd_config.d/*.conf`, validates the SSH
+configuration, and restarts the listener. Ubuntu's `ssh.socket` is configured too.
+Clones use the target definition's port (or 22 when omitted); reinstalls preserve
+the saved port. Editing a definition alone does not update a running VM.
+
+Allow the chosen port through any guest or upstream firewall. On SELinux-enabled
+guests such as Rocky/Alma, authorize a custom port before SSH restarts; for example,
+for a port not already assigned in SELinux policy:
+
+```yaml
+cloud_init:
+  ssh_port: 2222
+  packages:
+    - policycoreutils-python-utils
+  runcmd:
+    - [semanage, port, -a, -t, ssh_port_t, -p, tcp, '2222']
+```
+
+Merge these fields into your existing `cloud_init` section, keeping the user and SSH keys.
 
 SSH keys can be literal OpenSSH public keys or `file:/path/to/key.pub`. Relative `file:`
 paths are resolved relative to the YAML file. Tilde expansion (`file:~/.ssh/...`) is
@@ -786,4 +816,3 @@ Or target a specific distro:
 ```bash
 sudo bash tests/run_e2e.sh --distro ubuntu24.04 -v
 ```
-

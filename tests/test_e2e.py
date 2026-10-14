@@ -152,6 +152,7 @@ class E2EHelper:
         user: str = "admin",
         timeout: int = 180,
         interval: float = 3.0,
+        port: int = 22,
     ) -> str:
         """Wait for SSH connection to succeed.
 
@@ -172,6 +173,7 @@ class E2EHelper:
             for ip in candidates:
                 cmd = [
                     "ssh",
+                    "-p", str(port),
                     "-i", str(key_path),
                     "-o", "BatchMode=yes",
                     "-o", "StrictHostKeyChecking=no",
@@ -197,9 +199,11 @@ class E2EHelper:
         user: str = "admin",
         retries: int = 6,
         retry_delay: float = 2.0,
+        port: int = 22,
     ) -> str:
         cmd = [
             "ssh",
+            "-p", str(port),
             "-i", str(key_path),
             "-o", "BatchMode=yes",
             "-o", "StrictHostKeyChecking=no",
@@ -281,7 +285,15 @@ def vm_cleanup_tracker():
                 pass
 
 
-def build_vm_yaml(name: str, pub_key: str, distro: str = E2E_DISTRO, memory_mib: int = 1024) -> str:
+def build_vm_yaml(name: str, pub_key: str, distro: str = E2E_DISTRO, memory_mib: int = 1024, ssh_port: int = 22) -> str:
+    cloud_init = {
+        "user": "admin",
+        "ssh_authorized_keys": [pub_key],
+        "ssh_port": ssh_port,
+    }
+    if ssh_port != 22 and distro.startswith(("rocky", "almalinux")):
+        cloud_init["packages"] = ["policycoreutils-python-utils"]
+        cloud_init["runcmd"] = [["semanage", "port", "-a", "-t", "ssh_port_t", "-p", "tcp", str(ssh_port)]]
     return yaml.safe_dump(
         {
             "version": 1,
@@ -303,10 +315,7 @@ def build_vm_yaml(name: str, pub_key: str, distro: str = E2E_DISTRO, memory_mib:
                     "method": "dhcp",
                 },
             },
-            "cloud_init": {
-                "user": "admin",
-                "ssh_authorized_keys": [pub_key],
-            },
+            "cloud_init": cloud_init,
         },
         sort_keys=False,
     )
@@ -388,12 +397,13 @@ def test_e2e_primary_lifecycle(tmp_path: Path, ssh_keypair: Dict[str, Any], vm_c
 
     key_priv = ssh_keypair["private_key_path"]
     key_pub_str = ssh_keypair["public_key_content"]
+    ssh_port = 2222
 
     # ---------------------------------------------------------
     # Step 1: Create source VM
     # ---------------------------------------------------------
     src_yaml = tmp_path / f"{src_name}.yaml"
-    src_yaml.write_text(build_vm_yaml(src_name, key_pub_str, distro=E2E_DISTRO), encoding="utf-8")
+    src_yaml.write_text(build_vm_yaml(src_name, key_pub_str, distro=E2E_DISTRO, ssh_port=ssh_port), encoding="utf-8")
 
     res_create = E2EHelper.run_kvm_vm("create", str(src_yaml))
     assert res_create.returncode == 0
@@ -403,15 +413,18 @@ def test_e2e_primary_lifecycle(tmp_path: Path, ssh_keypair: Dict[str, Any], vm_c
     # ---------------------------------------------------------
     # Step 2: Acquire IP & SSH in-guest verification
     # ---------------------------------------------------------
-    src_ip = E2EHelper.wait_for_ssh(src_name, key_priv, user="admin", timeout=180)
+    src_ip = E2EHelper.wait_for_ssh(src_name, key_priv, user="admin", timeout=180, port=ssh_port)
     assert src_ip
 
     # In-guest assertion: verify cloud-init applied hostname and created user
-    in_guest_hostname = E2EHelper.ssh_exec(src_ip, key_priv, "hostname", user="admin")
+    in_guest_hostname = E2EHelper.ssh_exec(src_ip, key_priv, "hostname", user="admin", port=ssh_port)
     assert in_guest_hostname == src_name
 
-    in_guest_user = E2EHelper.ssh_exec(src_ip, key_priv, "whoami", user="admin")
+    in_guest_user = E2EHelper.ssh_exec(src_ip, key_priv, "whoami", user="admin", port=ssh_port)
     assert in_guest_user == "admin"
+    E2EHelper.ssh_exec(src_ip, key_priv, "sudo cloud-init status --wait", port=ssh_port)
+    listeners = E2EHelper.ssh_exec(src_ip, key_priv, "sudo ss -ltnH 'sport = :22'", port=ssh_port)
+    assert listeners == "", "Default port 22 must no longer accept connections"
 
     # ---------------------------------------------------------
     # Step 3: Verify status & list CLI commands
@@ -468,7 +481,7 @@ def test_e2e_primary_lifecycle(tmp_path: Path, ssh_keypair: Dict[str, Any], vm_c
     assert E2EHelper.domain_exists(clone_name)
     assert E2EHelper.domain_state(clone_name) == "running"
 
-    # Verify clone acquires its own IP and responds via SSH
+    # The target omits ssh_port, so cloning must replace the source's 2222 with 22.
     clone_ip = E2EHelper.wait_for_ssh(clone_name, key_priv, user="admin", timeout=180)
     assert clone_ip
 
@@ -494,10 +507,10 @@ def test_e2e_primary_lifecycle(tmp_path: Path, ssh_keypair: Dict[str, Any], vm_c
     assert E2EHelper.domain_state(src_name) == "running"
 
     # Verify reinstalled VM obtains IP and responds via SSH
-    reinstalled_ip = E2EHelper.wait_for_ssh(src_name, key_priv, user="admin", timeout=180)
+    reinstalled_ip = E2EHelper.wait_for_ssh(src_name, key_priv, user="admin", timeout=180, port=ssh_port)
     assert reinstalled_ip
 
-    reinstalled_hostname = E2EHelper.ssh_exec(reinstalled_ip, key_priv, "hostname", user="admin")
+    reinstalled_hostname = E2EHelper.ssh_exec(reinstalled_ip, key_priv, "hostname", user="admin", port=ssh_port)
     assert reinstalled_hostname == src_name
 
     # ---------------------------------------------------------

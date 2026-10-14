@@ -183,6 +183,12 @@ kvm-vm status web01
 ssh admin@<vm-ip> -i ~/.ssh/id_ed25519
 ```
 
+若 `cloud_init.ssh_port` 設為自訂連接埠，連線時加上 `-p`：
+
+```bash
+ssh -p 2222 admin@<vm-ip> -i ~/.ssh/id_ed25519
+```
+
 > [!NOTE]
 > **僅限 SSH 金鑰登入安全策略**：
 > `kvm-vm` 建立的虛擬機器預設禁用 SSH 密碼認證與 root 直接登入（`lock_passwd: true`, `ssh_pwauth: false`, `disable_root: true`）。
@@ -229,6 +235,7 @@ network:
 
 cloud_init:
   user: admin
+  ssh_port: 22
   ssh_authorized_keys:
     - file:~/.ssh/id_ed25519.pub
   package_update: false
@@ -239,6 +246,21 @@ cloud_init:
     - vim
   runcmd: []
 ```
+
+`cloud_init.ssh_port` 接受 `1–65535` 的整數，預設為 `22`。例如，設定 `ssh_port: 2222` 即使用 TCP port 2222。首次初始化時，工具會在使用者的 `runcmd` 執行後，替換 `/etc/ssh/sshd_config` 和 `/etc/ssh/sshd_config.d/*.conf` 中啟用的 `Port` 設定，驗證 SSH 設定並重啟監聽服務，也會處理 Ubuntu 的 `ssh.socket`。Clone 使用目標 YAML 的 port（省略時為 22）；reinstall 保留已儲存的 port。單純修改定義檔不會更新正在運行的 VM。
+
+請讓 VM 內及上游防火牆允許所選的 port。Rocky/Alma 等啟用 SELinux 的 VM，還需在 SSH 重啟前授權自訂 port。例如，若該 port 尚未在 SELinux policy 中指定用途：
+
+```yaml
+cloud_init:
+  ssh_port: 2222
+  packages:
+    - policycoreutils-python-utils
+  runcmd:
+    - [semanage, port, -a, -t, ssh_port_t, -p, tcp, '2222']
+```
+
+請將以上欄位合併至原有的 `cloud_init` 區段，保留使用者與 SSH 金鑰設定。
 
 SSH 金鑰可以是純文字 OpenSSH 公鑰字串，或是 `file:/path/to/key.pub` 格式。相對的 `file:` 路徑會以該 YAML 檔案所在位置為基準進行解析；支援波浪號展開（`file:~/.ssh/...`），若透過 `sudo` 執行，會自動辨識並解析為 `$SUDO_USER` 的家目錄。
 
@@ -746,4 +768,3 @@ sudo bash tests/run_e2e.sh
 ```bash
 sudo bash tests/run_e2e.sh --distro ubuntu24.04 -v
 ```
-
