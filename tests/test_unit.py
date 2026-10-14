@@ -603,11 +603,11 @@ case "$*" in
 esac
 """, encoding="utf-8")
         sshd = bin_dir / "sshd"
-        sshd.write_text(f"#!/bin/sh\nprintf '%s\\n' \"sshd $*\" >> calls\nexit {0 if valid_config else 1}\n", encoding="utf-8")
+        sshd.write_text(f"#!/bin/sh\nprintf '%s\\n' \"sshd $*\" >> calls\n[ -d ./run/sshd ] || exit 2\nexit {0 if valid_config else 1}\n", encoding="utf-8")
         systemctl.chmod(0o755)
         sshd.chmod(0o755)
         command = kvm_vm.ssh_port_command(2222)
-        command = command.replace("/etc/ssh/", "./ssh/").replace("/etc/systemd/system/", "./system/").replace("/usr/sbin/sshd", "./bin/sshd")
+        command = command.replace("/etc/ssh/", "./ssh/").replace("/etc/systemd/system/", "./system/").replace("/usr/sbin/sshd", "./bin/sshd").replace("/run/sshd", "./run/sshd")
         script = 'PATH="$PWD/bin:$PATH"\nexport PATH\n' + command
         if not valid_config:
             result = subprocess.run([shell], input=script, text=True, cwd=tmp_path, capture_output=True)

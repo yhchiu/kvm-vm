@@ -732,6 +732,8 @@ for config in /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf; do
     sed -i -E '/^[[:space:]]*[Pp][Oo][Rr][Tt]([[:space:]]|=)/d' "$config"
 done
 sed -i '1iPort {port}' /etc/ssh/sshd_config
+# Socket activation may not have started ssh.service to create its runtime dir.
+install -d -m 0755 /run/sshd
 /usr/sbin/sshd -t
 if systemctl is-active --quiet ssh.socket || systemctl is-enabled --quiet ssh.socket; then
     mkdir -p /etc/systemd/system/ssh.socket.d
