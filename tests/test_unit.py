@@ -310,10 +310,13 @@ class TestResolveFilePath:
             p = kvm_vm.resolve_file_path("~/.ssh/id_ed25519.pub")
             assert p == fake_home / ".ssh" / "id_ed25519.pub"
 
-    def test_explicit_user_tilde_ignores_sudo(self, monkeypatch):
+    def test_explicit_user_tilde_ignores_sudo(self, monkeypatch, tmp_path):
         monkeypatch.setenv("SUDO_USER", "alice")
-        p = kvm_vm.resolve_file_path("~bob/.ssh/id.pub")
-        assert p == Path("~bob/.ssh/id.pub").expanduser()
+        expected = tmp_path / "bob" / ".ssh" / "id.pub"
+        with patch.object(Path, "expanduser", autospec=True, return_value=expected) as expanduser:
+            p = kvm_vm.resolve_file_path("~bob/.ssh/id.pub")
+        assert p == expected
+        expanduser.assert_called_once_with(Path("~bob/.ssh/id.pub"))
 
 
 class TestResolveSshKeys:
