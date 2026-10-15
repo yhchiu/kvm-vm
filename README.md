@@ -816,3 +816,30 @@ Or target a specific distro:
 ```bash
 sudo bash tests/run_e2e.sh --distro ubuntu24.04 -v
 ```
+
+To check `create` and SSH access for every declared distro alias:
+
+```bash
+sudo python3 -m pytest tests/test_distro_e2e.py -v -s
+```
+
+Each case creates a VM with 2 vCPUs, 2048 MiB RAM, a 20 GiB disk, NAT networking,
+and SSH port 2222, then checks key login, the actual OS version, and completion of
+cloud-init. Rocky/Alma cases configure SELinux and any active firewalld before SSH
+restarts. Temporary VMs are cleaned up even when a case fails.
+
+The host CPU must meet the guest image's requirements: Rocky/AlmaLinux 9 require
+x86-64-v2, and the default Rocky/AlmaLinux 10 images require x86-64-v3. KVM with
+`host-passthrough` cannot provide instructions missing from the physical CPU.
+An SSH timeout on incompatible hardware is a failed verification, not a pass.
+
+Use `KVM_VM_E2E_DISTROS` to select comma-separated aliases and
+`KVM_VM_E2E_SSH_TIMEOUT` to change the 600-second provisioning wait:
+
+```bash
+sudo KVM_VM_E2E_DISTROS=ubuntu26.04,debian13,rocky8,rocky9,rocky10,almalinux8,almalinux9,almalinux10 \
+  python3 -m pytest tests/test_distro_e2e.py -v -s
+```
+
+See [the real-machine verification report](tests/REAL_MACHINE_RESULTS.md) for
+the tested images, boot fix, and hardware limitations of the verification host.

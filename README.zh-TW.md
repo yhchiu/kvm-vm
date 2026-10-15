@@ -768,3 +768,28 @@ sudo bash tests/run_e2e.sh
 ```bash
 sudo bash tests/run_e2e.sh --distro ubuntu24.04 -v
 ```
+
+驗證所有宣稱支援的 distro alias 都能 `create` 並透過 SSH 登入：
+
+```bash
+sudo python3 -m pytest tests/test_distro_e2e.py -v -s
+```
+
+每個案例建立 2 vCPU、2048 MiB RAM、20 GiB 磁碟的 NAT VM，使用 SSH port 2222，
+驗證金鑰登入、實際 OS 版本及 cloud-init 完成狀態。Rocky／Alma 會在 SSH 重啟前
+設定 SELinux 及已啟動的 firewalld。測試失敗時也會清理臨時 VM。
+
+主機 CPU 必須符合 guest 映像需求：Rocky／AlmaLinux 9 需要 x86-64-v2，預設的
+Rocky／AlmaLinux 10 映像需要 x86-64-v3。KVM 的 `host-passthrough` 無法提供實體
+CPU 缺少的指令；硬體不相容造成的 SSH 逾時仍屬驗證失敗，不能視為通過。
+
+可用 `KVM_VM_E2E_DISTROS` 選擇逗號分隔的 alias，並用 `KVM_VM_E2E_SSH_TIMEOUT`
+調整預設 600 秒的初始化等待時間：
+
+```bash
+sudo KVM_VM_E2E_DISTROS=ubuntu26.04,debian13,rocky8,rocky9,rocky10,almalinux8,almalinux9,almalinux10 \
+  python3 -m pytest tests/test_distro_e2e.py -v -s
+```
+
+實測映像、開機修正及測試主機的硬體限制，請見
+[實機驗證報告](tests/REAL_MACHINE_RESULTS.md)。
