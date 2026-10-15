@@ -917,6 +917,9 @@ def define_vm(cfg: Dict[str, Any], disk: Path, seed: Path, default_variant: Opti
         "--network", net_opts,
         "--os-variant", variant,
         "--graphics", "none",
+        # Some cloud-image bootloaders stall without a video device, even with
+        # a serial console. Keep a VGA adapter without exposing a display server.
+        "--video", "vga",
         "--console", "pty,target.type=serial",
         "--noautoconsole",
     ]
