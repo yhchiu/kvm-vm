@@ -41,6 +41,17 @@ then passed the complete SSH test in 137 seconds.
 Commit `2effee4` adds `--video vga` to `virt-install`, retaining `--graphics none`
 and the serial console. No VNC or SPICE server is enabled.
 
+The stall depends on the host. On a second host (AlmaLinux 9.8, QEMU 10.1.0,
+AMD Ryzen 7 7700), an existing Debian 13.7 guest boots normally without a video
+device. It uses the same `pc-q35` machine with SeaBIOS and the same
+`terminal_output gfxterm serial` GRUB setting as the stalled guest. The
+remaining differences are the CPU and the QEMU/SeaBIOS build. The test host's
+Xeon L5420 has no EPT or unrestricted guest support, so KVM must emulate
+real-mode code such as GRUB's BIOS video calls. This is the most likely cause,
+but it has not been isolated. QEMU logged no KVM internal error during the stall.
+[Debian bug #1111240](https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=1111240)
+reports the same `Booting Debian GNU/Linux` stall on a guest without a video device.
+
 All four passing aliases were verified using the final runtime at `2effee4`.
 Ubuntu 26.04 and AlmaLinux 8 passed their final two-case run in 716 seconds.
 Rocky 8 passed a fresh create in 355 seconds. An earlier Rocky 8 diagnostic run
