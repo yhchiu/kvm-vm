@@ -282,6 +282,11 @@ cloud_init:
 
 Merge these fields into your existing `cloud_init` section, keeping the user and SSH keys.
 
+If SSH cannot start on the new port, for example because SELinux or another service
+blocks it, the tool restores the previous SSH files and restarts SSH. The guest stays
+reachable on the port it used before (22 on a new VM), cloud-init reports an error,
+and `/var/log/cloud-init-output.log` shows `kvm-vm: could not move SSH to port <port>`.
+
 SSH keys can be literal OpenSSH public keys or `file:/path/to/key.pub`. Relative `file:`
 paths are resolved relative to the YAML file. Tilde expansion (`file:~/.ssh/...`) is
 supported, and when running under `sudo`, it automatically resolves to `$SUDO_USER`'s
@@ -801,6 +806,7 @@ Real-machine E2E tests execute actual VM provisioning against libvirt/KVM:
 - Wait for DHCP lease IP and verify SSH connectivity, hostname, and user creation
 - Verify `kvm-vm status` and `kvm-vm list` outputs
 - Offline VM cloning with `virt-sysprep` and verify cloned guest connectivity
+- Custom SSH port, its reset to port 22 on a clone, and rollback when the new port is blocked
 - In-place OS reinstallation with `--force --yes`
 - Complete deletion and storage cleanup verification
 

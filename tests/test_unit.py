@@ -583,8 +583,13 @@ class TestSshPortCommand:
     OVERRIDE = "[Socket]\nListenStream=\nListenStream=0.0.0.0:2222\nListenStream=[::]:2222\nBindIPv6Only=ipv6-only\n"
 
     @staticmethod
-    def make_guest(tmp_path, mode, main=MAIN, snippet=SNIPPET, valid_config=True):
-        """Lay out a fake guest root with mocked systemctl and sshd that log calls."""
+    def make_guest(tmp_path, mode, main=MAIN, snippet=SNIPPET, valid_config=True, restart_fails=False):
+        """Lay out a fake guest root with mocked systemctl and sshd that log calls.
+
+        With restart_fails, restarting SSH fails while it is set to port 2222,
+        as when SELinux or another service blocks the port.
+        """
+        fail = "yes" if restart_fails else "no"
         if not shutil.which("sh"):
             pytest.skip("POSIX shell required to execute guest provisioning commands")
         ssh_dir = tmp_path / "ssh"
@@ -601,6 +606,8 @@ case "$*" in
     'is-enabled --quiet ssh.socket') [ '{mode}' = socket-enabled ] ;;
     'show -p LoadState --value ssh.service')
         if [ '{mode}' = sshd ]; then echo not-found; else echo loaded; fi ;;
+    'restart ssh.socket') [ '{fail}' = no ] || ! grep -qs ':2222' system/ssh.socket.d/zz-kvm-vm-port.conf ;;
+    'restart '*) [ '{fail}' = no ] || ! grep -qs '^Port 2222' ssh/sshd_config ;;
     *) exit 0 ;;
 esac
 """, encoding="utf-8")
@@ -610,11 +617,19 @@ esac
         sshd.chmod(0o755)
 
     @staticmethod
+    def restart_calls(mode):
+        if mode.startswith("socket"):
+            return ["daemon-reload", "restart ssh.socket", "try-restart ssh.service"]
+        return [f"restart {mode}.service"]
+
+    @staticmethod
     def run_command(tmp_path, port):
         command = kvm_vm.ssh_port_command(port)
         command = command.replace("/etc/ssh/", "./ssh/").replace("/etc/systemd/system/", "./system/").replace("/usr/sbin/sshd", "./bin/sshd").replace("/run/sshd", "./run/sshd")
-        script = 'PATH="$PWD/bin:$PATH"\nexport PATH\n' + command
-        return subprocess.run([shutil.which("sh")], input=script, text=True, cwd=tmp_path, capture_output=True)
+        script = tmp_path / "provision.sh"
+        # Write bytes so Windows keeps LF line endings, which dash requires.
+        script.write_bytes(('PATH="$PWD/bin:$PATH"\nexport PATH\n' + command).encode("utf-8"))
+        return subprocess.run([shutil.which("sh"), script.name], text=True, cwd=tmp_path, capture_output=True)
 
     @staticmethod
     def calls(tmp_path):
@@ -634,21 +649,43 @@ esac
             assert self.run_command(tmp_path, 2222).returncode == 0
         assert (tmp_path / "ssh/sshd_config").read_text(encoding="utf-8") == "Port 2222\n" + self.MAIN.replace("Port 2200\n", "")
         assert (tmp_path / "ssh/sshd_config.d/custom.conf").read_text(encoding="utf-8") == "PermitRootLogin no\n"
-        actions = self.actions(tmp_path)
-        assert actions[0] == "sshd -t"
+        assert self.actions(tmp_path) == (["sshd -t"] + self.restart_calls(mode)) * 2
         override = tmp_path / "system/ssh.socket.d/zz-kvm-vm-port.conf"
         if mode.startswith("socket"):
             assert override.read_text(encoding="utf-8") == self.OVERRIDE
-            assert actions[:4] == ["sshd -t", "daemon-reload", "restart ssh.socket", "try-restart ssh.service"]
         else:
             assert not override.exists()
-            assert actions[:2] == ["sshd -t", f"restart {mode}.service"]
 
     @pytest.mark.parametrize("mode", MODES)
-    def test_invalid_config_stops_before_restart(self, tmp_path, mode):
-        self.make_guest(tmp_path, mode, valid_config=False)
-        assert self.run_command(tmp_path, 2222).returncode != 0
-        assert self.actions(tmp_path) == ["sshd -t"]
+    @pytest.mark.parametrize("failure", ["invalid-config", "restart"])
+    @pytest.mark.parametrize("had_dropin", [False, True])
+    def test_failure_restores_previous_config(self, tmp_path, mode, failure, had_dropin):
+        self.make_guest(tmp_path, mode, valid_config=failure != "invalid-config", restart_fails=failure == "restart")
+        dropin = tmp_path / "system/ssh.socket.d/zz-kvm-vm-port.conf"
+        old_dropin = self.OVERRIDE.replace("2222", "2200")
+        if had_dropin:
+            # A clone of a guest that kvm-vm already moved to another port.
+            dropin.parent.mkdir(parents=True)
+            dropin.write_text(old_dropin, encoding="utf-8")
+
+        result = self.run_command(tmp_path, 2222)
+
+        assert result.returncode != 0
+        assert "kvm-vm: could not move SSH to port 2222; restoring the previous SSH configuration" in result.stderr
+        assert (tmp_path / "ssh/sshd_config").read_text(encoding="utf-8") == self.MAIN
+        assert (tmp_path / "ssh/sshd_config.d/custom.conf").read_text(encoding="utf-8") == self.SNIPPET
+        if had_dropin:
+            assert dropin.read_text(encoding="utf-8") == old_dropin
+        else:
+            assert not dropin.exists()
+        restart = self.restart_calls(mode)
+        if failure == "invalid-config":
+            # The listener never changed, but restarting it again is harmless.
+            assert self.actions(tmp_path) == ["sshd -t"] + restart
+        else:
+            # The new port fails to start; the restored files start the old listener.
+            failed = restart[:2] if mode.startswith("socket") else restart
+            assert self.actions(tmp_path) == ["sshd -t"] + failed + restart
 
     @pytest.mark.parametrize("mode", MODES)
     def test_default_port_removes_kvm_vm_settings(self, tmp_path, mode):
@@ -660,10 +697,22 @@ esac
         assert (tmp_path / "ssh/sshd_config").read_text(encoding="utf-8") == self.MAIN.replace("Port 2200\n", "")
         assert (tmp_path / "ssh/sshd_config.d/custom.conf").read_text(encoding="utf-8") == "PermitRootLogin no\n"
         assert not (tmp_path / "system/ssh.socket.d/zz-kvm-vm-port.conf").exists()
-        if mode.startswith("socket"):
-            assert self.actions(tmp_path) == ["sshd -t", "daemon-reload", "restart ssh.socket", "try-restart ssh.service"]
-        else:
-            assert self.actions(tmp_path) == ["sshd -t", f"restart {mode}.service"]
+        assert self.actions(tmp_path) == ["sshd -t"] + self.restart_calls(mode)
+
+    @pytest.mark.parametrize("mode", MODES)
+    def test_failed_reset_keeps_custom_port(self, tmp_path, mode):
+        self.make_guest(tmp_path, mode)
+        assert self.run_command(tmp_path, 2222).returncode == 0
+        before = {p: p.read_text(encoding="utf-8") for p in tmp_path.glob("s*/**/*") if p.is_file()}
+        (tmp_path / "bin/sshd").write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        (tmp_path / "calls").unlink()
+
+        result = self.run_command(tmp_path, 22)
+
+        assert result.returncode != 0
+        assert "could not move SSH to port 22" in result.stderr
+        assert {p: p.read_text(encoding="utf-8") for p in tmp_path.glob("s*/**/*") if p.is_file()} == before
+        assert self.actions(tmp_path) == self.restart_calls(mode)
 
     @pytest.mark.parametrize("mode", MODES)
     def test_default_port_leaves_unchanged_guest_untouched(self, tmp_path, mode):
@@ -721,7 +770,7 @@ class TestMakeCloudFiles:
         assert "ListenStream=[::]:%s" in command[2]
         assert "BindIPv6Only=ipv6-only" in command[2]
         assert "ListenStream=\\nListenStream=" in command[2]
-        assert command[2].index("/usr/sbin/sshd -t") < command[2].index("systemctl restart")
+        # TestSshPortCommand executes the command to check call order.
         assert "systemctl restart ssh.socket" in command[2]
         assert "systemctl restart ssh.service" in command[2]
         assert "systemctl restart sshd.service" in command[2]

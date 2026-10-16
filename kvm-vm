@@ -726,7 +726,8 @@ def ssh_port_command(port: int) -> str:
     Remove previous Port directives because OpenSSH allows multiple listeners,
     including when cloning a guest that used a different port. Port 22 is the
     default, so it removes kvm-vm's settings instead of writing new ones, and
-    leaves a guest that has none untouched.
+    leaves a guest that has none untouched. If SSH cannot restart, restore the
+    previous files so the guest stays reachable on its old port.
     """
     return f"""set -eu
 port={port}
@@ -735,31 +736,58 @@ port_re='^[[:space:]]*[Pp][Oo][Rr][Tt]([[:space:]]|=)'
 if [ "$port" = 22 ] && [ ! -e "$dropin" ] && ! grep -Eqs "$port_re" /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf; then
     exit 0
 fi
-for config in /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf; do
-    [ -f "$config" ] || continue
-    sed -i -E "/$port_re/d" "$config"
-done
-if [ "$port" = 22 ]; then
-    rm -f "$dropin"
-else
-    sed -i "1iPort $port" /etc/ssh/sshd_config
-fi
-# Socket activation may not have started ssh.service to create its runtime dir.
-install -d -m 0755 /run/sshd
-/usr/sbin/sshd -t
+
+socket=false
 if systemctl is-active --quiet ssh.socket || systemctl is-enabled --quiet ssh.socket; then
-    if [ "$port" != 22 ]; then
-        mkdir -p /etc/systemd/system/ssh.socket.d
-        # Ubuntu's socket uses BindIPv6Only=ipv6-only, so both addresses are needed.
-        printf '[Socket]\\nListenStream=\\nListenStream=0.0.0.0:%s\\nListenStream=[::]:%s\\nBindIPv6Only=ipv6-only\\n' "$port" "$port" > "$dropin"
+    socket=true
+fi
+
+restart_ssh() {{
+    if $socket; then
+        systemctl daemon-reload && systemctl restart ssh.socket && systemctl try-restart ssh.service
+    elif [ "$(systemctl show -p LoadState --value ssh.service)" = loaded ]; then
+        systemctl restart ssh.service
+    else
+        systemctl restart sshd.service
     fi
-    systemctl daemon-reload
-    systemctl restart ssh.socket
-    systemctl try-restart ssh.service
-elif [ "$(systemctl show -p LoadState --value ssh.service)" = loaded ]; then
-    systemctl restart ssh.service
-else
-    systemctl restart sshd.service
+}}
+
+# set -e is ignored in a function called as a condition, so check each step.
+apply_port() {{
+    for config in /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf; do
+        [ -f "$config" ] || continue
+        sed -i -E "/$port_re/d" "$config" || return
+    done
+    if [ "$port" = 22 ]; then
+        rm -f "$dropin" || return
+    else
+        sed -i "1iPort $port" /etc/ssh/sshd_config || return
+    fi
+    # Socket activation may not have started ssh.service to create its runtime dir.
+    install -d -m 0755 /run/sshd || return
+    /usr/sbin/sshd -t || return
+    if $socket && [ "$port" != 22 ]; then
+        mkdir -p /etc/systemd/system/ssh.socket.d || return
+        # Ubuntu's socket uses BindIPv6Only=ipv6-only, so both addresses are needed.
+        printf '[Socket]\\nListenStream=\\nListenStream=0.0.0.0:%s\\nListenStream=[::]:%s\\nBindIPv6Only=ipv6-only\\n' "$port" "$port" > "$dropin" || return
+    fi
+    restart_ssh
+}}
+
+backup=$(mktemp -d)
+trap 'rm -rf "$backup"' EXIT
+cp -p /etc/ssh/sshd_config "$backup/"
+if [ -d /etc/ssh/sshd_config.d ]; then cp -pR /etc/ssh/sshd_config.d "$backup/"; fi
+if [ -f "$dropin" ]; then cp -p "$dropin" "$backup/socket.conf"; fi
+
+if ! apply_port; then
+    set +e
+    echo "kvm-vm: could not move SSH to port $port; restoring the previous SSH configuration" >&2
+    cp -p "$backup/sshd_config" /etc/ssh/sshd_config
+    if [ -d "$backup/sshd_config.d" ]; then cp -pR "$backup/sshd_config.d/." /etc/ssh/sshd_config.d/; fi
+    if [ -f "$backup/socket.conf" ]; then cp -p "$backup/socket.conf" "$dropin"; else rm -f "$dropin"; fi
+    restart_ssh
+    exit 1
 fi
 """
 

@@ -262,6 +262,8 @@ cloud_init:
 
 請將以上欄位合併至原有的 `cloud_init` 區段，保留使用者與 SSH 金鑰設定。
 
+若 SSH 無法在新 port 啟動（例如被 SELinux 或其他服務擋住），工具會還原先前的 SSH 設定檔並重啟 SSH。VM 仍可從原本的 port 連線（新 VM 為 22），cloud-init 會回報錯誤，`/var/log/cloud-init-output.log` 中會出現 `kvm-vm: could not move SSH to port <port>`。
+
 SSH 金鑰可以是純文字 OpenSSH 公鑰字串，或是 `file:/path/to/key.pub` 格式。相對的 `file:` 路徑會以該 YAML 檔案所在位置為基準進行解析；支援波浪號展開（`file:~/.ssh/...`），若透過 `sudo` 執行，會自動辨識並解析為 `$SUDO_USER` 的家目錄。
 
 `mac: auto` 在儲存的生效 YAML 中會被替換為實際的 `52:54:00:*` 位址。靜態 cloud-init 網路設定會比對該 MAC 位址並將網路介面重新命名為 `eth0`，因此設定不會受到不同發行版將介面命名為 `ens3`、`enp1s0` 等差異的影響。
@@ -748,6 +750,7 @@ bash tests/smoke.sh
 - 等待 DHCP 租約 IP 並驗證 SSH 連線、主機名設定與使用者建立
 - 驗證 `kvm-vm status` 與 `kvm-vm list` 輸出結果
 - 停機進行 `kvm-vm clone` 複製並由 `virt-sysprep` 重置系統後開機連線
+- 自訂 SSH port、clone 時還原為 22，以及新 port 被占用時的回滾
 - 測試 `kvm-vm reinstall --force --yes` 線上重裝作業系統
 - 完整刪除與儲存檔案清理驗證
 

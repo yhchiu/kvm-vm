@@ -544,3 +544,33 @@ def test_e2e_primary_lifecycle(tmp_path: Path, ssh_keypair: Dict[str, Any], vm_c
     assert not Path(f"/var/lib/libvirt/images/cloud-init/{src_name}").exists()
     assert not Path(f"/var/lib/kvm-vm/state/{src_name}.json").exists()
     assert not Path(f"/etc/kvm-vm/definitions/{src_name}.yaml").exists()
+
+
+def test_e2e_ssh_port_rollback(tmp_path: Path, ssh_keypair: Dict[str, Any], vm_cleanup_tracker: Set[str]):
+    """A custom port that SSH cannot use leaves the new VM reachable on port 22."""
+    name = f"e2e-rbk-{uuid.uuid4().hex[:6]}"
+    vm_cleanup_tracker.add(name)
+    port = 2222
+    key = ssh_keypair["private_key_path"]
+    raw = yaml.safe_load(build_vm_yaml(name, ssh_keypair["public_key_content"], ssh_port=port))
+    # User commands run first, so this socket holds the port on IPv4 and IPv6
+    # before kvm-vm moves SSH to it.
+    raw["cloud_init"].setdefault("runcmd", []).append([
+        "systemd-run", "--unit", "e2e-port-blocker",
+        "--socket-property", f"ListenStream=0.0.0.0:{port}",
+        "--socket-property", f"ListenStream=[::]:{port}",
+        "--socket-property", "BindIPv6Only=ipv6-only",
+        "/bin/true",
+    ])
+    definition = tmp_path / f"{name}.yaml"
+    definition.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    assert E2EHelper.run_kvm_vm("create", str(definition)).returncode == 0
+    ip = E2EHelper.wait_for_ssh(name, key, timeout=180)
+    # Port 22 answers before provisioning ends, so wait for the rollback first.
+    rc = E2EHelper.ssh_exec(ip, key, "sudo cloud-init status --wait >/dev/null; echo $?")
+    assert rc != "0", "cloud-init must report the failed port change"
+    log = E2EHelper.ssh_exec(ip, key, "sudo cat /var/log/cloud-init-output.log")
+    assert f"kvm-vm: could not move SSH to port {port}; restoring the previous SSH configuration" in log
+    assert ssh_port_settings(ip, key) == []
+    assert E2EHelper.ssh_exec(ip, key, "whoami") == "admin"
