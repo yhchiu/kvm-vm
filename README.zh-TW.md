@@ -247,7 +247,7 @@ cloud_init:
   runcmd: []
 ```
 
-`cloud_init.ssh_port` 接受 `1–65535` 的整數，預設為 `22`。例如，設定 `ssh_port: 2222` 即使用 TCP port 2222。首次初始化時，工具會在使用者的 `runcmd` 執行後，替換 `/etc/ssh/sshd_config` 和 `/etc/ssh/sshd_config.d/*.conf` 中啟用的 `Port` 設定，驗證 SSH 設定並重啟監聽服務，也會處理 Ubuntu 的 `ssh.socket`。Clone 使用目標 YAML 的 port（省略時為 22）；reinstall 保留已儲存的 port。單純修改定義檔不會更新正在運行的 VM。
+`cloud_init.ssh_port` 接受 `1–65535` 的整數，預設為 `22`。使用預設值時，工具不會改動映像檔原本的 SSH 設定。例如，設定 `ssh_port: 2222` 即使用 TCP port 2222。首次初始化時，工具會在使用者的 `runcmd` 執行後，替換 `/etc/ssh/sshd_config` 和 `/etc/ssh/sshd_config.d/*.conf` 中啟用的 `Port` 設定，驗證 SSH 設定並重啟監聽服務。若 SSH 由 `ssh.socket` 啟動（例如 Ubuntu），工具還會寫入 `/etc/systemd/system/ssh.socket.d/zz-kvm-vm-port.conf`；socket 的 port 由這個檔案決定，之後若要手動改 port，請一併修改或刪除它。Clone 使用目標 YAML 的 port（省略時為 22）；若 clone 使用 22，工具會移除來源 VM 留下的 `Port` 設定與 socket 設定檔，讓 SSH 回到映像檔預設值。Reinstall 保留已儲存的 port。單純修改定義檔不會更新正在運行的 VM。
 
 請讓 VM 內及上游防火牆允許所選的 port。Rocky/Alma 等啟用 SELinux 的 VM，還需在 SSH 重啟前授權自訂 port。例如，若該 port 尚未在 SELinux policy 中指定用途：
 

@@ -724,21 +724,35 @@ def ssh_port_command(port: int) -> str:
 
     Update the main config for older images without sshd_config.d support too.
     Remove previous Port directives because OpenSSH allows multiple listeners,
-    including when cloning a guest that used a different port.
+    including when cloning a guest that used a different port. Port 22 is the
+    default, so it removes kvm-vm's settings instead of writing new ones, and
+    leaves a guest that has none untouched.
     """
     return f"""set -eu
+port={port}
+dropin=/etc/systemd/system/ssh.socket.d/zz-kvm-vm-port.conf
+port_re='^[[:space:]]*[Pp][Oo][Rr][Tt]([[:space:]]|=)'
+if [ "$port" = 22 ] && [ ! -e "$dropin" ] && ! grep -Eqs "$port_re" /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf; then
+    exit 0
+fi
 for config in /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf; do
     [ -f "$config" ] || continue
-    sed -i -E '/^[[:space:]]*[Pp][Oo][Rr][Tt]([[:space:]]|=)/d' "$config"
+    sed -i -E "/$port_re/d" "$config"
 done
-sed -i '1iPort {port}' /etc/ssh/sshd_config
+if [ "$port" = 22 ]; then
+    rm -f "$dropin"
+else
+    sed -i "1iPort $port" /etc/ssh/sshd_config
+fi
 # Socket activation may not have started ssh.service to create its runtime dir.
 install -d -m 0755 /run/sshd
 /usr/sbin/sshd -t
 if systemctl is-active --quiet ssh.socket || systemctl is-enabled --quiet ssh.socket; then
-    mkdir -p /etc/systemd/system/ssh.socket.d
-    # Ubuntu's socket uses BindIPv6Only=ipv6-only, so both addresses are needed.
-    printf '[Socket]\\nListenStream=\\nListenStream=0.0.0.0:{port}\\nListenStream=[::]:{port}\\nBindIPv6Only=ipv6-only\\n' > /etc/systemd/system/ssh.socket.d/zz-kvm-vm-port.conf
+    if [ "$port" != 22 ]; then
+        mkdir -p /etc/systemd/system/ssh.socket.d
+        # Ubuntu's socket uses BindIPv6Only=ipv6-only, so both addresses are needed.
+        printf '[Socket]\\nListenStream=\\nListenStream=0.0.0.0:%s\\nListenStream=[::]:%s\\nBindIPv6Only=ipv6-only\\n' "$port" "$port" > "$dropin"
+    fi
     systemctl daemon-reload
     systemctl restart ssh.socket
     systemctl try-restart ssh.service
@@ -750,7 +764,7 @@ fi
 """
 
 
-def make_cloud_files(cfg: Dict[str, Any], source_def_dir: Path) -> Tuple[Path, Path, Path, str]:
+def make_cloud_files(cfg: Dict[str, Any], source_def_dir: Path, *, reset_ssh_port: bool = False) -> Tuple[Path, Path, Path, str]:
     name = cfg["vm"]["name"]
     cdir = CLOUD_DIR / name
     if cdir.exists():
@@ -769,7 +783,10 @@ def make_cloud_files(cfg: Dict[str, Any], source_def_dir: Path) -> Tuple[Path, P
         if "qemu-guest-agent" not in packages:
             packages.append("qemu-guest-agent")
         runcmd.append(["systemctl", "enable", "--now", "qemu-guest-agent"])
-    runcmd.append(["sh", "-c", ssh_port_command(cfg["cloud_init"].get("ssh_port", 22))])
+    ssh_port = cfg["cloud_init"].get("ssh_port", 22)
+    # Fresh images already listen on 22. A cloned disk may keep the source's port.
+    if ssh_port != 22 or reset_ssh_port:
+        runcmd.append(["sh", "-c", ssh_port_command(ssh_port)])
 
     user_cfg: Dict[str, Any] = {
         "hostname": name,
@@ -1079,7 +1096,7 @@ def cmd_clone(args: argparse.Namespace) -> int:
         make_disk_from_clone(src_disk, disk, cfg["storage"].get("disk_gib"))
         restore_selinux([disk])
         sysprep_clone_disk(disk)
-        _, _, _, instance_id = make_cloud_files(cfg, p.parent)
+        _, _, _, instance_id = make_cloud_files(cfg, p.parent, reset_ssh_port=True)
         seed = CLOUD_DIR / name / "seed.img"
         define_vm(cfg, disk, seed, None, no_start=args.no_start)
         save_state(cfg, disk, {"type": "clone", "source_vm": source_name, "source_disk": str(src_disk)}, instance_id, p)

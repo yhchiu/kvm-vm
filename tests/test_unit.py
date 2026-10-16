@@ -577,18 +577,20 @@ class TestCloudSeed:
 
 
 class TestSshPortCommand:
-    @pytest.mark.parametrize("mode", ["socket-active", "socket-enabled", "ssh", "sshd"])
-    @pytest.mark.parametrize("valid_config", [True, False])
-    def test_replaces_old_ports_and_restarts_listener(self, tmp_path, mode, valid_config):
-        shell = shutil.which("sh")
-        if not shell:
+    MODES = ["socket-active", "socket-enabled", "ssh", "sshd"]
+    MAIN = "#Port 22\nPort 2200\nInclude sshd_config.d/*.conf\nPasswordAuthentication no\nMatch User admin\n    X11Forwarding no\n"
+    SNIPPET = "  pOrT=2201\nPermitRootLogin no\n"
+    OVERRIDE = "[Socket]\nListenStream=\nListenStream=0.0.0.0:2222\nListenStream=[::]:2222\nBindIPv6Only=ipv6-only\n"
+
+    @staticmethod
+    def make_guest(tmp_path, mode, main=MAIN, snippet=SNIPPET, valid_config=True):
+        """Lay out a fake guest root with mocked systemctl and sshd that log calls."""
+        if not shutil.which("sh"):
             pytest.skip("POSIX shell required to execute guest provisioning commands")
         ssh_dir = tmp_path / "ssh"
         (ssh_dir / "sshd_config.d").mkdir(parents=True)
-        main = ssh_dir / "sshd_config"
-        main.write_text("#Port 22\nPort 2200\nInclude sshd_config.d/*.conf\nPasswordAuthentication no\nMatch User admin\n    X11Forwarding no\n", encoding="utf-8")
-        snippet = ssh_dir / "sshd_config.d" / "custom.conf"
-        snippet.write_text("  pOrT=2201\nPermitRootLogin no\n", encoding="utf-8")
+        (ssh_dir / "sshd_config").write_text(main, encoding="utf-8")
+        (ssh_dir / "sshd_config.d" / "custom.conf").write_text(snippet, encoding="utf-8")
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir()
         systemctl = bin_dir / "systemctl"
@@ -606,29 +608,73 @@ esac
         sshd.write_text(f"#!/bin/sh\nprintf '%s\\n' \"sshd $*\" >> calls\n[ -d ./run/sshd ] || exit 2\nexit {0 if valid_config else 1}\n", encoding="utf-8")
         systemctl.chmod(0o755)
         sshd.chmod(0o755)
-        command = kvm_vm.ssh_port_command(2222)
+
+    @staticmethod
+    def run_command(tmp_path, port):
+        command = kvm_vm.ssh_port_command(port)
         command = command.replace("/etc/ssh/", "./ssh/").replace("/etc/systemd/system/", "./system/").replace("/usr/sbin/sshd", "./bin/sshd").replace("/run/sshd", "./run/sshd")
         script = 'PATH="$PWD/bin:$PATH"\nexport PATH\n' + command
-        if not valid_config:
-            result = subprocess.run([shell], input=script, text=True, cwd=tmp_path, capture_output=True)
-            assert result.returncode != 0
-            assert (tmp_path / "calls").read_text(encoding="utf-8").splitlines() == ["sshd -t"]
-            return
+        return subprocess.run([shutil.which("sh")], input=script, text=True, cwd=tmp_path, capture_output=True)
+
+    @staticmethod
+    def calls(tmp_path):
+        log = tmp_path / "calls"
+        return log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+
+    @staticmethod
+    def actions(tmp_path):
+        """Calls that validate or change the running listener, without state queries."""
+        return [c for c in TestSshPortCommand.calls(tmp_path) if c == "sshd -t" or c == "daemon-reload" or "restart" in c]
+
+    @pytest.mark.parametrize("mode", MODES)
+    def test_replaces_old_ports_and_restarts_listener(self, tmp_path, mode):
+        self.make_guest(tmp_path, mode)
         # Running twice verifies that a cloned/reprovisioned guest remains idempotent.
         for _ in range(2):
-            subprocess.run([shell], input=script, text=True, cwd=tmp_path, capture_output=True, check=True)
-        assert main.read_text(encoding="utf-8") == "Port 2222\n#Port 22\nInclude sshd_config.d/*.conf\nPasswordAuthentication no\nMatch User admin\n    X11Forwarding no\n"
-        assert snippet.read_text(encoding="utf-8") == "PermitRootLogin no\n"
-        calls = (tmp_path / "calls").read_text(encoding="utf-8").splitlines()
-        assert calls[0] == "sshd -t"
+            assert self.run_command(tmp_path, 2222).returncode == 0
+        assert (tmp_path / "ssh/sshd_config").read_text(encoding="utf-8") == "Port 2222\n" + self.MAIN.replace("Port 2200\n", "")
+        assert (tmp_path / "ssh/sshd_config.d/custom.conf").read_text(encoding="utf-8") == "PermitRootLogin no\n"
+        actions = self.actions(tmp_path)
+        assert actions[0] == "sshd -t"
+        override = tmp_path / "system/ssh.socket.d/zz-kvm-vm-port.conf"
         if mode.startswith("socket"):
-            override = tmp_path / "system/ssh.socket.d/zz-kvm-vm-port.conf"
-            assert override.read_text(encoding="utf-8") == "[Socket]\nListenStream=\nListenStream=0.0.0.0:2222\nListenStream=[::]:2222\nBindIPv6Only=ipv6-only\n"
-            assert calls.index("daemon-reload") < calls.index("restart ssh.socket")
-            assert "try-restart ssh.service" in calls
+            assert override.read_text(encoding="utf-8") == self.OVERRIDE
+            assert actions[:4] == ["sshd -t", "daemon-reload", "restart ssh.socket", "try-restart ssh.service"]
         else:
-            assert f"restart {mode}.service" in calls
-            assert "restart ssh.socket" not in calls
+            assert not override.exists()
+            assert actions[:2] == ["sshd -t", f"restart {mode}.service"]
+
+    @pytest.mark.parametrize("mode", MODES)
+    def test_invalid_config_stops_before_restart(self, tmp_path, mode):
+        self.make_guest(tmp_path, mode, valid_config=False)
+        assert self.run_command(tmp_path, 2222).returncode != 0
+        assert self.actions(tmp_path) == ["sshd -t"]
+
+    @pytest.mark.parametrize("mode", MODES)
+    def test_default_port_removes_kvm_vm_settings(self, tmp_path, mode):
+        """A clone that targets port 22 drops the source guest's custom port."""
+        self.make_guest(tmp_path, mode)
+        assert self.run_command(tmp_path, 2222).returncode == 0
+        (tmp_path / "calls").unlink()
+        assert self.run_command(tmp_path, 22).returncode == 0
+        assert (tmp_path / "ssh/sshd_config").read_text(encoding="utf-8") == self.MAIN.replace("Port 2200\n", "")
+        assert (tmp_path / "ssh/sshd_config.d/custom.conf").read_text(encoding="utf-8") == "PermitRootLogin no\n"
+        assert not (tmp_path / "system/ssh.socket.d/zz-kvm-vm-port.conf").exists()
+        if mode.startswith("socket"):
+            assert self.actions(tmp_path) == ["sshd -t", "daemon-reload", "restart ssh.socket", "try-restart ssh.service"]
+        else:
+            assert self.actions(tmp_path) == ["sshd -t", f"restart {mode}.service"]
+
+    @pytest.mark.parametrize("mode", MODES)
+    def test_default_port_leaves_unchanged_guest_untouched(self, tmp_path, mode):
+        main = "#Port 22\nPasswordAuthentication no\n"
+        snippet = "PermitRootLogin no\n"
+        self.make_guest(tmp_path, mode, main=main, snippet=snippet)
+        assert self.run_command(tmp_path, 22).returncode == 0
+        assert (tmp_path / "ssh/sshd_config").read_text(encoding="utf-8") == main
+        assert (tmp_path / "ssh/sshd_config.d/custom.conf").read_text(encoding="utf-8") == snippet
+        assert not (tmp_path / "system").exists()
+        assert self.calls(tmp_path) == []
 
 
 class TestMakeCloudFiles:
@@ -644,8 +690,8 @@ class TestMakeCloudFiles:
         assert data["users"][0]["primary_group"] == user
         assert user in data["users"][0]["groups"]
 
-    @pytest.mark.parametrize("port", [None, 22, 2222])
-    def test_ssh_port_provisioning(self, tmp_path, monkeypatch, port):
+    @staticmethod
+    def make_user_data(tmp_path, monkeypatch, port, **kwargs):
         monkeypatch.setattr(kvm_vm, "CLOUD_DIR", tmp_path / "cloud-init")
         raw = _minimal_raw()
         raw["cloud_init"]["runcmd"] = [["echo", "user command"]]
@@ -655,27 +701,73 @@ class TestMakeCloudFiles:
         if port is None:
             # Older stored definitions do not have the new field.
             cfg["cloud_init"].pop("ssh_port")
-            port = 22
         with patch("kvm_vm.create_cloud_seed"):
-            ud, _, _, _ = kvm_vm.make_cloud_files(cfg, tmp_path)
+            ud, _, _, _ = kvm_vm.make_cloud_files(cfg, tmp_path, **kwargs)
+        assert cfg["cloud_init"]["runcmd"] == [["echo", "user command"]]
+        return kvm_vm.yaml.safe_load(ud.read_text(encoding="utf-8"))
 
-        data = kvm_vm.yaml.safe_load(ud.read_text(encoding="utf-8"))
+    @pytest.mark.parametrize("reset_ssh_port", [False, True])
+    def test_custom_ssh_port_provisioning(self, tmp_path, monkeypatch, reset_ssh_port):
+        data = self.make_user_data(tmp_path, monkeypatch, 2222, reset_ssh_port=reset_ssh_port)
         assert data["ssh_pwauth"] is False
         assert data["disable_root"] is True
         assert data["runcmd"][0] == ["echo", "user command"]
         assert data["runcmd"][1] == ["systemctl", "enable", "--now", "qemu-guest-agent"]
         command = data["runcmd"][-1]
         assert command[:2] == ["sh", "-c"]
-        assert f"1iPort {port}" in command[2]
-        assert f"ListenStream=0.0.0.0:{port}" in command[2]
-        assert f"ListenStream=[::]:{port}" in command[2]
+        assert command[2] == kvm_vm.ssh_port_command(2222)
+        assert "port=2222\n" in command[2]
+        assert "ListenStream=0.0.0.0:%s" in command[2]
+        assert "ListenStream=[::]:%s" in command[2]
         assert "BindIPv6Only=ipv6-only" in command[2]
         assert "ListenStream=\\nListenStream=" in command[2]
         assert command[2].index("/usr/sbin/sshd -t") < command[2].index("systemctl restart")
         assert "systemctl restart ssh.socket" in command[2]
         assert "systemctl restart ssh.service" in command[2]
         assert "systemctl restart sshd.service" in command[2]
-        assert cfg["cloud_init"]["runcmd"] == [["echo", "user command"]]
+
+    @pytest.mark.parametrize("port", [None, 22])
+    def test_default_ssh_port_leaves_fresh_image_alone(self, tmp_path, monkeypatch, port):
+        data = self.make_user_data(tmp_path, monkeypatch, port)
+        assert data["runcmd"] == [["echo", "user command"], ["systemctl", "enable", "--now", "qemu-guest-agent"]]
+
+    @pytest.mark.parametrize("port", [None, 22])
+    def test_default_ssh_port_resets_cloned_disk(self, tmp_path, monkeypatch, port):
+        data = self.make_user_data(tmp_path, monkeypatch, port, reset_ssh_port=True)
+        assert data["runcmd"][:2] == [["echo", "user command"], ["systemctl", "enable", "--now", "qemu-guest-agent"]]
+        assert data["runcmd"][2] == ["sh", "-c", kvm_vm.ssh_port_command(22)]
+        assert len(data["runcmd"]) == 3
+
+    def test_clone_resets_ssh_port(self, tmp_path):
+        def_file = tmp_path / "clone01.yaml"
+        kvm_vm.yaml_dump(def_file, _minimal_raw(vm={"name": "clone01"}))
+        src_disk = tmp_path / "src01.qcow2"
+        src_disk.touch()
+        args = MagicMock()
+        args.source = "src01"
+        args.definition = str(def_file)
+        args.dry_run = False
+        args.no_start = False
+
+        with patch("kvm_vm.require_commands"), \
+             patch("kvm_vm.require_cloud_seed_generator"), \
+             patch("kvm_vm.ensure_dirs"), \
+             patch("kvm_vm.domain_exists", side_effect=lambda name: name == "src01"), \
+             patch("kvm_vm.domain_state", return_value="shut off"), \
+             patch("kvm_vm.load_state", side_effect=lambda name: {"disk": str(src_disk)} if name == "src01" else None), \
+             patch("kvm_vm.validate_network_attachment"), \
+             patch("kvm_vm.existing_macs", return_value=set()), \
+             patch("kvm_vm.verify_sysprep_compatibility"), \
+             patch("kvm_vm.make_disk_from_clone"), \
+             patch("kvm_vm.restore_selinux"), \
+             patch("kvm_vm.sysprep_clone_disk"), \
+             patch("kvm_vm.make_cloud_files", return_value=(None, None, None, "iid-123")) as mock_cloud, \
+             patch("kvm_vm.define_vm"), \
+             patch("kvm_vm.save_state"):
+            assert kvm_vm.cmd_clone(args) == 0
+
+        # The copied disk may still carry the source guest's SSH port.
+        assert mock_cloud.call_args.kwargs == {"reset_ssh_port": True}
 
     def test_static_ipv4_uses_cidr_default_route(self, tmp_path, monkeypatch):
         monkeypatch.setattr(kvm_vm, "CLOUD_DIR", tmp_path / "cloud-init")

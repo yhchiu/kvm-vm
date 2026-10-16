@@ -255,12 +255,17 @@ cloud_init:
 ```
 
 `cloud_init.ssh_port` accepts an integer from `1` to `65535` and defaults to `22`.
+With the default, the tool leaves the image's SSH configuration unchanged.
 For example, set `ssh_port: 2222` to listen on TCP port 2222. During first-boot
 provisioning, after your `runcmd` commands, the tool replaces active `Port` directives
 in `/etc/ssh/sshd_config` and `/etc/ssh/sshd_config.d/*.conf`, validates the SSH
-configuration, and restarts the listener. Ubuntu's `ssh.socket` is configured too.
-Clones use the target definition's port (or 22 when omitted); reinstalls preserve
-the saved port. Editing a definition alone does not update a running VM.
+configuration, and restarts the listener. Where `ssh.socket` starts SSH, as on Ubuntu,
+the tool also writes `/etc/systemd/system/ssh.socket.d/zz-kvm-vm-port.conf`. That file
+sets the socket's port, so edit or remove it if you later change the port by hand.
+Clones use the target definition's port (or 22 when omitted). A clone that uses 22
+gets the source guest's `Port` directives and socket file removed, so SSH returns to
+the image default. Reinstalls preserve the saved port. Editing a definition alone does
+not update a running VM.
 
 Allow the chosen port through any guest or upstream firewall. On SELinux-enabled
 guests such as Rocky/Alma, authorize a custom port before SSH restarts; for example,

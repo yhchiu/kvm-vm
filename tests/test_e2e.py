@@ -285,6 +285,18 @@ def vm_cleanup_tracker():
                 pass
 
 
+def ssh_port_settings(ip: str, key_path: Path, port: int = 22) -> List[str]:
+    """Return the guest's active sshd Port directives and kvm-vm's socket file, if present."""
+    out = E2EHelper.ssh_exec(
+        ip,
+        key_path,
+        "sudo sh -c \"grep -Ehs '^[[:space:]]*[Pp][Oo][Rr][Tt]([[:space:]]|=)' /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf;"
+        " ls /etc/systemd/system/ssh.socket.d/zz-kvm-vm-port.conf 2>/dev/null; true\"",
+        port=port,
+    )
+    return out.splitlines()
+
+
 def build_vm_yaml(name: str, pub_key: str, distro: str = E2E_DISTRO, memory_mib: int = 1024, ssh_port: int = 22) -> str:
     cloud_init = {
         "user": "admin",
@@ -427,6 +439,7 @@ def test_e2e_primary_lifecycle(tmp_path: Path, ssh_keypair: Dict[str, Any], vm_c
     E2EHelper.ssh_exec(src_ip, key_priv, "sudo cloud-init status --wait", port=ssh_port)
     listeners = E2EHelper.ssh_exec(src_ip, key_priv, "sudo ss -ltnH 'sport = :22'", port=ssh_port)
     assert listeners == "", "Default port 22 must no longer accept connections"
+    assert ssh_port_settings(src_ip, key_priv, port=ssh_port)[0] == f"Port {ssh_port}"
 
     # ---------------------------------------------------------
     # Step 3: Verify status & list CLI commands
@@ -490,6 +503,10 @@ def test_e2e_primary_lifecycle(tmp_path: Path, ssh_keypair: Dict[str, Any], vm_c
     # In-guest assertion: hostname of clone VM must be clone_name
     clone_in_guest_hostname = E2EHelper.ssh_exec(clone_ip, key_priv, "hostname", user="admin")
     assert clone_in_guest_hostname == clone_name
+    E2EHelper.ssh_exec(clone_ip, key_priv, "sudo cloud-init status --wait")
+    # Port 22 is the image default, so the clone keeps none of the source's port settings.
+    assert ssh_port_settings(clone_ip, key_priv) == []
+    assert E2EHelper.ssh_exec(clone_ip, key_priv, f"sudo ss -ltnH 'sport = :{ssh_port}'") == ""
 
     # Delete clone VM now
     res_del_clone = E2EHelper.run_kvm_vm("delete", clone_name, "--force", "--yes")
