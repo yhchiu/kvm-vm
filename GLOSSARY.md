@@ -18,3 +18,8 @@ _Avoid_: Snapshot
 **Restore**:
 Recovery of a VM from a backup to a usable state after loss or corruption.
 _Avoid_: Snapshot rollback
+
+**Backup checkpoint**:
+A reference point used to identify disk changes for an incremental backup.
+It does not itself contain the historical data needed to recover a VM.
+_Avoid_: Snapshot, backup
