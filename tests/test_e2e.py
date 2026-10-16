@@ -43,6 +43,10 @@ _ROOT = Path(__file__).resolve().parent.parent
 KVM_VM_BIN = _ROOT / "kvm-vm"
 LIBVIRT_URI = os.environ.get("KVM_VM_LIBVIRT_URI", "qemu:///system")
 E2E_DISTRO = os.environ.get("KVM_VM_E2E_DISTRO", "debian12")
+# Rocky and AlmaLinux GenericCloud images have a 10 GiB virtual size.
+E2E_DISK_GIB = 10
+# Slow hosts and guests that install packages at first boot need a longer wait.
+E2E_SSH_TIMEOUT = int(os.environ.get("KVM_VM_E2E_SSH_TIMEOUT", "180"))
 
 
 def _check_e2e_prerequisites() -> Tuple[bool, str]:
@@ -315,7 +319,7 @@ def build_vm_yaml(name: str, pub_key: str, distro: str = E2E_DISTRO, memory_mib:
                 "memory_mib": memory_mib,
             },
             "storage": {
-                "disk_gib": 5,
+                "disk_gib": E2E_DISK_GIB,
                 "image": {
                     "distro": distro,
                 },
@@ -425,7 +429,7 @@ def test_e2e_primary_lifecycle(tmp_path: Path, ssh_keypair: Dict[str, Any], vm_c
     # ---------------------------------------------------------
     # Step 2: Acquire IP & SSH in-guest verification
     # ---------------------------------------------------------
-    src_ip = E2EHelper.wait_for_ssh(src_name, key_priv, user="admin", timeout=180, port=ssh_port)
+    src_ip = E2EHelper.wait_for_ssh(src_name, key_priv, user="admin", timeout=E2E_SSH_TIMEOUT, port=ssh_port)
     assert src_ip
 
     # In-guest assertion: verify cloud-init applied hostname and created user
@@ -473,7 +477,7 @@ def test_e2e_primary_lifecycle(tmp_path: Path, ssh_keypair: Dict[str, Any], vm_c
                 "memory_mib": 1024,
             },
             "storage": {
-                "disk_gib": 5,
+                "disk_gib": E2E_DISK_GIB,
             },
             "network": {
                 "mode": "nat",
@@ -497,7 +501,7 @@ def test_e2e_primary_lifecycle(tmp_path: Path, ssh_keypair: Dict[str, Any], vm_c
     assert E2EHelper.domain_state(clone_name) == "running"
 
     # The target omits ssh_port, so cloning must replace the source's 2222 with 22.
-    clone_ip = E2EHelper.wait_for_ssh(clone_name, key_priv, user="admin", timeout=180)
+    clone_ip = E2EHelper.wait_for_ssh(clone_name, key_priv, user="admin", timeout=E2E_SSH_TIMEOUT)
     assert clone_ip
 
     # In-guest assertion: hostname of clone VM must be clone_name
@@ -526,7 +530,7 @@ def test_e2e_primary_lifecycle(tmp_path: Path, ssh_keypair: Dict[str, Any], vm_c
     assert E2EHelper.domain_state(src_name) == "running"
 
     # Verify reinstalled VM obtains IP and responds via SSH
-    reinstalled_ip = E2EHelper.wait_for_ssh(src_name, key_priv, user="admin", timeout=180, port=ssh_port)
+    reinstalled_ip = E2EHelper.wait_for_ssh(src_name, key_priv, user="admin", timeout=E2E_SSH_TIMEOUT, port=ssh_port)
     assert reinstalled_ip
 
     reinstalled_hostname = E2EHelper.ssh_exec(reinstalled_ip, key_priv, "hostname", user="admin", port=ssh_port)
@@ -566,7 +570,7 @@ def test_e2e_ssh_port_rollback(tmp_path: Path, ssh_keypair: Dict[str, Any], vm_c
     definition.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
 
     assert E2EHelper.run_kvm_vm("create", str(definition)).returncode == 0
-    ip = E2EHelper.wait_for_ssh(name, key, timeout=180)
+    ip = E2EHelper.wait_for_ssh(name, key, timeout=E2E_SSH_TIMEOUT)
     # Port 22 answers before provisioning ends, so wait for the rollback first.
     rc = E2EHelper.ssh_exec(ip, key, "sudo cloud-init status --wait >/dev/null; echo $?")
     assert rc != "0", "cloud-init must report the failed port change"

@@ -828,6 +828,13 @@ Or target a specific distro:
 sudo bash tests/run_e2e.sh --distro ubuntu24.04 -v
 ```
 
+These tests wait 180 seconds for SSH. Rocky/Alma guests install SELinux tools at first
+boot and may need longer on slow hosts, so raise the wait with `KVM_VM_E2E_SSH_TIMEOUT`:
+
+```bash
+sudo KVM_VM_E2E_SSH_TIMEOUT=600 bash tests/run_e2e.sh --distro rocky8 -v
+```
+
 To check `create` and SSH access for every declared distro alias:
 
 ```bash

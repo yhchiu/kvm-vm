@@ -772,6 +772,12 @@ sudo bash tests/run_e2e.sh
 sudo bash tests/run_e2e.sh --distro ubuntu24.04 -v
 ```
 
+這些測試預設等待 SSH 180 秒。Rocky／Alma 會在首次開機時安裝 SELinux 工具，在較慢的主機上可能需要更久，可用 `KVM_VM_E2E_SSH_TIMEOUT` 延長：
+
+```bash
+sudo KVM_VM_E2E_SSH_TIMEOUT=600 bash tests/run_e2e.sh --distro rocky8 -v
+```
+
 驗證所有宣稱支援的 distro alias 都能 `create` 並透過 SSH 登入：
 
 ```bash
