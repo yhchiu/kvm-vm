@@ -1,9 +1,9 @@
 # Snapshot and backup/restore evaluation
 
-Status: requirements clarified; the overall recommendation awaits confirmation
-in [ADR 0001](adr/0001-snapshot-and-backup-ownership.md). This document records
-requirements and findings, not a claim that recovery workflows have been
-implemented or tested on a hypervisor.
+Status: scope and implementation order accepted in
+[ADR 0001](adr/0001-snapshot-and-backup-ownership.md). This document records the
+agreed requirements, decision and findings. Feature implementation and
+hypervisor recovery validation remain future work.
 
 ## Confirmed requirements
 
@@ -30,7 +30,7 @@ implemented or tested on a hypervisor.
 
 See [the recovery glossary](../GLOSSARY.md) for the agreed terminology.
 
-## Current recommendation
+## Accepted decision
 
 Delegate disk backup and reconstruction to virtnbdbackup and virtnbdrestore.
 Their existing online full, incremental and differential backup support makes
@@ -90,12 +90,12 @@ Measure creation pauses and recovery time on representative workloads. These
 are follow-up design and verification tasks, not capabilities established by
 this discussion.
 
-## Validation and possible work split
+## Agreed work order and validation
 
 This discussion changes documents only; review their contents and run
 `git diff --check`. VM integration tests are not needed for documentation edits.
-If recovery support is taken forward, keep these tasks in separate commits and
-finish each task's checks before moving to the next:
+Implement recovery support in this order, keeping tasks in separate commits
+and finishing each task's checks before moving to the next:
 
 1. Fix lifecycle failure safety and checkpoint handling, with unit tests proving
    that a failed undefine cannot delete the original disk or guest artifacts.

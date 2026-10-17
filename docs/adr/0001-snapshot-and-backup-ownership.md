@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # Own the snapshot lifecycle and delegate disk backups
@@ -26,7 +26,7 @@ validate recovery of its own management information alongside the restored VM.
 - Add backup or metadata helper commands only when a demonstrated correctness
   or operational gap warrants them. Building a new backup engine, a unified CLI
   solely for convenience, and a branching snapshot history are outside this
-  proposed scope.
+  accepted scope.
 
 ## Consequences
 
@@ -41,5 +41,8 @@ snapshot/backup interoperability on supported Linux/KVM configurations. The
 current discussion has not implemented these features or run a cross-host
 recovery exercise.
 
+The agreed order is to fix lifecycle failure safety, document and validate
+cross-host backup recovery, then implement the bounded snapshot lifecycle.
+
 See the [evaluation](../recovery-evaluation.md) for the confirmed requirements,
-code findings, upstream references and proposed commit and validation sequence.
+code findings, upstream references and agreed commit and validation sequence.
