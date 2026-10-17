@@ -1,14 +1,25 @@
 # Snapshot and backup/restore evaluation
 
-Status: in discussion. This document records requirements and findings, not a
-claim that recovery workflows have been implemented or tested on a hypervisor.
+Status: requirements clarified; the overall recommendation awaits confirmation
+in [ADR 0001](adr/0001-snapshot-and-backup-ownership.md). This document records
+requirements and findings, not a claim that recovery workflows have been
+implemented or tested on a hypervisor.
 
 ## Confirmed requirements
 
 - Evaluate rollback after unwanted changes separately from disaster recovery.
 - Creating a snapshot must not require shutting down the VM; rollback may do so.
+- Brief filesystem freeze or I/O pauses during creation are acceptable. There
+  is no requirement for completely uninterrupted service during creation.
+- A snapshot covers disks and the corresponding VM configuration. Restarting
+  the guest after rollback is acceptable; restoring RAM or running processes is
+  not required.
+- The first version keeps at most one short-lived snapshot per VM. It supports
+  creation, inspection, rollback and deletion. Remove the snapshot after
+  confirming an update succeeded; long-term history belongs to backups.
 - Fast local rollback has independent value; waiting for full disk reconstruction
-  does not satisfy that need. A numerical recovery-time target remains open.
+  does not satisfy that need. No numerical recovery-time or pause limit has been
+  specified, so this evaluation makes no timing guarantee.
 - Disaster recovery must work after loss of the original host or storage: on a
   compatible replacement host, the VM must boot and remain managed by kvm-vm.
 - Operators may invoke virtnbdbackup and virtnbdrestore directly. A unified
@@ -25,9 +36,11 @@ Delegate disk backup and reconstruction to virtnbdbackup and virtnbdrestore.
 Their existing online full, incremental and differential backup support makes
 building another backup engine difficult to justify for this project.
 
-Native snapshot management is worth evaluating because fast local rollback is
-required independently of disaster recovery. Its scope must include rollback,
-cleanup and compatibility with existing VM operations, not just creation.
+Add bounded native snapshot management using libvirt because fast local rollback
+is required independently of disaster recovery. Its scope includes creation,
+inspection, rollback, cleanup and compatibility with existing VM operations.
+The first version's single short-lived snapshot avoids the need to manage a
+branching snapshot history, but does not eliminate disk-chain responsibilities.
 
 For disaster recovery, invest in recovery of kvm-vm's own management information
 and in lifecycle compatibility. Document and verify a complete recovery
@@ -67,12 +80,15 @@ procedure before adding commands solely to wrap the external tools.
    reverting VM storage. Filesystem freeze alone also does not establish
    application-level consistency for every guest workload.
 
-## Questions still open
+## Follow-up implementation design and validation
 
-- What recovery-time target and snapshot state coverage justify the maintenance
-  cost of native online snapshot management?
-- Are brief filesystem/I/O pauses acceptable while creating the snapshot?
-- Is one short-lived snapshot per VM sufficient, or is history management needed?
+The value and high-level scope questions are settled. Before implementation,
+establish the supported libvirt/QEMU versions and guest/storage configurations,
+define failure and concurrency behavior, and determine how rollback coordinates
+libvirt configuration, kvm-vm management artifacts and backup checkpoints.
+Measure creation pauses and recovery time on representative workloads. These
+are follow-up design and verification tasks, not capabilities established by
+this discussion.
 
 ## Validation and possible work split
 
@@ -89,6 +105,13 @@ finish each task's checks before moving to the next:
    write identifiable guest data, back it up with management artifacts, recover
    without relying on the original host, then verify boot, data and managed
    operations. Include failure and checkpoint compatibility cases.
+4. Implement the bounded snapshot lifecycle and its integration with existing
+   commands. Unit tests should cover state transitions and failure handling;
+   Linux/KVM integration tests should exercise online creation, guest writes,
+   rollback followed by boot, and cleanup that preserves the current guest
+   data. Verify configuration consistency, existing VM operations and backup
+   checkpoint behavior across rollback. Keep data-loss regression coverage
+   alongside the implementation rather than testing only CLI return codes.
 
 ## Evidence
 
