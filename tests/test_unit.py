@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import argparse
+import json
 import shutil
 import subprocess
 import sys
@@ -972,6 +974,149 @@ class TestConfirmReinstall:
         with patch("sys.stdin.isatty", return_value=True), patch("builtins.input", return_value="no"):
             with pytest.raises(kvm_vm.KVMError, match="Reinstall cancelled"):
                 kvm_vm.confirm_reinstall("web01", yes=False)
+
+
+@pytest.fixture
+def reinstall_machine(tmp_path, monkeypatch):
+    """Real reinstall/filesystem, with only host programs simulated."""
+    for key in ("BASE_DIR", "VM_DIR", "STATE_DIR", "CLOUD_DIR", "DEF_DIR"):
+        directory = tmp_path / key.lower()
+        directory.mkdir()
+        monkeypatch.setattr(kvm_vm, key, directory)
+    base = kvm_vm.BASE_DIR / "base.qcow2"
+    base.write_bytes(b"base image")
+    disk = kvm_vm.VM_DIR / "test01.qcow2"
+    disk.write_bytes(b"original guest data")
+    cfg = kvm_vm.normalize_definition(_minimal_raw(
+        storage={"image": {"path": str(base)}},
+        network={"mode": "nat", "libvirt_network": "default",
+                 "mac": "52:54:00:99:88:77", "ipv4": {"method": "dhcp"}},
+    ))
+    cdir = kvm_vm.CLOUD_DIR / "test01"
+    cdir.mkdir()
+    for filename in ("seed.img", "user-data", "meta-data", "network-config"):
+        (cdir / filename).write_bytes(b"original " + filename.encode())
+    definition = kvm_vm.DEF_DIR / "test01.yaml"
+    kvm_vm.save_state(cfg, disk, {}, "original-instance", definition)
+    originals = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    machine = {"defined": True, "failure": "checkpoint refusal", "disk": disk,
+               "originals": originals, "root": tmp_path}
+    monkeypatch.setattr(kvm_vm.shutil, "which", lambda name: None if name == "restorecon" else name)
+
+    def external(cmd, **kwargs):
+        code, stdout, stderr = 0, "", ""
+        if cmd[0] == "virsh":
+            action = cmd[3]
+            if action == "dominfo":
+                code = 0 if machine["defined"] else 1
+            elif action == "domstate":
+                stdout = "shut off"
+            elif action == "net-info":
+                stdout = "Active: yes"
+            elif action == "net-dumpxml":
+                stdout = '<network><forward mode="nat"/></network>'
+            elif action == "undefine":
+                if machine["failure"]:
+                    code, stderr = 1, machine["failure"]
+                else:
+                    machine["defined"] = False
+            elif action == "autostart":
+                pass
+            else:
+                raise AssertionError(cmd)
+        elif cmd[:2] == ["qemu-img", "info"]:
+            stdout = json.dumps({"format": "qcow2", "virtual-size": 20 * 1024**3})
+        elif cmd[:2] == ["qemu-img", "convert"]:
+            Path(cmd[-1]).write_bytes(b"replacement guest data")
+        elif cmd[0] == "cloud-localds":
+            Path(cmd[-3]).write_bytes(b"replacement seed")
+        elif cmd[0] == "virt-install":
+            machine["defined"] = True
+            if not machine.get("install_succeeds"):
+                code, stderr = 1, "domain defined but start failed"
+        else:
+            raise AssertionError(cmd)
+        if code and kwargs.get("check"):
+            raise subprocess.CalledProcessError(code, cmd, stdout, stderr)
+        return subprocess.CompletedProcess(cmd, code, stdout, stderr)
+
+    monkeypatch.setattr(kvm_vm.subprocess, "run", external)
+    machine["args"] = argparse.Namespace(name="test01", force=False, dry_run=False,
+        yes=True, refresh_image=False, no_start=True)
+    return machine
+
+
+@pytest.mark.parametrize("reason", ["checkpoint refusal", "arbitrary undefine failure"])
+def test_reinstall_undefine_failure_preserves_existing_data(reinstall_machine, reason):
+    machine = reinstall_machine
+    machine["failure"] = reason
+    with pytest.raises(kvm_vm.KVMError, match=reason):
+        kvm_vm.cmd_reinstall(machine["args"])
+    assert machine["defined"]
+    for path, contents in machine["originals"].items():
+        assert path.read_bytes() == contents
+    assert set(p for p in machine["root"].rglob("*") if p.is_file()) == set(machine["originals"])
+
+
+def test_reinstall_preserves_unowned_staging_files(reinstall_machine):
+    machine = reinstall_machine
+    disk = machine["disk"]
+    stale = disk.with_name(disk.name + ".reinstall.tmp")
+    nested = stale.with_suffix(stale.suffix + ".tmp")
+    for path in (stale, nested):
+        path.write_bytes(b"previous attempt: recover manually")
+    with pytest.raises(kvm_vm.KVMError, match="checkpoint refusal"):
+        kvm_vm.cmd_reinstall(machine["args"])
+    for path in (stale, nested):
+        assert path.read_bytes() == b"previous attempt: recover manually"
+
+
+def test_reinstall_late_failure_preserves_replacement(reinstall_machine, caplog, capsys):
+    machine = reinstall_machine
+    machine["failure"] = None
+    with pytest.raises(subprocess.CalledProcessError) as error:
+        kvm_vm.cmd_reinstall(machine["args"])
+    assert error.value.stderr == "domain defined but start failed"
+    assert machine["defined"]
+    assert machine["disk"].read_bytes() == b"replacement guest data"
+    assert (kvm_vm.CLOUD_DIR / "test01" / "seed.img").read_bytes() == b"replacement seed"
+    for path, contents in machine["originals"].items():
+        if path.parent in (kvm_vm.STATE_DIR, kvm_vm.DEF_DIR):
+            assert path.read_bytes() == contents
+    assert "Reinstalled VM:" not in capsys.readouterr().out
+    assert "manual recovery" in caplog.text
+    assert "replacement" in caplog.text
+
+
+def test_reinstall_cleanup_failure_keeps_original_error(reinstall_machine, monkeypatch, caplog):
+    machine = reinstall_machine
+
+    def denied(path, *args, **kwargs):
+        raise PermissionError("staging cleanup denied")
+
+    monkeypatch.setattr(kvm_vm.shutil, "rmtree", denied)
+    with pytest.raises(kvm_vm.KVMError, match="checkpoint refusal"):
+        kvm_vm.cmd_reinstall(machine["args"])
+    for path, contents in machine["originals"].items():
+        assert path.read_bytes() == contents
+    leftovers = list(machine["disk"].parent.glob(".test01-reinstall-*"))
+    assert len(leftovers) == 1
+    assert str(leftovers[0]) in caplog.text
+    assert "staging cleanup denied" in caplog.text
+
+
+def test_reinstall_success_through_command_boundary(reinstall_machine, capsys):
+    machine = reinstall_machine
+    machine.update(failure=None, install_succeeds=True)
+    assert kvm_vm.cmd_reinstall(machine["args"]) == 0
+    assert machine["defined"]
+    assert machine["disk"].read_bytes() == b"replacement guest data"
+    state = json.loads((kvm_vm.STATE_DIR / "test01.json").read_text())
+    assert state["disk"] == str(machine["disk"])
+    assert state["instance_id"] != "original-instance"
+    assert Path(state["seed"]).read_bytes() == b"replacement seed"
+    assert not list(machine["disk"].parent.glob(".test01-reinstall-*"))
+    assert "Reinstalled VM: test01" in capsys.readouterr().out
 
 
 class TestCmdReinstall:

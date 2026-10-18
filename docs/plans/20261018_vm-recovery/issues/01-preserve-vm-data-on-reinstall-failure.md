@@ -8,7 +8,9 @@ attempt before extending recovery behavior.
 
 **Blocked by:** None (can start immediately).
 
-**Status:** ready-for-agent
+**Status:** implemented; review pending
+
+Verification and environment limits: [ticket 01 validation](../ticket-01-validation.md).
 
 **Spec coverage:** User Stories 25 and 40; ADR-0001.
 

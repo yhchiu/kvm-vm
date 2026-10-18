@@ -1275,24 +1275,19 @@ def cmd_reinstall(args: argparse.Namespace) -> int:
 
     base, default_variant = acquire_base_image(cfg, args.refresh_image)
     disk = Path(state["disk"]) if state and state.get("disk") else (VM_DIR / f"{name}.qcow2")
-    tmp_disk = disk.with_name(f"{disk.name}.reinstall.tmp")
-    if tmp_disk.exists():
-        tmp_disk.unlink()
-
+    # An exclusively created directory owns both conversion intermediates and
+    # the prepared image; never remove a previous attempt's staging files.
+    staging = Path(tempfile.mkdtemp(prefix=f".{name}-reinstall-", dir=disk.parent))
+    tmp_disk = staging / f"{disk.name}.reinstall.tmp"
+    replacement_started = False
+    completed = False
     try:
         make_disk_from_base(base, tmp_disk, int(cfg["storage"]["disk_gib"]))
         restore_selinux([tmp_disk])
-    except Exception:
-        if tmp_disk.exists():
-            tmp_disk.unlink()
-        raise
-
-    try:
         if is_running_state(domain_state(name)):
             run(["virsh", "-c", LIBVIRT_URI, "destroy", name])
         undefine_domain(name)
-        if disk.exists():
-            disk.unlink()
+        replacement_started = True
         tmp_disk.replace(disk)
         restore_selinux([disk])
         _, _, _, instance_id = make_cloud_files(cfg, source_dir)
@@ -1300,12 +1295,34 @@ def cmd_reinstall(args: argparse.Namespace) -> int:
         define_vm(cfg, disk, seed, default_variant, no_start=args.no_start)
         orig_def = Path(state["definition_source"]) if state and state.get("definition_source") else def_path
         save_state(cfg, disk, {"type": "base-image", "path": str(base)}, instance_id, orig_def)
+        completed = True
     except Exception:
-        cleanup_failed(name, disk)
+        # Reinstall operates on an existing VM. Its disk and cloud-init files
+        # must survive even when undefinition or a later replacement step fails.
+        if replacement_started:
+            log.error(
+                f"Reinstall failed after domain undefinition; replacement may be incomplete. "
+                f"Surviving resources were retained for manual recovery: disk={disk}, "
+                f"cloud-init={CLOUD_DIR / name}, definition={def_path}, "
+                f"state={STATE_DIR / (name + '.json')}. Inspect the domain and reconcile "
+                "its disk, seed and management files before starting it or retrying; "
+                "the original disk has not been restored."
+            )
+        else:
+            log.error(
+                "Reinstall failed before disk replacement; existing disk and management "
+                "files were retained. Check the domain state before restarting it; "
+                "--force may already have stopped it."
+            )
         raise
     finally:
-        if tmp_disk.exists():
-            tmp_disk.unlink()
+        try:
+            shutil.rmtree(staging)
+        except OSError as exc:
+            message = f"Could not clean reinstall staging {staging}: {exc}. Remove it manually after inspection."
+            if completed:
+                raise KVMError(f"VM replacement completed, but {message}") from exc
+            log.error(message)
 
     print(f"Reinstalled VM: {name}")
     print(f"Definition:     {DEF_DIR / (name + '.yaml')}")
