@@ -89,4 +89,7 @@ now inspects every regular file regardless of filename. After correction, all
 199 unit tests and smoke passed on the test host, and all four real KVM refusal
 tests passed in 21.15 seconds, including both alternate filenames. File hashes
 and persistent domain XML remained intact after rejected delete/reinstall.
-The correction awaits the single focused follow-up review.
+The single focused follow-up review passed on both axes: Standards found no
+blocking violations or new actionable smells, and Spec confirmed the dependency
+discovery must-fix was resolved. No further review loop was needed. Ticket 02 is
+complete; ticket 03 retains its independent cross-host acceptance gate.
