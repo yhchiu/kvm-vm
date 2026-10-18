@@ -604,8 +604,8 @@ Current clone limitations are intentional:
 
 - Linux guests only (`virt-sysprep` limitation).
 - Source VM must be shut off.
-- The system disk must currently be a regular file-backed disk.
-- Only the system disk is cloned; separately attached data disks are not cloned.
+- The source must have one independent regular file-backed qcow2 system disk.
+- Additional data disks and recovery chains are refused before cloning.
 - A smaller target virtual disk is refused. A larger target is allowed; cloud images or
   guest tooling are still responsible for expanding partitions/filesystems as appropriate.
 
@@ -658,6 +658,15 @@ kvm-vm create newvm.yaml --refresh-image
 
 - **Existing VMs remain unaffected**: This flag only updates the cached base image in the local storage pool. Because each VM runs on its own independent qcow2 disk, re-downloading or updating the base image will never affect already created VMs.
 - **Unconditional re-download**: As confirmed from the source code, `--refresh-image` does not perform HTTP conditional checks (such as `ETag` or `Last-Modified`); whenever this flag is passed, the tool unconditionally re-downloads the complete image and overwrites the local cache, even if the cached image is already the latest version.
+
+## Recovery state safety
+
+Clone, reinstall and delete refuse checkpoints, snapshots, backing chains,
+inconsistent disk paths and active recovery jobs. They support a single
+independent qcow2 system disk. Failed create/clone operations retain surviving
+resources for inspection; retrying does not overwrite existing artifacts.
+See [lifecycle recovery safety](docs/lifecycle-recovery-safety.md) for dependency
+checks, keep-storage behavior, operation locking and external-tool sequencing.
 
 ## `--no-start`
 

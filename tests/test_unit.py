@@ -29,6 +29,30 @@ sys.modules["kvm_vm"] = kvm_vm
 _spec.loader.exec_module(kvm_vm)
 
 
+@pytest.fixture(autouse=True)
+def isolated_state_directory(tmp_path, monkeypatch):
+    monkeypatch.setattr(kvm_vm, "STATE_DIR", tmp_path / "state")
+
+
+def lifecycle_probe(cmd, disk, **kwargs):
+    """Read-only host responses for older orchestration tests."""
+    stdout = ""
+    if cmd[0] == "qemu-img":
+        stdout = json.dumps({"format": "qcow2", "virtual-size": 20 * 1024**3})
+    elif cmd[3] == "dumpxml":
+        root = kvm_vm.ET.Element("domain")
+        devices = kvm_vm.ET.SubElement(root, "devices")
+        item = kvm_vm.ET.SubElement(devices, "disk", type="file", device="disk")
+        kvm_vm.ET.SubElement(item, "source", file=str(disk))
+        kvm_vm.ET.SubElement(item, "target", dev="vda")
+        stdout = kvm_vm.ET.tostring(root, encoding="unicode")
+    elif cmd[3] == "domjobinfo":
+        stdout = "Job type: None"
+    elif cmd[3] not in ("checkpoint-list", "snapshot-list", "blockjob", "list", "destroy"):
+        raise AssertionError(cmd)
+    return subprocess.CompletedProcess(cmd, 0, stdout, "")
+
+
 # --- dig() ---
 
 class TestDig:
@@ -814,6 +838,7 @@ class TestMakeCloudFiles:
              patch("kvm_vm.sysprep_clone_disk"), \
              patch("kvm_vm.make_cloud_files", return_value=(None, None, None, "iid-123")) as mock_cloud, \
              patch("kvm_vm.define_vm"), \
+             patch("kvm_vm.subprocess.run", side_effect=lambda cmd, **kw: lifecycle_probe(cmd, src_disk, **kw)), \
              patch("kvm_vm.save_state"):
             assert kvm_vm.cmd_clone(args) == 0
 
@@ -998,6 +1023,9 @@ def reinstall_machine(tmp_path, monkeypatch):
         (cdir / filename).write_bytes(b"original " + filename.encode())
     definition = kvm_vm.DEF_DIR / "test01.yaml"
     kvm_vm.save_state(cfg, disk, {}, "original-instance", definition)
+    clone_definition = tmp_path / "clone.yaml"
+    clone_cfg = dict(cfg, vm=dict(cfg["vm"], name="clone01"))
+    kvm_vm.yaml_dump(clone_definition, clone_cfg)
     originals = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
     machine = {"defined": True, "failure": "checkpoint refusal", "disk": disk,
                "originals": originals, "root": tmp_path}
@@ -1008,30 +1036,66 @@ def reinstall_machine(tmp_path, monkeypatch):
         if cmd[0] == "virsh":
             action = cmd[3]
             if action == "dominfo":
-                code = 0 if machine["defined"] else 1
+                exists = machine["defined"] if cmd[4] == "test01" else machine.get("target_defined", False)
+                code = 0 if exists else 1
             elif action == "domstate":
-                stdout = "shut off"
+                stdout = machine.get("power", "shut off")
+            elif action == "domjobinfo":
+                stdout = "Job type: " + machine.get("job", "None")
+            elif action == "blockjob":
+                stdout = machine.get("blockjob", "")
+            elif action == "list":
+                stdout = "test01\nother" if machine.get("other_domain_disk") else "test01"
             elif action == "net-info":
                 stdout = "Active: yes"
             elif action == "net-dumpxml":
                 stdout = '<network><forward mode="nat"/></network>'
+            elif action == "checkpoint-list":
+                stdout = machine.get("checkpoints", "")
+            elif action == "snapshot-list":
+                stdout = machine.get("snapshots", "")
+            elif action == "dumpxml":
+                root = kvm_vm.ET.Element("domain")
+                devices = kvm_vm.ET.SubElement(root, "devices")
+                item = kvm_vm.ET.SubElement(devices, "disk", type="file", device="disk")
+                kvm_vm.ET.SubElement(item, "driver", type="qcow2")
+                source_disk = machine["other_domain_disk"] if cmd[4] == "other" else machine.get("active_disk", disk)
+                kvm_vm.ET.SubElement(item, "source", file=str(source_disk))
+                kvm_vm.ET.SubElement(item, "target", dev="vda")
+                stdout = kvm_vm.ET.tostring(root, encoding="unicode")
             elif action == "undefine":
                 if machine["failure"]:
                     code, stderr = 1, machine["failure"]
+                elif machine.get("nvram") and not any(flag in cmd for flag in ("--nvram", "--keep-nvram")):
+                    code, stderr = 1, "NVRAM requires explicit handling"
                 else:
+                    if "--nvram" in cmd and machine.get("nvram"):
+                        machine["nvram"].unlink()
                     machine["defined"] = False
             elif action == "autostart":
                 pass
             else:
                 raise AssertionError(cmd)
         elif cmd[:2] == ["qemu-img", "info"]:
-            stdout = json.dumps({"format": "qcow2", "virtual-size": 20 * 1024**3})
+            info = {"format": "qcow2", "virtual-size": 20 * 1024**3}
+            if Path(cmd[-1]) == disk:
+                info.update(machine.get("disk_info", {}))
+            info.update(machine.get("other_images", {}).get(str(Path(cmd[-1])), {}))
+            stdout = json.dumps(info)
         elif cmd[:2] == ["qemu-img", "convert"]:
-            Path(cmd[-1]).write_bytes(b"replacement guest data")
+            Path(cmd[-1]).write_bytes(disk.read_bytes() if Path(cmd[-2]) == disk else b"replacement guest data")
+        elif cmd[0] == "virt-sysprep":
+            if "--list-operations" in cmd:
+                stdout = "machine-id\nssh-hostkeys"
+        elif cmd[0] == "virt-customize":
+            pass
         elif cmd[0] == "cloud-localds":
             Path(cmd[-3]).write_bytes(b"replacement seed")
         elif cmd[0] == "virt-install":
-            machine["defined"] = True
+            if cmd[cmd.index("--name") + 1] == "test01":
+                machine["defined"] = True
+            else:
+                machine["target_defined"] = True
             if not machine.get("install_succeeds"):
                 code, stderr = 1, "domain defined but start failed"
         else:
@@ -1042,7 +1106,7 @@ def reinstall_machine(tmp_path, monkeypatch):
 
     monkeypatch.setattr(kvm_vm.subprocess, "run", external)
     machine["args"] = argparse.Namespace(name="test01", force=False, dry_run=False,
-        yes=True, refresh_image=False, no_start=True)
+        yes=True, refresh_image=False, no_start=True, source="test01", definition=str(clone_definition))
     return machine
 
 
@@ -1117,6 +1181,156 @@ def test_reinstall_success_through_command_boundary(reinstall_machine, capsys):
     assert Path(state["seed"]).read_bytes() == b"replacement seed"
     assert not list(machine["disk"].parent.glob(".test01-reinstall-*"))
     assert "Reinstalled VM: test01" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("operation", ["reinstall", "clone", "delete"])
+def test_reinstall_refuses_backup_checkpoints_before_mutation(reinstall_machine, operation):
+    machine = reinstall_machine
+    machine["checkpoints"] = "backup-baseline"
+    with pytest.raises(kvm_vm.KVMError, match="Backup checkpoints"):
+        args = machine["args"]
+        args.source = args.name
+        args.keep_storage = True
+        getattr(kvm_vm, "cmd_" + operation)(args)
+    assert machine["defined"]
+    for path, contents in machine["originals"].items():
+        assert path.read_bytes() == contents
+
+
+@pytest.mark.parametrize("operation", ["reinstall", "clone", "delete"])
+def test_reinstall_refuses_stale_disk_path(reinstall_machine, operation):
+    machine = reinstall_machine
+    active = machine["disk"].with_name("overlay.qcow2")
+    active.write_bytes(b"current guest writes")
+    machine["active_disk"] = active
+    machine["args"].source = "test01"
+    machine["args"].keep_storage = True
+    with pytest.raises(kvm_vm.KVMError, match="disk path"):
+        getattr(kvm_vm, "cmd_" + operation)(machine["args"])
+    assert active.read_bytes() == b"current guest writes"
+    for path, contents in machine["originals"].items():
+        assert path.read_bytes() == contents
+
+
+@pytest.mark.parametrize("info", [
+    {"backing-filename": "base.qcow2"},
+    {"snapshots": [{"name": "manual"}]},
+    {"format-specific": {"data": {"bitmaps": [{"name": "backup"}]}}},
+])
+def test_reinstall_refuses_image_recovery_dependencies(reinstall_machine, info):
+    machine = reinstall_machine
+    machine["disk_info"] = info
+    with pytest.raises(kvm_vm.KVMError, match="recovery data"):
+        kvm_vm.cmd_reinstall(machine["args"])
+    for path, contents in machine["originals"].items():
+        assert path.read_bytes() == contents
+
+
+@pytest.mark.parametrize("conflict", ["snapshots", "job", "blockjob"])
+def test_reinstall_refuses_recovery_conflicts(reinstall_machine, conflict):
+    machine = reinstall_machine
+    machine[conflict] = "active-work"
+    machine["power"] = "running"
+    machine["args"].force = True
+    with pytest.raises(kvm_vm.KVMError, match="recovery operation"):
+        kvm_vm.cmd_reinstall(machine["args"])
+    for path, contents in machine["originals"].items():
+        assert path.read_bytes() == contents
+
+
+def test_conflicting_lifecycle_work_preserves_lock_and_vm(reinstall_machine):
+    machine = reinstall_machine
+    lock = kvm_vm.STATE_DIR / ".lifecycle-lock"
+    lock.mkdir()
+    owner = lock / "owner"
+    owner.write_text("another operator")
+    with pytest.raises(kvm_vm.KVMError, match="lifecycle operation"):
+        kvm_vm.cmd_reinstall(machine["args"])
+    assert owner.read_text() == "another operator"
+    for path, contents in machine["originals"].items():
+        assert path.read_bytes() == contents
+
+
+def test_delete_preserves_disk_used_by_unattached_overlay(reinstall_machine):
+    machine = reinstall_machine
+    overlay = machine["disk"].with_name("dependent.qcow2")
+    overlay.write_bytes(b"dependent writes")
+    machine["other_images"] = {str(overlay): {"backing-filename": str(machine["disk"])}}
+    machine["args"].keep_storage = False
+    with pytest.raises(kvm_vm.KVMError, match="dependent disk"):
+        kvm_vm.cmd_delete(machine["args"])
+    assert machine["defined"]
+    assert overlay.read_bytes() == b"dependent writes"
+    for path, contents in machine["originals"].items():
+        assert path.read_bytes() == contents
+
+
+def test_keep_storage_preserves_nvram_and_managed_files(reinstall_machine):
+    machine = reinstall_machine
+    nvram = machine["root"] / "firmware.vars"
+    nvram.write_bytes(b"firmware state")
+    machine.update(failure=None, nvram=nvram)
+    machine["args"].keep_storage = True
+    assert kvm_vm.cmd_delete(machine["args"]) == 0
+    assert not machine["defined"]
+    assert nvram.read_bytes() == b"firmware state"
+    for path, contents in machine["originals"].items():
+        assert path.read_bytes() == contents
+
+
+def test_clone_failure_keeps_disk_when_target_undefine_would_fail(reinstall_machine):
+    machine = reinstall_machine
+    with pytest.raises(subprocess.CalledProcessError):
+        kvm_vm.cmd_clone(machine["args"])
+    target = kvm_vm.VM_DIR / "clone01.qcow2"
+    assert machine["target_defined"]
+    assert target.read_bytes() == b"original guest data"
+    assert (kvm_vm.CLOUD_DIR / "clone01" / "seed.img").is_file()
+    for path, contents in machine["originals"].items():
+        assert path.read_bytes() == contents
+
+
+def test_clone_refuses_unowned_cloud_artifacts(reinstall_machine):
+    machine = reinstall_machine
+    cloud = kvm_vm.CLOUD_DIR / "clone01"
+    cloud.mkdir()
+    seed = cloud / "seed.img"
+    seed.write_bytes(b"untracked recovery seed")
+    with pytest.raises(kvm_vm.KVMError, match="Existing artifacts"):
+        kvm_vm.cmd_clone(machine["args"])
+    assert seed.read_bytes() == b"untracked recovery seed"
+    assert not (kvm_vm.VM_DIR / "clone01.qcow2").exists()
+
+
+def test_reinstall_uses_inspected_disk_when_manifest_is_absent(reinstall_machine):
+    machine = reinstall_machine
+    actual = machine["disk"].with_name("actual.qcow2")
+    machine["disk"].rename(actual)
+    machine.update(active_disk=actual, failure=None, install_succeeds=True)
+    (kvm_vm.STATE_DIR / "test01.json").unlink()
+    assert kvm_vm.cmd_reinstall(machine["args"]) == 0
+    assert actual.read_bytes() == b"replacement guest data"
+    restored = json.loads((kvm_vm.STATE_DIR / "test01.json").read_text())
+    assert Path(restored["disk"]) == actual.resolve()
+    assert not machine["disk"].exists()
+
+
+def test_delete_checks_references_to_manifest_cloud_directory(reinstall_machine):
+    machine = reinstall_machine
+    cloud = kvm_vm.CLOUD_DIR / "relocated"
+    cloud.mkdir()
+    shared = cloud / "shared.qcow2"
+    shared.write_bytes(b"other guest data")
+    manifest = kvm_vm.STATE_DIR / "test01.json"
+    state = json.loads(manifest.read_text())
+    state["cloud_dir"] = str(cloud)
+    manifest.write_text(json.dumps(state))
+    machine["other_domain_disk"] = shared
+    machine["args"].keep_storage = False
+    with pytest.raises(kvm_vm.KVMError, match="referenced by domain"):
+        kvm_vm.cmd_delete(machine["args"])
+    assert shared.read_bytes() == b"other guest data"
+    assert machine["defined"]
 
 
 class TestCmdReinstall:
@@ -1306,7 +1520,7 @@ class TestCmdReinstall:
              patch("kvm_vm.acquire_base_image", return_value=(mock_base, "rocky9")), \
              patch("kvm_vm.make_disk_from_base") as mock_make_disk, \
              patch("kvm_vm.restore_selinux"), \
-             patch("kvm_vm.run") as mock_run, \
+             patch("kvm_vm.run", side_effect=lambda cmd, **kw: lifecycle_probe(cmd, disk, **kw)) as mock_run, \
              patch("kvm_vm.undefine_domain") as mock_undefine, \
              patch("kvm_vm.make_cloud_files", return_value=(None, None, None, "iid-123")), \
              patch("kvm_vm.define_vm") as mock_define, \
@@ -1365,14 +1579,15 @@ class TestCmdReinstall:
              patch("kvm_vm.validate_network_attachment"), \
              patch("kvm_vm.acquire_base_image", return_value=(mock_base, "debian13")), \
              patch("kvm_vm.make_disk_from_base", side_effect=kvm_vm.KVMError("Out of disk space")), \
-             patch("kvm_vm.run") as mock_run, \
+             patch("kvm_vm.run", side_effect=lambda cmd, **kw: lifecycle_probe(cmd, disk, **kw)) as mock_run, \
              patch("kvm_vm.undefine_domain") as mock_undefine:
 
             with pytest.raises(kvm_vm.KVMError, match="Out of disk space"):
                 kvm_vm.cmd_reinstall(args)
 
             # Crucial assertion: VM was NOT destroyed and NOT undefined!
-            mock_run.assert_not_called()
+            assert all(call.args[0][3] not in ("destroy", "undefine")
+                       for call in mock_run.call_args_list if call.args[0][0] == "virsh")
             mock_undefine.assert_not_called()
             # Original disk still exists
             assert disk.exists()

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import functools
 import hashlib
 import ipaddress
 import json
@@ -618,9 +619,13 @@ def acquire_base_image(cfg: Dict[str, Any], refresh: bool) -> Tuple[Path, Option
     return cache_path, default_variant
 
 
-def qemu_img_info(path: Path) -> Dict[str, Any]:
+def qemu_img_info(path: Path, *, shared: bool = False) -> Dict[str, Any]:
     try:
-        return json.loads(output(["qemu-img", "info", "--output=json", str(path)]))
+        flags = ["--force-share"] if shared else []
+        info = json.loads(output(["qemu-img", "info", "--output=json"] + flags + [str(path)]))
+        if not isinstance(info, dict):
+            raise KVMError(f"qemu-img returned invalid image information for {path}")
+        return info
     except (subprocess.CalledProcessError, json.JSONDecodeError) as exc:
         raise KVMError(f"qemu-img could not inspect {path}: {exc}") from exc
 
@@ -1007,18 +1012,19 @@ def load_state(name: str) -> Optional[Dict[str, Any]]:
         raise KVMError(f"Invalid state file {p}: {exc}") from exc
 
 
-def cleanup_failed(name: str, disk: Path) -> None:
-    # Best effort: remove domain if virt-install got far enough, then local managed files.
-    if domain_exists(name):
-        if is_running_state(domain_state(name)):
-            run(["virsh", "-c", LIBVIRT_URI, "destroy", name], check=False, capture=True)
-        run(["virsh", "-c", LIBVIRT_URI, "undefine", name, "--nvram"], check=False, capture=True)
-        run(["virsh", "-c", LIBVIRT_URI, "undefine", name], check=False, capture=True)
-    if disk.exists():
-        disk.unlink()
-    cdir = CLOUD_DIR / name
-    if cdir.exists():
-        shutil.rmtree(cdir)
+def report_failed_creation(name: str, disk: Path) -> None:
+    # A failed external command can have defined a domain or started it. Retain
+    # resources rather than guessing whether undefinition or deletion is safe.
+    log.error(
+        f"Creation failed for {name}; surviving domain and files were retained for manual recovery. "
+        f"Inspect disk={disk}, cloud-init={CLOUD_DIR / name} and managed state before retrying."
+    )
+
+
+def check_new_artifacts(name: str, disk: Path) -> None:
+    for path in (disk, disk.with_suffix(disk.suffix + ".tmp"), CLOUD_DIR / name):
+        if path.exists() or path.is_symlink():
+            raise KVMError(f"Existing artifacts at {path}; inspect and recover them before retrying {name}")
 
 
 def cmd_validate(args: argparse.Namespace) -> int:
@@ -1030,6 +1036,33 @@ def cmd_validate(args: argparse.Namespace) -> int:
     return 0
 
 
+def lifecycle_exclusive(command):
+    """Serialize local lifecycle commands sharing STATE_DIR; stale locks fail closed."""
+    @functools.wraps(command)
+    def invoke(args):
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        lock = STATE_DIR / ".lifecycle-lock"
+        try:
+            lock.mkdir()
+        except FileExistsError as exc:
+            raise KVMError(
+                f"Another lifecycle operation or interrupted attempt owns {lock}. "
+                "Check its owner and domain/storage state; remove the lock only after "
+                "confirming no operation is running and recovery is complete."
+            ) from exc
+        try:
+            (lock / "owner").write_text(f"pid={os.getpid()} command={command.__name__}\n", encoding="utf-8")
+            return command(args)
+        finally:
+            try:
+                (lock / "owner").unlink(missing_ok=True)
+                lock.rmdir()
+            except OSError as exc:
+                log.error(f"Lifecycle lock remains at {lock}; inspect before manual removal: {exc}")
+    return invoke
+
+
+@lifecycle_exclusive
 def cmd_create(args: argparse.Namespace) -> int:
     require_commands(["virsh", "virt-install", "qemu-img"])
     require_cloud_seed_generator()
@@ -1053,6 +1086,7 @@ def cmd_create(args: argparse.Namespace) -> int:
 
     base, default_variant = acquire_base_image(cfg, args.refresh_image)
     disk = VM_DIR / f"{name}.qcow2"
+    check_new_artifacts(name, disk)
     try:
         make_disk_from_base(base, disk, int(cfg["storage"]["disk_gib"]))
         restore_selinux([disk])
@@ -1061,7 +1095,7 @@ def cmd_create(args: argparse.Namespace) -> int:
         define_vm(cfg, disk, seed, default_variant, no_start=args.no_start)
         save_state(cfg, disk, {"type": "base-image", "path": str(base)}, instance_id, p)
     except Exception:
-        cleanup_failed(name, disk)
+        report_failed_creation(name, disk)
         raise
 
     print(f"Created VM: {name}")
@@ -1081,6 +1115,7 @@ def first_disk_source(name: str) -> Path:
     raise KVMError(f"Could not find a file-backed system disk for {name}")
 
 
+@lifecycle_exclusive
 def cmd_clone(args: argparse.Namespace) -> int:
     require_commands(["virsh", "virt-install", "qemu-img", "virt-sysprep", "virt-customize"])
     require_cloud_seed_generator()
@@ -1091,6 +1126,9 @@ def cmd_clone(args: argparse.Namespace) -> int:
     state = domain_state(source_name)
     if is_running_state(state):
         raise KVMError(f"Source VM must be shut off before cloning (current state: {state})")
+    check_recovery_metadata(source_name)
+    source_state = load_state(source_name)
+    src_disk = checked_domain_disk(source_name, source_state)
 
     p = Path(args.definition)
     cfg = normalize_definition(yaml_load(p), for_clone=True)
@@ -1104,11 +1142,6 @@ def cmd_clone(args: argparse.Namespace) -> int:
         cfg["network"]["mac"] = generate_mac(exclude=existing_macs())
     resolve_ssh_keys(cfg["cloud_init"]["ssh_authorized_keys"], p.parent)
 
-    source_state = load_state(source_name)
-    if source_state and source_state.get("disk"):
-        src_disk = Path(source_state["disk"])
-    else:
-        src_disk = first_disk_source(source_name)
     if not src_disk.is_file():
         raise KVMError(f"Clone currently supports regular file-backed system disks only: {src_disk}")
 
@@ -1120,6 +1153,7 @@ def cmd_clone(args: argparse.Namespace) -> int:
         return 0
 
     disk = VM_DIR / f"{name}.qcow2"
+    check_new_artifacts(name, disk)
     try:
         make_disk_from_clone(src_disk, disk, cfg["storage"].get("disk_gib"))
         restore_selinux([disk])
@@ -1129,7 +1163,7 @@ def cmd_clone(args: argparse.Namespace) -> int:
         define_vm(cfg, disk, seed, None, no_start=args.no_start)
         save_state(cfg, disk, {"type": "clone", "source_vm": source_name, "source_disk": str(src_disk)}, instance_id, p)
     except Exception:
-        cleanup_failed(name, disk)
+        report_failed_creation(name, disk)
         raise
 
     print(f"Cloned VM: {source_name} -> {name}")
@@ -1205,6 +1239,112 @@ def confirm_reinstall(name: str, yes: bool) -> None:
         raise KVMError("Reinstall cancelled")
 
 
+def check_recovery_metadata(name: str) -> None:
+    checkpoints = output(["virsh", "-c", LIBVIRT_URI, "checkpoint-list", name, "--name"])
+    if checkpoints:
+        raise KVMError(
+            f"Backup checkpoints exist for {name}. Finish backup work and explicitly "
+            "retire its incremental baseline with the backup tool before retrying. "
+            "After disk replacement, establish a new full Backup; do not reuse the old baseline."
+        )
+    if output(["virsh", "-c", LIBVIRT_URI, "snapshot-list", name, "--name"]):
+        raise KVMError(f"Conflicting recovery operation: {name} has snapshots; resolve them with their owning tool first")
+    if is_running_state(domain_state(name)):
+        job = output(["virsh", "-c", LIBVIRT_URI, "domjobinfo", name])
+        fields = dict(line.split(":", 1) for line in job.splitlines() if ":" in line)
+        if fields.get("Job type", "unknown").strip().lower() != "none":
+            raise KVMError(f"Conflicting recovery operation on {name}; wait for its domain job to finish")
+
+
+def checked_domain_disk(name: str, state: Optional[Dict[str, Any]]) -> Path:
+    """Fail closed unless live and persistent XML describe one independent disk."""
+    paths = []
+    for flags in ([], ["--inactive"]):
+        try:
+            root = ET.fromstring(output(["virsh", "-c", LIBVIRT_URI, "dumpxml", name] + flags))
+        except ET.ParseError as exc:
+            raise KVMError(f"Cannot inspect disk topology for {name}: invalid domain XML") from exc
+        disks = root.findall("./devices/disk[@device='disk']")
+        if len(disks) != 1:
+            raise KVMError(f"Unsupported disk topology for {name}; inspect its disks before retrying")
+        item = disks[0]
+        source = item.find("source")
+        if item.get("type") != "file" or source is None or not source.get("file"):
+            raise KVMError(f"Unsupported disk topology for {name}; a regular file disk is required")
+        if (item.find("./backingStore/source") is not None or item.find("mirror") is not None
+                or item.find("shareable") is not None or item.find("readonly") is not None):
+            raise KVMError(f"Unsupported disk recovery data for {name}; preserve dependencies and resolve the topology first")
+        if not flags and is_running_state(domain_state(name)):
+            target = item.find("target")
+            if target is None or not target.get("dev"):
+                raise KVMError(f"Cannot inspect disk jobs for {name}: missing target")
+            job = output(["virsh", "-c", LIBVIRT_URI, "blockjob", name, target.get("dev"), "--info", "--raw"])
+            if job:
+                raise KVMError(f"Conflicting recovery operation on {name}; wait for its disk job to finish")
+        paths.append(Path(source.get("file")).resolve())
+    if paths[0] != paths[1] or (state and state.get("disk") and Path(state["disk"]).resolve() != paths[0]):
+        raise KVMError(f"Inconsistent disk path for {name}; reconcile domain XML and managed state before retrying")
+    if not paths[0].is_file():
+        raise KVMError(f"Disk is not a regular file: {paths[0]}")
+    info = qemu_img_info(paths[0], shared=is_running_state(domain_state(name)))
+    if (info.get("format") != "qcow2" or info.get("backing-filename") or info.get("snapshots")
+            or dig(info, "format-specific", "data", "bitmaps")
+            or dig(info, "format-specific", "data", "data-file")):
+        raise KVMError(
+            f"Unsupported disk format or recovery data on {paths[0]}. Preserve the image and its "
+            "dependencies; resolve snapshots/backing chains with their owning tool. Retiring "
+            "backup bitmaps requires a new full Backup baseline before future incremental backups."
+        )
+    return paths[0]
+
+
+def check_storage_dependents(name: str, disk: Path, state: Optional[Dict[str, Any]]) -> None:
+    """Inspect defined domains and managed images; external tools must be quiescent."""
+    protected = {disk.resolve()}
+    if state and state.get("seed"):
+        protected.add(Path(state["seed"]).resolve())
+    cloud_dirs = {CLOUD_DIR / name}
+    if state and state.get("cloud_dir"):
+        cloud_dirs.add(Path(state["cloud_dir"]))
+    for cloud in cloud_dirs:
+        if cloud.exists():
+            protected.update(p.resolve() for p in cloud.rglob("*") if p.is_file())
+
+    def protected_path(path: Path) -> bool:
+        return path.resolve() in protected or any(
+            path.exists() and target.exists() and path.samefile(target) for target in protected
+        )
+
+    candidates = {p.resolve() for p in VM_DIR.rglob("*.qcow2") if p.resolve() != disk.resolve()}
+    for other in output(["virsh", "-c", LIBVIRT_URI, "list", "--all", "--name"]).splitlines():
+        if other == name:
+            continue
+        for flags in ([], ["--inactive"]):
+            try:
+                root = ET.fromstring(output(["virsh", "-c", LIBVIRT_URI, "dumpxml", other] + flags))
+            except ET.ParseError as exc:
+                raise KVMError(f"Cannot inspect storage dependencies for {other}") from exc
+            for source in root.findall("./devices/disk//source[@file]"):
+                candidate = Path(source.get("file")).resolve()
+                if protected_path(candidate):
+                    raise KVMError(f"Storage is referenced by domain {other}; preserve it and resolve the dependent disk first")
+                candidates.add(candidate)
+    visited = set()
+    while candidates:
+        candidate = candidates.pop()
+        if candidate in visited:
+            continue
+        visited.add(candidate)
+        if protected_path(candidate):
+            raise KVMError(f"Storage has a dependent disk referencing {candidate}; preserve the chain before retrying")
+        info = qemu_img_info(candidate, shared=True)
+        backing = info.get("full-backing-filename") or info.get("backing-filename")
+        if backing:
+            parent = Path(backing)
+            candidates.add((parent if parent.is_absolute() else candidate.parent / parent).resolve())
+
+
+@lifecycle_exclusive
 def cmd_reinstall(args: argparse.Namespace) -> int:
     require_commands(["virsh", "virt-install", "qemu-img"])
     require_cloud_seed_generator()
@@ -1272,9 +1412,11 @@ def cmd_reinstall(args: argparse.Namespace) -> int:
         return 0
 
     confirm_reinstall(name, args.yes)
-
+    check_recovery_metadata(name)
+    current_disk = checked_domain_disk(name, state)
+    check_storage_dependents(name, current_disk, state)
     base, default_variant = acquire_base_image(cfg, args.refresh_image)
-    disk = Path(state["disk"]) if state and state.get("disk") else (VM_DIR / f"{name}.qcow2")
+    disk = current_disk
     # An exclusively created directory owns both conversion intermediates and
     # the prepared image; never remove a previous attempt's staging files.
     staging = Path(tempfile.mkdtemp(prefix=f".{name}-reinstall-", dir=disk.parent))
@@ -1286,6 +1428,9 @@ def cmd_reinstall(args: argparse.Namespace) -> int:
         restore_selinux([tmp_disk])
         if is_running_state(domain_state(name)):
             run(["virsh", "-c", LIBVIRT_URI, "destroy", name])
+            check_recovery_metadata(name)
+            checked_domain_disk(name, state)
+            check_storage_dependents(name, current_disk, state)
         undefine_domain(name)
         replacement_started = True
         tmp_disk.replace(disk)
@@ -1434,25 +1579,32 @@ def confirm_delete(name: str, yes: bool) -> None:
         raise KVMError("Delete cancelled")
 
 
-def undefine_domain(name: str) -> None:
+def undefine_domain(name: str, *, keep_nvram: bool = False) -> None:
     # First handle common metadata. If NVRAM blocks undefine, retry with --nvram.
-    base = ["virsh", "-c", LIBVIRT_URI, "undefine", name, "--managed-save", "--snapshots-metadata"]
+    base = ["virsh", "-c", LIBVIRT_URI, "undefine", name, "--managed-save"]
+    if keep_nvram:
+        base.append("--keep-nvram")
     p = run(base, check=False, capture=True)
     if p.returncode == 0:
         return
-    p2 = run(base + ["--nvram"], check=False, capture=True)
+    p2 = run(base + ([] if keep_nvram else ["--nvram"]), check=False, capture=True)
     if p2.returncode != 0:
         raise KVMError(f"virsh undefine failed:\n{p.stderr.strip()}\n{p2.stderr.strip()}")
 
 
+@lifecycle_exclusive
 def cmd_delete(args: argparse.Namespace) -> int:
-    require_commands(["virsh"])
+    require_commands(["virsh", "qemu-img"])
     name = args.name
     if not domain_exists(name):
         raise KVMError(f"Domain does not exist: {name}")
     state = load_state(name)
     if not state and not args.keep_storage:
         raise KVMError("This VM is not managed by kvm-vm. Refusing to delete storage; use --keep-storage to undefine the domain only.")
+    check_recovery_metadata(name)
+    current_disk = checked_domain_disk(name, state)
+    if not args.keep_storage:
+        check_storage_dependents(name, current_disk, state)
     confirm_delete(name, args.yes)
 
     st = domain_state(name)
@@ -1460,8 +1612,12 @@ def cmd_delete(args: argparse.Namespace) -> int:
         if not args.force:
             raise KVMError(f"VM is running ({st}). Shut it down first, or use --force to destroy it before delete.")
         run(["virsh", "-c", LIBVIRT_URI, "destroy", name])
+        check_recovery_metadata(name)
+        checked_domain_disk(name, state)
+        if not args.keep_storage:
+            check_storage_dependents(name, current_disk, state)
 
-    undefine_domain(name)
+    undefine_domain(name, keep_nvram=args.keep_storage)
 
     if state and not args.keep_storage:
         # Delete only paths created/tracked by this tool. Never use --remove-all-storage,

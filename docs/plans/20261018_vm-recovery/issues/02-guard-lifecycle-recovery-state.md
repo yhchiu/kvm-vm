@@ -7,7 +7,10 @@ operation or refuse before unsafe mutation and explain the required next step.
 
 **Blocked by:** 01: Preserve VM data when reinstall fails.
 
-**Status:** ready-for-agent
+**Status:** implemented; review pending
+
+Verification: [ticket 02 validation](../ticket-02-validation.md).
+Operator behavior: [lifecycle recovery safety](../../../lifecycle-recovery-safety.md).
 
 **Spec coverage:** User Stories 17, 20, 21, 22, 23, 24, 26 and 40; ADR-0001.
 
