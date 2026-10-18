@@ -100,3 +100,18 @@ def test_recovery_state_refusal_preserves_resources(recovery_domain, recovery):
         assert result.returncode != 0 and expected in result.stderr, result.stderr
         assert E2EHelper.virsh("dumpxml", name, "--inactive").stdout == xml_before
         assert {p: digest(p) for p in root.rglob("*") if p.is_file()} == before
+
+
+@pytest.mark.parametrize("filename", ["dependent.img", "dependent"])
+def test_unattached_dependency_without_qcow2_suffix(recovery_domain, filename):
+    name, root, disk, _, cli = recovery_domain
+    overlay = root / "disks" / filename
+    subprocess.run(["qemu-img", "create", "-f", "qcow2", "-F", "qcow2",
+        "-b", str(disk), str(overlay)], check=True)
+    before = {p: digest(p) for p in root.rglob("*") if p.is_file()}
+    xml_before = E2EHelper.virsh("dumpxml", name, "--inactive").stdout
+    for args in [("delete", name, "--yes"), ("reinstall", name, "--yes")]:
+        result = cli(*args, check=False)
+        assert result.returncode != 0 and "dependent disk" in result.stderr, result.stderr
+        assert E2EHelper.virsh("dumpxml", name, "--inactive").stdout == xml_before
+        assert {p: digest(p) for p in root.rglob("*") if p.is_file()} == before

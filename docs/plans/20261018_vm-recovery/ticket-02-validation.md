@@ -76,3 +76,17 @@ and the final version passed smoke and the real refusal rerun above.
 
 Verification is complete. The implementation still requires the committed-code
 Standards and Spec review gate before ticket 03 begins.
+
+## Review correction
+
+Initial Standards review found no blocking violations; its advisory request to
+rename cross-command tests to `test_lifecycle_...` was applied. Spec review found
+one must-fix gap: the managed-directory inventory filtered `*.qcow2`, missing
+dependent qcow2 images named `.img` or without a suffix.
+
+Four command-boundary cases reproduced that gap before correction. The scan
+now inspects every regular file regardless of filename. After correction, all
+199 unit tests and smoke passed on the test host, and all four real KVM refusal
+tests passed in 21.15 seconds, including both alternate filenames. File hashes
+and persistent domain XML remained intact after rejected delete/reinstall.
+The correction awaits the single focused follow-up review.

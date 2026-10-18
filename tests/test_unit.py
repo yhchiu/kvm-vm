@@ -1184,7 +1184,7 @@ def test_reinstall_success_through_command_boundary(reinstall_machine, capsys):
 
 
 @pytest.mark.parametrize("operation", ["reinstall", "clone", "delete"])
-def test_reinstall_refuses_backup_checkpoints_before_mutation(reinstall_machine, operation):
+def test_lifecycle_refuses_backup_checkpoints_before_mutation(reinstall_machine, operation):
     machine = reinstall_machine
     machine["checkpoints"] = "backup-baseline"
     with pytest.raises(kvm_vm.KVMError, match="Backup checkpoints"):
@@ -1198,7 +1198,7 @@ def test_reinstall_refuses_backup_checkpoints_before_mutation(reinstall_machine,
 
 
 @pytest.mark.parametrize("operation", ["reinstall", "clone", "delete"])
-def test_reinstall_refuses_stale_disk_path(reinstall_machine, operation):
+def test_lifecycle_refuses_stale_disk_path(reinstall_machine, operation):
     machine = reinstall_machine
     active = machine["disk"].with_name("overlay.qcow2")
     active.write_bytes(b"current guest writes")
@@ -1251,14 +1251,16 @@ def test_conflicting_lifecycle_work_preserves_lock_and_vm(reinstall_machine):
         assert path.read_bytes() == contents
 
 
-def test_delete_preserves_disk_used_by_unattached_overlay(reinstall_machine):
+@pytest.mark.parametrize("filename", ["dependent.qcow2", "dependent.img", "dependent"])
+@pytest.mark.parametrize("operation", ["delete", "reinstall"])
+def test_lifecycle_preserves_disk_used_by_unattached_overlay(reinstall_machine, filename, operation):
     machine = reinstall_machine
-    overlay = machine["disk"].with_name("dependent.qcow2")
+    overlay = machine["disk"].with_name(filename)
     overlay.write_bytes(b"dependent writes")
     machine["other_images"] = {str(overlay): {"backing-filename": str(machine["disk"])}}
     machine["args"].keep_storage = False
     with pytest.raises(kvm_vm.KVMError, match="dependent disk"):
-        kvm_vm.cmd_delete(machine["args"])
+        getattr(kvm_vm, "cmd_" + operation)(machine["args"])
     assert machine["defined"]
     assert overlay.read_bytes() == b"dependent writes"
     for path, contents in machine["originals"].items():

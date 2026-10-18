@@ -9,7 +9,8 @@ An unavailable inspection command or an inspection error also stops the work.
 No virtnbdbackup installation is required for ordinary operations.
 
 Before replacing or deleting storage, kvm-vm checks references from other defined
-domains and qcow2 files under `KVM_VM_DISK_DIR`. Symlinks are resolved and direct
+domains and all regular files under `KVM_VM_DISK_DIR`, regardless of filename
+suffix. QEMU inspects image metadata to discover dependencies. Symlinks are resolved and direct
 hard-link aliases are checked. This inventory is local: administrators must not
 keep unregistered dependent images outside the managed disk directory, share
 these disks with another host, or modify storage concurrently. Such arrangements
