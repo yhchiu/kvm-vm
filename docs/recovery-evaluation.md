@@ -5,6 +5,9 @@ Status: scope and implementation order accepted in
 agreed requirements, decision and findings. Feature implementation and
 hypervisor recovery validation remain future work.
 
+The [implementation specification](plans/20261018_vm-recovery/spec.md) captures the user
+stories, behavioral contracts and acceptance tests for this accepted scope.
+
 ## Confirmed requirements
 
 - Evaluate rollback after unwanted changes separately from disaster recovery.
