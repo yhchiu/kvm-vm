@@ -189,6 +189,15 @@ def main():
     left = {"job_active": backup_job_active(name), "checkpoints": checkpoints(name), "bitmaps": bitmaps(name, disk)}
     code, out = kvm("snapshot", "create", name)
     assert code == 1, out
+    after_failure = {}
+    for args_ in (("reinstall", name, "--force", "--yes"), ("delete", name, "--keep-storage", "--force", "--yes"),
+                  ("delete", name, "--force", "--yes")):
+        lifecycle_code, lifecycle_out = kvm(*args_)
+        assert lifecycle_code == 1 and re.search(
+            r"Backup checkpoints|Conflicting recovery operation|Cannot inspect domain jobs", lifecycle_out), lifecycle_out
+        after_failure[" ".join(a for a in args_ if a.startswith("--keep") or not a.startswith("-"))] = \
+            lifecycle_out.strip().splitlines()[-1][:120]
+    assert E2EHelper.domain_state(name) == "running" and disk.is_file()
     if backup_job_active(name):
         run("virsh", "domjobabort", name)
     deadline = time.monotonic() + 60
@@ -200,7 +209,7 @@ def main():
     assert checkpoints(name) == [] and bitmaps(name, disk) == []
     shutil.rmtree(killed)
     results["killed_backup"] = {"left_behind": left, "kvm_vm_exit": code,
-                                "refusal": out.strip().splitlines()[-1][:200]}
+                                "refusal": out.strip().splitlines()[-1][:200], "lifecycle": after_failure}
 
     # 5. Snapshot, unwanted update of data and configuration, rollback.
     code, out = kvm("snapshot", "create", name)
