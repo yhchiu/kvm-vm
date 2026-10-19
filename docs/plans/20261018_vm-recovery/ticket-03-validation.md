@@ -181,11 +181,11 @@ about 8 s; first boot to SSH within the 60-second wait; warm restart to SSH 14 s
 
 ### Retained resources
 
-On the destination: domain `e2e-full-f0f8bec754a9` (defined, shut off, autostart
-disabled), its disk and cloud files, `/root/drill` (set, guest key and work files
-with before and after artifacts) and `/root/evidence`. On the source: the original
-shut-off guest, root and set. Retain them until the operator agrees the drill is
-no longer needed.
+With the operator's agreement, these were removed during ticket 04: on the
+destination, domain `e2e-full-f0f8bec754a9` (deleted with `kvm-vm delete`), its
+disk, cloud files, `/root/drill` and `/root/evidence`; on the source, both
+`e2e-full-*` domains (undefined with their checkpoint metadata) and their roots
+and sets.
 
 ### Outcome
 

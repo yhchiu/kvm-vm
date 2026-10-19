@@ -621,12 +621,14 @@ Create／clone 失敗會保留現存資源供檢查，重試不會覆寫既有�
 依賴檢查、keep-storage、操作鎖與外部工具的執行順序，請見
 [lifecycle 復原安全說明](docs/lifecycle-recovery-safety.md)。
 
-完整備份與跨主機復原已通過一次實機驗收（Debian 13 還原到 AlmaLinux 9.8，單一
-guest、同步標記檔工作負載）。這是操作員流程，不是 kvm-vm 指令；其他 guest、應用程式與
-主機組合尚未驗證。請參閱
+完整備份，以及「完整＋增量」備份歷史中指定還原點的跨主機復原，已通過一次實機驗收
+（Debian 13 還原到 AlmaLinux 9.8，單一 guest、同步標記檔工作負載）。這是操作員流程，
+不是 kvm-vm 指令；其他 guest、應用程式與主機組合尚未驗證。還原前務必執行流程中的
+備份鏈檢查：`virtnbdrestore` 在備份歷史不完整或檔案順序錯亂時仍可能回傳 0。請參閱
 [操作流程](docs/full-backup-restore.md)、
-[雙主機驗收步驟](docs/full-backup-acceptance.md)與
-[ticket 03 驗證紀錄](docs/plans/20261018_vm-recovery/ticket-03-validation.md)。
+[雙主機驗收步驟](docs/full-backup-acceptance.md)、
+[ticket 03 驗證紀錄](docs/plans/20261018_vm-recovery/ticket-03-validation.md)與
+[ticket 04 驗證紀錄](docs/plans/20261018_vm-recovery/ticket-04-validation.md)。
 
 ## `--no-start`
 

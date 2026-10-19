@@ -668,12 +668,16 @@ resources for inspection; retrying does not overwrite existing artifacts.
 See [lifecycle recovery safety](docs/lifecycle-recovery-safety.md) for dependency
 checks, keep-storage behavior, operation locking and external-tool sequencing.
 
-The [full Backup/Restore procedure](docs/full-backup-restore.md) and
+The [Backup/Restore procedure](docs/full-backup-restore.md) and
 [two-host acceptance workflow](docs/full-backup-acceptance.md) passed one
 cross-host exercise (Debian 13 to AlmaLinux 9.8, one guest, synced-marker
-workload). It is an operator procedure, not a kvm-vm command, and other guests,
-applications and host combinations are untested; see the
-[ticket 03 evidence](docs/plans/20261018_vm-recovery/ticket-03-validation.md).
+workload) for a full Backup and for chosen points of a full plus incremental
+history. It is an operator procedure, not a kvm-vm command, and other guests,
+applications and host combinations are untested. Before any restore, run the
+procedure's chain check: `virtnbdrestore` can exit 0 while restoring an
+incomplete or reordered history. See the
+[ticket 03](docs/plans/20261018_vm-recovery/ticket-03-validation.md) and
+[ticket 04](docs/plans/20261018_vm-recovery/ticket-04-validation.md) evidence.
 
 ## `--no-start`
 
