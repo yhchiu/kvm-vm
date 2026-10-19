@@ -5,7 +5,9 @@ whose live XML, persistent XML and managed disk path agree. They refuse
 checkpoints, snapshots, backing chains, persistent backup bitmaps, external data
 files and unsupported disk layouts. Refusal retains the existing domain and
 files; it does not consolidate chains or retire recovery metadata for you.
-An unavailable inspection command or an inspection error also stops the work.
+A kvm-vm [Snapshot](snapshots.md), or an incomplete Snapshot operation, is
+refused the same way; `kvm-vm snapshot delete` removes it and keeps the current
+data. An unavailable inspection command or an inspection error also stops the work.
 No virtnbdbackup installation is required for ordinary operations.
 
 Before replacing or deleting storage, kvm-vm checks references from other defined
@@ -42,7 +44,7 @@ before replacement or undefinition.
 
 ## Sequencing and interrupted operations
 
-Create, clone, reinstall and delete share an exclusive directory lock at
+Create, clone, reinstall, delete, `snapshot create` and `snapshot delete` share an exclusive directory lock at
 `KVM_VM_STATE_DIR/.lifecycle-lock`. Use one state directory for all kvm-vm
 processes controlling a libvirt instance. Commands fail immediately on an
 existing lock; they do not automatically reclaim it based on an old PID. After

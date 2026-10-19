@@ -19,6 +19,9 @@ kvm-vm list [--managed] [--ips]
 kvm-vm status <vm>
 kvm-vm console <vm>
 kvm-vm delete <vm> [--yes] [--force] [--keep-storage]
+kvm-vm snapshot create <vm> [--no-quiesce] [--dry-run]
+kvm-vm snapshot status <vm>
+kvm-vm snapshot delete <vm> [--yes]
 kvm-vm validate <vm.yaml> [--clone]
 ```
 
@@ -659,6 +662,16 @@ kvm-vm create newvm.yaml --refresh-image
 - **Existing VMs remain unaffected**: This flag only updates the cached base image in the local storage pool. Because each VM runs on its own independent qcow2 disk, re-downloading or updating the base image will never affect already created VMs.
 - **Unconditional re-download**: As confirmed from the source code, `--refresh-image` does not perform HTTP conditional checks (such as `ETag` or `Last-Modified`); whenever this flag is passed, the tool unconditionally re-downloads the complete image and overwrites the local cache, even if the cached image is already the latest version.
 
+## Snapshots
+
+`kvm-vm snapshot create NAME` keeps one short-lived rollback point before an
+update, without stopping the VM; the guest filesystems are frozen briefly
+through the QEMU guest agent. `kvm-vm snapshot status NAME` shows it, and
+`kvm-vm snapshot delete NAME --yes` removes it while keeping the current data.
+A Snapshot is not a Backup. Supported configurations, pauses, failure recovery
+and AppArmor behavior are in [docs/snapshots.md](docs/snapshots.md). Rollback is
+not available yet.
+
 ## Recovery state safety
 
 Clone, reinstall and delete refuse checkpoints, snapshots, backing chains,
@@ -781,7 +794,9 @@ It is not a replacement for a cluster manager. It does not currently manage:
 
 - live migration
 - Ceph/RBD storage
-- snapshots/backups
+- multiple or long-term snapshots, snapshot rollback, or backups (it keeps one
+  short-lived [Snapshot](docs/snapshots.md); Backups use the external
+  [procedure](docs/full-backup-restore.md))
 - multiple NICs
 - multiple managed data disks
 - VLAN tagging

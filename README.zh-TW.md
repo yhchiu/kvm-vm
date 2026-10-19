@@ -17,6 +17,9 @@ kvm-vm list [--managed] [--ips]
 kvm-vm status <vm>
 kvm-vm console <vm>
 kvm-vm delete <vm> [--yes] [--force] [--keep-storage]
+kvm-vm snapshot create <vm> [--no-quiesce] [--dry-run]
+kvm-vm snapshot status <vm>
+kvm-vm snapshot delete <vm> [--yes]
 kvm-vm validate <vm.yaml> [--clone]
 ```
 
@@ -613,6 +616,14 @@ kvm-vm create newvm.yaml --refresh-image
 - **不影響既有 VM**：此參數只會更新本地快取的基底映像檔。由於每個 VM 在建立時都會分配獨立的 qcow2 系統磁碟，因此重新下載或更新基底映像檔完全不會影響已建立運行的虛擬機器。
 - **無條件重新下載**：經程式碼確認，`--refresh-image` 執行時不會比對 HTTP `ETag` 或 `Last-Modified` 標頭；只要帶入此參數，系統就會無條件重新下載完整映像檔並覆蓋本地快取。因此即使本地快取的映像檔已經是最新版，依然會重新下載。
 
+## 快照（Snapshots）
+
+`kvm-vm snapshot create NAME` 可在更新前建立一個短期的回復點，不需停止 VM；
+會透過 QEMU guest agent 短暫凍結 guest 檔案系統。`kvm-vm snapshot status NAME`
+可查看狀態，`kvm-vm snapshot delete NAME --yes` 會刪除快照並保留目前資料。
+快照不是備份。支援的設定、暫停時間、失敗後的處理與 AppArmor 行為請見
+[docs/snapshots.md](docs/snapshots.md)。目前尚未提供回復（rollback）。
+
 ## 復原狀態安全檢查
 
 Clone、reinstall 與 delete 會拒絕 checkpoint、snapshot、backing chain、
@@ -726,7 +737,8 @@ DISTROS = {
 
 - 即時遷移（live migration）
 - Ceph/RBD 儲存系統
-- 快照 / 備份（snapshots/backups）
+- 多個或長期保存的快照、快照回復（rollback）或備份（本工具只保留一個短期
+  [快照](docs/snapshots.md)；備份請使用外部工具的[操作流程](docs/full-backup-restore.md)）
 - 多張網路卡（multiple NICs）
 - 多個受管理的資料磁碟
 - VLAN 標籤（VLAN tagging）
