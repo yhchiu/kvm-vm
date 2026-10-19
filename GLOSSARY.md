@@ -1,9 +1,27 @@
-# VM Recovery
+# VM Management
 
-This context distinguishes recovery from an unwanted change from recovery after
-loss or corruption of a VM or its storage.
+This context covers VM network attachment and distinguishes recovery from an
+unwanted change from recovery after loss or corruption of a VM or its storage.
 
 ## Language
+
+### Network attachment
+
+**Macvtap attachment**:
+A VM network connection directly through a host parent interface to the LAN.
+It does not provide a direct management path between the VM and that host
+through the parent interface.
+
+**Parent interface**:
+The existing host network interface through which a Macvtap attachment reaches
+the LAN.
+
+**Macvtap bridge mode**:
+The Macvtap forwarding mode that allows guests attached to the same parent in
+this mode to communicate locally. It is distinct from a host Linux bridge.
+_Avoid_: Linux bridge
+
+### Recovery
 
 **Snapshot**:
 A point-in-time recovery point used to roll a VM back after an unwanted change.
