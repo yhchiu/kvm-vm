@@ -1,7 +1,8 @@
 # VM Management
 
-This context covers VM network attachment and distinguishes recovery from an
-unwanted change from recovery after loss or corruption of a VM or its storage.
+This context covers VM network attachment and local management. It distinguishes
+recovery from an unwanted change from recovery after loss or corruption of a VM
+or its storage.
 
 ## Language
 
@@ -20,6 +21,17 @@ the LAN.
 The Macvtap forwarding mode that allows guests attached to the same parent in
 this mode to communicate locally. It is distinct from a host Linux bridge.
 _Avoid_: Linux bridge
+
+### Local management
+
+**Console password login**:
+An explicitly enabled way to authenticate the VM's management user through its
+serial console, independent of the VM's network attachment.
+
+**Console credential**:
+The management user's local account password delivered for console access.
+It is not inherently restricted to the serial device; other authentication
+services determine whether they accept that same password.
 
 ### Recovery
 
