@@ -1,7 +1,9 @@
 # Ticket 04 validation
 
 Status: cross-host acceptance passed on 2026-10-19 (Debian 13 to AlmaLinux 9.8,
-synced-marker workload); review gate pending.
+synced-marker workload); review gate closed.
+
+Implementation/review fixed point: `4f6581ec7e50c288465594693907b6c184d712f8`.
 
 ## Scope and decisions
 
@@ -215,4 +217,29 @@ Permissive, as found.
 
 ## Review gate
 
-Pending.
+Review of `60eebd0...4f6581e`: test-side scripts, unit tests, documentation and
+evidence. No kvm-vm runtime code changed.
+
+- Standards: both commits use Conventional Commits with a detailed body and
+  no co-author trailer. The new scripts follow `tests/prepare_full_backup.py`
+  (root check, `run` helpers, printed pass markers, fenced source). Relative
+  links and anchors resolve, Bash blocks pass `bash -n`, and `git diff --check`
+  is clean.
+- Spec: each issue 04 item maps to this record. Procedure and checkpoint/data
+  distinction: the new procedure section. Per-point management files and the
+  wrong-pairing demonstration: point 1 restored with 1 vCPU/1024 MiB while
+  later files hold 2 vCPU/1536 MiB, and the identical `vmconfig` files. Distinct
+  host and independent material: the transfer and destination sections. Next
+  history: refused continuation, new full plus incremental, and a restore that
+  showed the post-restore data. Invalid tracking and incomplete history: the
+  drill and destination refusals. Optional tooling: no runtime change, unit
+  suites pass without the backup tools on the workstation.
+- Findings fixed during the run, before the commits: an actionable message for
+  a SHA256SUMS mismatch, and the false leftover-path refusal on same-path
+  restores. No must-fix findings remain.
+- Advisory: operators need the kvm-vm source tree for the chain check. This is
+  recorded under [follow-ups](#follow-ups) as an ADR-0001 decision.
+
+This gate used one inline review pass instead of separate review agents. The
+code is test-side only, and every claim was checked against the real-machine
+output above.
