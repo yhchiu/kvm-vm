@@ -471,6 +471,24 @@ def test_delete_refuses_a_snapshot_changed_outside_kvm_vm(host):
     assert host.files() == before and len(host.snapshots) == 2
 
 
+def test_snapshot_not_made_by_kvm_vm_points_to_virsh_not_to_kvm_vm_delete(host):
+    host.snapshots.append("made-with-virsh")
+    with pytest.raises(kvm_vm.KVMError) as error:
+        create()
+    assert "did not create" in str(error.value) and "resolved with virsh" in str(error.value)
+    assert "Delete it with" not in str(error.value)
+
+
+def test_delete_refuses_backup_checkpoints_created_after_the_snapshot(host):
+    create()
+    host.write(b"current data")
+    host.checkpoints = "virtnbdbackup.0"
+    before = host.files()
+    with pytest.raises(kvm_vm.KVMError, match="Backup checkpoints.*not changed"):
+        delete()
+    assert host.files() == before and len(host.snapshots) == 1 and record()["status"] == "ready"
+
+
 def test_delete_without_a_snapshot_is_refused(host):
     with pytest.raises(kvm_vm.KVMError, match="no kvm-vm Snapshot"):
         delete()

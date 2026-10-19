@@ -1900,6 +1900,9 @@ def cmd_snapshot_create(args: argparse.Namespace) -> int:
         raise KVMError(f"Snapshots need a running or shut off VM; {name} is {power}")
     running = power == "running"
     info = inspect_snapshot(name)
+    if info["kind"] == "foreign":
+        raise KVMError(f"{name} already has a Snapshot that kvm-vm did not create; it was not changed.\n"
+                       + "\n".join(snapshot_report(name, info)))
     if info["kind"] != "none":
         raise KVMError(f"{name} already has a Snapshot; only one is kept per VM and the existing one was not "
                        f"changed. Delete it with 'kvm-vm snapshot delete {name}' first.\n"
@@ -2072,6 +2075,10 @@ def cmd_snapshot_delete(args: argparse.Namespace) -> int:
         raise KVMError("\n".join(snapshot_report(name, info)))
     if record.get("status") == "unreadable":
         raise KVMError(f"Cannot read the Snapshot record in {snapshot_dir(name)}; inspect it manually")
+    if output(["virsh", "-c", LIBVIRT_URI, "checkpoint-list", name, "--name"]):
+        raise KVMError(f"Backup checkpoints were created for {name} while it has a Snapshot. Deleting a Snapshot "
+                       "together with incremental Backup tracking is not supported yet; the Snapshot and the "
+                       "checkpoints were not changed. Retire the checkpoints with the backup tool first.")
     snapshot, overlay, base = record["snapshot"], Path(record["overlay"]), record["base"]
     topology = info["topology"] or disk_topology(name)
     on_overlay = all(same_path(top, str(overlay)) and same_path(backing, base) for top, backing in topology.values())

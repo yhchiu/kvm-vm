@@ -143,4 +143,6 @@ A Snapshot does not protect against losing the host or its storage; use the
 [Backup procedure](full-backup-restore.md) for that. Snapshot creation refuses
 a VM with Backup checkpoints, because Snapshots together with incremental Backup
 tracking have not been verified yet. The checkpoints and Backups are left
-unchanged. Do not start a Backup while a Snapshot exists.
+unchanged. Do not start a Backup while a Snapshot exists. If checkpoints were
+created anyway, `kvm-vm snapshot delete` refuses and changes nothing until the
+checkpoints are retired with the backup tool.
