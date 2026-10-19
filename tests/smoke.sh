@@ -7,7 +7,7 @@ python3 -m py_compile "$ROOT/kvm-vm"
 "$ROOT/kvm-vm" --version
 
 if python3 -m pytest --version >/dev/null 2>&1; then
-  python3 -m pytest "$ROOT/tests/test_unit.py" -q
+  python3 -m pytest "$ROOT/tests/test_unit.py" "$ROOT/tests/test_macvtap.py" -q
 fi
 
 tmp="$(mktemp -d)"
@@ -15,9 +15,14 @@ trap 'rm -rf "$tmp"' EXIT
 cat > "$tmp/key.pub" <<'KEY'
 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIK111111111111111111111111111111111111111 smoke@test
 KEY
+key_path="$tmp/key.pub"
+# YAML paths are not converted by MSYS when passed to native Windows Python.
+if command -v cygpath >/dev/null 2>&1; then
+  key_path="$(cygpath -m "$key_path")"
+fi
 
 # Bridge example remains valid and uses br0.
-sed "s#file:~/.ssh/id_ed25519.pub#file:$tmp/key.pub#" \
+sed "s#file:~/.ssh/id_ed25519.pub#file:$key_path#" \
   "$ROOT/examples/ubuntu24-web01.yaml" > "$tmp/bridge.yaml"
 "$ROOT/kvm-vm" validate "$tmp/bridge.yaml" > "$tmp/bridge.out"
 grep -q '^  mode: bridge$' "$tmp/bridge.out"
@@ -36,7 +41,7 @@ network:
     method: dhcp
 cloud_init:
   ssh_authorized_keys:
-    - file:$tmp/key.pub
+    - file:$key_path
 EOF2
 "$ROOT/kvm-vm" validate "$tmp/default.yaml" > "$tmp/default.out"
 grep -q '^  mode: bridge$' "$tmp/default.out"
@@ -48,7 +53,7 @@ grep -q '^  bridge: custombr9$' "$tmp/custombr.out"
 
 # NAT example normalizes to the named libvirt virtual network. Validation is offline and
 # intentionally does not require a running libvirt daemon; create/clone do runtime checks.
-sed "s#file:~/.ssh/id_ed25519.pub#file:$tmp/key.pub#" \
+sed "s#file:~/.ssh/id_ed25519.pub#file:$key_path#" \
   "$ROOT/examples/ubuntu24-nat.yaml" > "$tmp/nat.yaml"
 "$ROOT/kvm-vm" validate "$tmp/nat.yaml" > "$tmp/nat.out"
 grep -q '^  mode: nat$' "$tmp/nat.out"

@@ -382,6 +382,29 @@ kvm-vm status web01
 
 `status` 會顯示 libvirt 網域資訊、kvm-vm 狀態清單、磁碟、網路介面以及 libvirt 已知的 IP 位址。
 
+## Macvtap 網路
+
+設定 `network.mode: macvtap` 與 `network.parent: eno1`，即可用 Macvtap
+bridge 子模式將單張 VM 網卡接到既有實體有線介面。也可使用
+`KVM_VM_MACVTAP=eno1 kvm-vm create vm.yaml` 同時覆寫模式與 parent，
+包括原本的 bridge／NAT 定義。空值會報錯；Macvtap 不可與
+`KVM_VM_BRIDGE` 並用，請移除衝突的變數。IP、gateway、DNS 沿用既有覆寫。
+
+Parent 必須已啟用、未隸屬 bridge／bond，且能透過 Linux sysfs 與
+`ip -j -d link` 檢查。不存在、不支援或檢查失敗時會停止；首版不支援
+Wi-Fi、bond、VLAN、bridge 或從屬介面。工具不會設定或刪除 parent。
+`validate` 離線驗證定義；`create --dry-run` 另外檢查主機介面。
+
+LAN 必須允許額外的 VM MAC，並提供 DHCP 或適當靜態位址，這些需自行
+確認，不能由本機 preflight 保證。請從另一台 LAN 電腦管理 VM：宿主機
+無法經同一 parent 直接連入 VM，也不會自動新增管理網卡。外部 DHCP
+租約不一定出現在 libvirt；透過 guest agent 取得 IP 需 agent 與 channel 正常。
+
+Create／clone 保存實際網路設定；reinstall 保留該設定並忽略
+`KVM_VM_MACVTAP` 等環境覆寫。跨主機還原時需提供相容的 parent。
+連上 serial console 不代表能密碼登入，預設使用者密碼仍鎖定，請參閱下方政策。
+實機支援仍需通過 LAN 驗收，不能以產生設定成功代替。
+
 ## 序列主控台（Serial console）
 
 ```bash

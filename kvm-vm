@@ -49,6 +49,7 @@ STATE_DIR = Path(os.environ.get("KVM_VM_STATE_DIR", "/var/lib/kvm-vm/state"))
 CLOUD_DIR = Path(os.environ.get("KVM_VM_CLOUD_DIR", "/var/lib/libvirt/images/cloud-init"))
 DEF_DIR = Path(os.environ.get("KVM_VM_DEF_DIR", "/etc/kvm-vm/definitions"))
 DEFAULT_BRIDGE = "br0"
+NET_SYS_DIR = Path("/sys/class/net")
 
 DISTROS = {
     "ubuntu24.04": {
@@ -305,7 +306,10 @@ def normalize_definition(raw: Dict[str, Any], *, for_clone: bool = False) -> Dic
             raise KVMError(f"Unsupported distro '{distro}'. Supported: {', '.join(sorted(DISTROS))}")
 
     env_bridge = os.environ.get("KVM_VM_BRIDGE")
+    env_macvtap = os.environ.get("KVM_VM_MACVTAP")
     network_mode = str(network.get("mode", "bridge")).lower()
+    if env_bridge is not None and (env_macvtap is not None or network_mode == "macvtap"):
+        raise KVMError("KVM_VM_BRIDGE conflicts with Macvtap; unset the conflicting override")
     if env_bridge is not None:
         network_mode = "bridge"
         bridge = env_bridge
@@ -314,16 +318,22 @@ def normalize_definition(raw: Dict[str, Any], *, for_clone: bool = False) -> Dic
         if bridge is None:
             bridge = DEFAULT_BRIDGE
 
-    if network_mode not in {"bridge", "nat"}:
-        raise KVMError("network.mode must be bridge or nat")
+    if env_macvtap is not None:
+        network_mode = "macvtap"
+
+    if network_mode not in {"bridge", "nat", "macvtap"}:
+        raise KVMError("network.mode must be bridge or nat or macvtap")
 
     libvirt_network = network.get("libvirt_network", "default")
+    parent = env_macvtap if env_macvtap is not None else network.get("parent")
     if network_mode == "bridge":
         if not isinstance(bridge, str) or not bridge.strip():
             raise KVMError("network.bridge must be a non-empty bridge/interface name")
-    else:
+    elif network_mode == "nat":
         if not isinstance(libvirt_network, str) or not libvirt_network.strip():
             raise KVMError("network.libvirt_network must be a non-empty libvirt network name")
+    elif not isinstance(parent, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,15}", parent):
+        raise KVMError("network.parent must be a non-empty Ethernet interface name (up to 15 characters)")
 
     model = network.get("model", "virtio")
     mac = network.get("mac") or "auto"
@@ -415,7 +425,9 @@ def normalize_definition(raw: Dict[str, Any], *, for_clone: bool = False) -> Dic
         },
         "network": {
             "mode": network_mode,
-            **({"bridge": bridge} if network_mode == "bridge" else {"libvirt_network": libvirt_network}),
+            **({"bridge": bridge} if network_mode == "bridge" else
+               {"parent": parent} if network_mode == "macvtap" else
+               {"libvirt_network": libvirt_network}),
             "model": model,
             "mac": mac,
             "ipv4": ipv4,
@@ -536,11 +548,39 @@ def validate_nat_network(network_name: str) -> None:
         raise KVMError(f"Libvirt network '{network_name}' uses forward mode '{mode}', not NAT")
 
 
+def validate_macvtap_parent(parent: str) -> None:
+    require_commands(["ip"])
+    result = run(["ip", "-j", "-d", "link", "show", "dev", parent], check=False, capture=True)
+    try:
+        links = json.loads(result.stdout)
+        if result.returncode or not isinstance(links, list) or len(links) != 1:
+            raise ValueError("missing interface")
+        link = links[0]
+        if not isinstance(link, dict) or link.get("ifname") != parent:
+            raise ValueError("unexpected interface")
+        info = link.get("linkinfo", {})
+        if not isinstance(info, dict):
+            raise ValueError("invalid link information")
+    except (ValueError, TypeError) as exc:
+        raise KVMError(f"Could not inspect Macvtap parent {parent}; check iproute2 and the interface") from exc
+    sysnet = NET_SYS_DIR / parent
+    if (link.get("link_type") != "ether" or info.get("info_kind") or link.get("master")
+            or not (sysnet / "device").exists() or (sysnet / "wireless").exists()
+            or (sysnet / "phy80211").exists()):
+        raise KVMError(f"Macvtap parent {parent} must be a standalone physical wired Ethernet interface")
+    if "UP" not in link.get("flags", []):
+        raise KVMError(f"Macvtap parent {parent} is down; configure it before creating a VM")
+
+
 def validate_network_attachment(net: Dict[str, Any]) -> None:
     if net["mode"] == "bridge":
         validate_bridge(net["bridge"])
-    else:
+    elif net["mode"] == "nat":
         validate_nat_network(net["libvirt_network"])
+    elif net["mode"] == "macvtap":
+        validate_macvtap_parent(net["parent"])
+    else:
+        raise KVMError(f"Unsupported network mode: {net['mode']}")
 
 
 def sha256_file(path: Path) -> str:
@@ -953,6 +993,8 @@ def define_vm(cfg: Dict[str, Any], disk: Path, seed: Path, default_variant: Opti
     disk_opts = f"path={disk},format=qcow2,bus={st['bus']},cache={st['cache']},discard={st['discard']}"
     if net["mode"] == "bridge":
         net_opts = f"bridge={net['bridge']},model={net['model']},mac={net['mac']}"
+    elif net["mode"] == "macvtap":
+        net_opts = f"type=direct,source={net['parent']},source.mode=bridge,model={net['model']},mac={net['mac']}"
     else:
         net_opts = f"network={net['libvirt_network']},model={net['model']},mac={net['mac']}"
     cmd = [
@@ -1407,7 +1449,7 @@ def cmd_reinstall(args: argparse.Namespace) -> int:
     # Preserve all existing VM configurations; prevent host env vars from altering configs during reinstall.
     env_keys = [
         "KVM_VM_NAME", "KVM_VM_VCPUS", "KVM_VM_MEMORY", "KVM_VM_MEMORY_MIB",
-        "KVM_VM_DISK", "KVM_VM_DISK_GIB", "KVM_VM_BRIDGE",
+        "KVM_VM_DISK", "KVM_VM_DISK_GIB", "KVM_VM_BRIDGE", "KVM_VM_MACVTAP",
         "KVM_VM_IPV4", "KVM_VM_GATEWAY", "KVM_VM_DNS", "KVM_VM_OS",
     ]
     saved_env: Dict[str, str] = {}

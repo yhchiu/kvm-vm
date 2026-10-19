@@ -421,6 +421,34 @@ kvm-vm status web01
 `status` shows libvirt domain information, the kvm-vm state manifest, disks, interfaces,
 and addresses known to libvirt.
 
+## Macvtap attachment
+
+Use `network.mode: macvtap` and `network.parent: eno1` to attach one guest NIC
+directly to an existing physical wired Ethernet interface in Macvtap bridge
+mode. Alternatively, `KVM_VM_MACVTAP=eno1 kvm-vm create vm.yaml` selects both
+mode and parent, including for bridge/NAT definitions. Empty values are errors.
+Do not combine `KVM_VM_BRIDGE` with Macvtap in the definition or environment;
+unset the conflicting variable. Existing IP, gateway and DNS overrides apply.
+
+The parent must already be up, standalone and visible through Linux sysfs and
+`ip -j -d link`. Missing/unsupported parents or failed inspection stop creation;
+Wi-Fi, bonds, VLANs, bridges and enslaved interfaces are outside this initial
+support. kvm-vm never configures or deletes the parent. `validate` checks the
+definition offline; `create --dry-run` also inspects the host attachment.
+
+The physical LAN must permit guest MAC addresses and provide DHCP or appropriate
+static addressing. Confirm these with the network administrator; local preflight
+cannot verify them. Manage the guest from another LAN computer: the host cannot
+directly reach the guest through this parent. No second management NIC is added.
+External DHCP leases may not appear in libvirt; guest-agent address discovery
+requires a working guest agent and channel.
+
+Create and clone save the effective attachment. Reinstall retains it and ignores
+`KVM_VM_MACVTAP` and other ambient network overrides. On another host, provide
+a suitable parent before using a restored definition. Serial console attachment
+alone does not unlock the default user's password; see the console policy below.
+Real-host acceptance remains pending until the documented LAN tests pass.
+
 ## Serial console
 
 ```bash
