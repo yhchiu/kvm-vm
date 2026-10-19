@@ -7,7 +7,7 @@ recoverable data and an honest, actionable operation state.
 
 **Blocked by:** 05: Create, inspect and delete one short-lived Snapshot.
 
-**Status:** implemented; review gate pending, see the [validation record](../ticket-06-validation.md).
+**Status:** complete; see the [validation record](../ticket-06-validation.md).
 
 **Spec coverage:** User Stories 8, 9, 10, 11, 12, 16, 17, 19, 20, 36, 37, 39
 and 40; ADR-0001.

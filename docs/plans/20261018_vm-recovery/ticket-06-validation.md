@@ -1,7 +1,9 @@
 # Ticket 06 validation
 
 Status: implementation, command-boundary tests and Linux/KVM acceptance passed
-on 2026-10-19 on two hosts; review gate pending.
+on 2026-10-19 on two hosts; review gate closed.
+
+Implementation/review fixed point: `035d169ef0f3d0e768baec41ba65819de71e0464`.
 
 ## Decisions
 
@@ -61,4 +63,35 @@ rollback with Backup checkpoints (refused; ticket 07).
 
 ## Review gate
 
-Pending.
+Review of `748d24a...035d169`.
+
+- Standards: Conventional Commit with a detailed body and no co-author
+  trailer. The rollback command follows the existing destructive-command
+  conventions (`--yes`, `--force` to stop a running VM as in `reinstall`,
+  `--no-start`), the `run`/`output` helpers and `lifecycle_exclusive`. Tests
+  assert guest data, configuration, files and records.
+- Spec: each issue 06 item maps to this record. CLI and confirmation are
+  covered by the refusal tests on both levels. Disk and configuration restore:
+  real-KVM vCPU/memory and data checks. Coherent management state and identity:
+  byte-identical YAML, state and cloud files, unchanged machine ID, instance ID,
+  host keys, UUID and MAC, no clone customization. Consume semantics: documented,
+  status none afterward, next Snapshot works. Checkpoints: refused before any
+  change with the new-full-Backup guidance. Failure injection: interruptions
+  at destroy, define and metadata removal, a failed redefine and a failed start.
+  Duration: measured on both hosts.
+- No must-fix findings. Advisory: interruptions were injected in the
+  command-boundary tests only; the real runs covered the successful paths.
+
+Confirmation with `035d169` (`kvm-vm` SHA-256 `3865d3dd…`, checked on each
+host); the whole `tests/test_snapshot_e2e.py` (create/delete and rollback) ran:
+
+| | AlmaLinux 9.8 | Debian 13 |
+| --- | --- | --- |
+| Unit tests (three files, `-m "not e2e"`) | 270 passed | 270 passed |
+| `tests/test_snapshot_e2e.py` | 2 passed in 256 s | 2 passed in 714 s |
+| Rollback until VM started / to SSH | 1.0 s / 21.5 s | 4.6 s / 45.6 s |
+| Shut off rollback with `--no-start` | 0.4 s | 1.0 s |
+| Snapshot freeze | 99 to 104 ms | 866 to 1630 ms |
+
+Both hosts were left without test guests. This gate used one inline review
+pass instead of separate review agents.
