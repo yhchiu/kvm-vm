@@ -1261,8 +1261,12 @@ def check_recovery_metadata(name: str) -> None:
 
 def check_domain_job(name: str) -> None:
     if is_running_state(domain_state(name)):
-        job = output(["virsh", "-c", LIBVIRT_URI, "domjobinfo", name])
-        fields = dict(line.split(":", 1) for line in job.splitlines() if ":" in line)
+        p = run(["virsh", "-c", LIBVIRT_URI, "domjobinfo", name], check=False, capture=True)
+        if p.returncode != 0:
+            # libvirt briefly refuses job queries while a job such as a Backup starts.
+            raise KVMError(f"Cannot inspect domain jobs of {name} ({p.stderr.strip()}); a job may be starting. "
+                           "Retry after it has finished.")
+        fields = dict(line.split(":", 1) for line in p.stdout.splitlines() if ":" in line)
         if fields.get("Job type", "unknown").strip().lower() != "none":
             raise KVMError(f"Conflicting recovery operation on {name}; wait for its domain job to finish")
 
@@ -1803,6 +1807,17 @@ def snapshot_report(name: str, info: Dict[str, Any]) -> List[str]:
     return lines
 
 
+def backup_checkpoints(name: str) -> List[str]:
+    return output(["virsh", "-c", LIBVIRT_URI, "checkpoint-list", name, "--name", "--topological"]).split()
+
+
+def retire_checkpoints_hint(name: str, checkpoints: List[str]) -> str:
+    return (f"Supported sequence: take any final incremental Backup, then retire the tracking while the VM runs "
+            f"with 'virsh -c {LIBVIRT_URI} checkpoint-delete {name} {checkpoints[0]} --children'. Existing Backups "
+            "stay restorable; after the Snapshot is deleted or rolled back, start a new full Backup into a new "
+            "directory (see docs/snapshots.md).")
+
+
 def check_snapshot_support() -> None:
     text = output(["virsh", "-c", LIBVIRT_URI, "version", "--daemon"])
     match = re.search(r"Running against daemon:\s*(\d+)\.(\d+)\.(\d+)", text)
@@ -1911,9 +1926,11 @@ def cmd_snapshot_create(args: argparse.Namespace) -> int:
         raise KVMError(f"{name} already has a Snapshot; only one is kept per VM and the existing one was not "
                        f"changed. Delete it with 'kvm-vm snapshot delete {name}' first.\n"
                        + "\n".join(snapshot_report(name, info)))
-    if output(["virsh", "-c", LIBVIRT_URI, "checkpoint-list", name, "--name"]):
-        raise KVMError(f"Backup checkpoints exist for {name}. Snapshots together with incremental Backup "
-                       "tracking are not supported yet; the checkpoints and Backups were left unchanged.")
+    checkpoints = backup_checkpoints(name)
+    if checkpoints:
+        raise KVMError(f"Backup checkpoints exist for {name} ({', '.join(checkpoints)}). A Snapshot cannot be "
+                       "combined with incremental Backup tracking; nothing was changed. "
+                       + retire_checkpoints_hint(name, checkpoints))
     check_recovery_metadata(name)
     disk = checked_domain_disk(name, state)
     system, cdroms, uuid, xml = snapshot_devices(name)
@@ -2082,10 +2099,12 @@ def cmd_snapshot_delete(args: argparse.Namespace) -> int:
     if record["status"] == "rolling-back":
         raise KVMError(f"A rollback of {name} was started and must be finished, not undone: "
                        f"run 'kvm-vm snapshot rollback {name} --yes' again. Nothing was changed.")
-    if output(["virsh", "-c", LIBVIRT_URI, "checkpoint-list", name, "--name"]):
-        raise KVMError(f"Backup checkpoints were created for {name} while it has a Snapshot. Deleting a Snapshot "
-                       "together with incremental Backup tracking is not supported yet; the Snapshot and the "
-                       "checkpoints were not changed. Retire the checkpoints with the backup tool first.")
+    checkpoints = backup_checkpoints(name)
+    if checkpoints:
+        raise KVMError(f"Backup checkpoints were created for {name} while it has a Snapshot "
+                       f"({', '.join(checkpoints)}). Deleting a Snapshot together with incremental Backup tracking "
+                       "is not supported; the Snapshot and the checkpoints were not changed. "
+                       + retire_checkpoints_hint(name, checkpoints))
     snapshot, overlay, base = record["snapshot"], Path(record["overlay"]), record["base"]
     topology = info["topology"] or disk_topology(name)
     on_overlay = all(same_path(top, str(overlay)) and same_path(backing, base) for top, backing in topology.values())
@@ -2190,10 +2209,11 @@ def cmd_snapshot_rollback(args: argparse.Namespace) -> int:
     if record.get("status") not in ("ready", "rolling-back") or (record["status"] == "ready" and info["kind"] != "ready"):
         raise KVMError(f"The Snapshot of {name} is not usable for rollback; nothing was changed.\n"
                        + "\n".join(snapshot_report(name, info)))
-    if output(["virsh", "-c", LIBVIRT_URI, "checkpoint-list", name, "--name"]):
-        raise KVMError(f"Backup checkpoints exist for {name}. They track changes made after the Snapshot, which a "
-                       "rollback discards, so the Backup history cannot continue. Retire the checkpoints with the "
-                       "backup tool, roll back, then start a new full Backup; nothing was changed.")
+    checkpoints = backup_checkpoints(name)
+    if checkpoints:
+        raise KVMError(f"Backup checkpoints exist for {name} ({', '.join(checkpoints)}). They track changes made "
+                       "after the Snapshot, which a rollback discards, so their Backup history cannot continue; "
+                       "nothing was changed. " + retire_checkpoints_hint(name, checkpoints))
     snapshot, overlay, base = record["snapshot"], Path(record["overlay"]), record["base"]
     captured = ET.parse(snapshot_dir(name) / "domain.xml").getroot()
     captured_disks = captured.findall("./devices/disk[@device='disk']")

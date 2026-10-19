@@ -496,6 +496,29 @@ def test_delete_refuses_backup_checkpoints_created_after_the_snapshot(host):
     assert host.files() == before and len(host.snapshots) == 1 and record()["status"] == "ready"
 
 
+@pytest.mark.parametrize("operation", ["create", "delete", "rollback"])
+def test_checkpoint_refusals_name_the_supported_sequence(host, operation):
+    if operation != "create":
+        create()
+    host.checkpoints = "virtnbdbackup.0\nvirtnbdbackup.1"
+    before = host.files()
+    with pytest.raises(kvm_vm.KVMError) as error:
+        {"create": create, "delete": delete, "rollback": rollback}[operation]()
+    message = str(error.value)
+    assert "virtnbdbackup.0, virtnbdbackup.1" in message
+    assert "nothing was changed" in message or "were not changed" in message
+    assert "checkpoint-delete test01 virtnbdbackup.0 --children" in message and "new full Backup" in message
+    assert host.files() == before and host.power == "running"
+
+
+def test_job_query_failure_while_a_backup_starts_is_an_explicit_refusal(host):
+    host.fail["domjobinfo"] = "error: Timed out during operation: cannot acquire state change lock"
+    before = host.files()
+    with pytest.raises(kvm_vm.KVMError, match="Cannot inspect domain jobs.*Retry"):
+        create()
+    assert host.files() == before and not host.ever_frozen and not host.snapshots
+
+
 def test_delete_without_a_snapshot_is_refused(host):
     with pytest.raises(kvm_vm.KVMError, match="no kvm-vm Snapshot"):
         delete()

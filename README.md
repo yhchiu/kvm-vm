@@ -671,8 +671,11 @@ through the QEMU guest agent. `kvm-vm snapshot status NAME` shows it, and
 `kvm-vm snapshot delete NAME --yes` removes it while keeping the current data.
 If the update went wrong, `kvm-vm snapshot rollback NAME --yes --force` restores
 the captured disk, VM configuration and kvm-vm files and starts the VM again,
-keeping its identity. A Snapshot is not a Backup. Supported configurations,
-pauses, failure recovery and AppArmor behavior are in
+keeping its identity. A Snapshot is not a Backup, and it is never combined with
+incremental Backup tracking: retire the tracking before the Snapshot and start
+a new full Backup after it, as described in
+[Snapshots and Backups](docs/snapshots.md#snapshots-and-backups). Supported
+configurations, pauses, failure recovery and AppArmor behavior are in
 [docs/snapshots.md](docs/snapshots.md).
 
 ## Recovery state safety

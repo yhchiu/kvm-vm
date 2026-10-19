@@ -340,6 +340,10 @@ On the original host, the same rules apply:
   domain (`cannot delete checkpoint for inactive domain`).
 - kvm-vm `clone`, `reinstall` and `delete` refuse a VM with checkpoints until
   the history is retired.
+- kvm-vm Snapshots are never combined with checkpoints: retire the tracking
+  before `kvm-vm snapshot create`, and start a new full Backup after deleting
+  or rolling back the Snapshot. See
+  [Snapshots and Backups](snapshots.md#snapshots-and-backups).
 
 ## References
 

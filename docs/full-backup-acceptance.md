@@ -146,6 +146,22 @@ transfer and destination rules.
 7. Record the results in
    `docs/plans/20261018_vm-recovery/ticket-04-validation.md`.
 
+## Snapshot and Backup exercise
+
+Run this after the incremental history exercise. On the source,
+`sudo python3 tests/prepare_snapshot_backup_interop.py` (add
+`--socket-template` on AppArmor hosts) creates a unique `e2e-sbi-*` guest and
+runs the sequence in [Snapshots and Backups](snapshots.md#snapshots-and-backups).
+It covers an old history with checkpoints, the refusals, retiring the tracking,
+a Backup running and a Backup killed during Snapshot work, rollback of an
+unwanted data and configuration change, a kept change, and a new full plus
+incremental history. Its assertions stop on the first unexpected result, and
+it writes `ROOT/interop-results.json`. Transfer `ROOT/recovery-set` as before
+and restore `--point 1` with `tests/restore_recovery_point.py` on the
+destination. The guest must hold `point-0`, `point-1`, `point-3` and `point-4`,
+and not the rolled-back `point-2`. Record the results in
+`docs/plans/20261018_vm-recovery/ticket-07-validation.md`.
+
 ## Cleanup
 
 After acceptance evidence is retained, clean only the recorded test resources.

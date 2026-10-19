@@ -60,7 +60,7 @@ Creation checks all of these before it changes anything, and refuses otherwise:
   are excluded from the Snapshot; floppy and other disk devices are refused.
 - BIOS boot: UEFI firmware, NVRAM and TPM state are not captured, so these VMs
   are refused.
-- No Backup checkpoints (see [Backups](#backups)), no other libvirt snapshot,
+- No Backup checkpoints (see [Snapshots and Backups](#snapshots-and-backups)), no other libvirt snapshot,
   and no active domain or block job.
 
 ## Consistency and pause
@@ -175,18 +175,48 @@ works. Otherwise `kvm-vm snapshot delete` reports libvirt's error, leaves the
 Snapshot unchanged and asks you to shut the VM down; the offline delete with
 `qemu-img commit` then works.
 
-## Backups
+## Snapshots and Backups
 
 A Snapshot does not protect against losing the host or its storage; use the
-[Backup procedure](full-backup-restore.md) for that. Snapshot creation refuses
-a VM with Backup checkpoints, because Snapshots together with incremental Backup
-tracking have not been verified yet. The checkpoints and Backups are left
-unchanged. Do not start a Backup while a Snapshot exists. If checkpoints were
-created anyway, `kvm-vm snapshot delete` and `kvm-vm snapshot rollback` refuse
-and change nothing until the checkpoints are retired with the backup tool.
+[Backup procedure](full-backup-restore.md) for that. A Snapshot and incremental
+Backup tracking (libvirt checkpoints and their bitmaps) are never combined:
+kvm-vm resets the Backup baseline around each Snapshot instead of carrying it
+across. This sequence was tested end to end, including a Restore of the next
+Backup history on another host (see the
+[ticket 07 record](plans/20261018_vm-recovery/ticket-07-validation.md)):
 
-Because a Snapshot can only be created without checkpoints, no incremental
-Backup history continues across a rollback. Start the next Backup history with
-a full Backup into a new directory, as described in
-[start the next Backup history](full-backup-restore.md#start-the-next-backup-history).
-Backups taken before the Snapshot remain valid historical recovery points.
+1. Optionally take a final incremental Backup of the current history.
+2. Retire the tracking while the VM runs:
+   `virsh -c qemu:///system checkpoint-delete NAME virtnbdbackup.0 --children`.
+   This removes the checkpoints and their bitmaps. The existing Backup set is
+   unchanged and stays restorable; an incremental Backup into it is refused
+   from now on.
+3. `kvm-vm snapshot create NAME`, then make the change.
+4. Keep the change with `kvm-vm snapshot delete NAME --yes`, or discard it with
+   `kvm-vm snapshot rollback NAME --yes --force`.
+5. Start the next Backup history with a full Backup into a new directory and
+   capture the management files of each point, as in
+   [capture each recovery point](full-backup-restore.md#capture-each-recovery-point).
+   Later incremental Backups continue that new history.
+
+kvm-vm enforces the reset. `snapshot create`, `snapshot delete` and
+`snapshot rollback` refuse a VM with checkpoints, change nothing, and print
+the retire command from step 2. A Backup started while a Snapshot is being
+created is refused the same way, because the Backup tool creates its checkpoint
+when the job starts. Do not start Backups while a Snapshot exists; if one ran
+anyway, retire its checkpoint before deleting or rolling back the Snapshot.
+
+A Backup tool that is killed in the middle leaves a running Backup job, its new
+checkpoint and temporary bitmaps. kvm-vm refuses the VM until you end the job
+with `virsh domjobabort NAME` and retire the checkpoint as in step 2. Throw
+away the incomplete Backup directory.
+
+kvm-vm sees Backup tracking through libvirt's checkpoints. For a running VM,
+QEMU writes persistent bitmaps into the image only when it closes it, so
+kvm-vm cannot see a bitmap whose checkpoint metadata was removed by hand
+(`checkpoint-delete --metadata`). Do not remove only the metadata; the
+[Backup procedure](full-backup-restore.md#start-the-next-backup-history)
+explains why.
+
+Filesystem freezes by kvm-vm and by the Backup tool give filesystem
+consistency only. Application consistency needs the workload's own procedure.
