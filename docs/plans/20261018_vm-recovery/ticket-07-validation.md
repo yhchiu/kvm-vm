@@ -1,7 +1,10 @@
 # Ticket 07 validation
 
 Status: the supported Snapshot and Backup sequence passed end to end on
-2026-10-19/20 (Debian 13 source, AlmaLinux 9.8 destination); review gate pending.
+2026-10-19/20 (Debian 13 source, AlmaLinux 9.8 destination); review gate closed.
+
+Implementation/review fixed point: `83295b862b13ebd5414a12c3b801ff35b18e3f87`
+(kvm-vm unchanged since `fe01849a363ac9b47e3a9e70d650b9cd4bb6d574`).
 
 ## Supported sequence and decisions
 
@@ -68,7 +71,7 @@ post-restore file as expected. The VM was then deleted with
 
 ## Tests
 
-- `tests/test_snapshot.py`: 59 tests. New: the three checkpoint refusals print
+- `tests/test_snapshot.py`: 58 tests. New: the three checkpoint refusals print
   the supported sequence and change nothing, and a failing job query is an
   explicit refusal. Earlier tickets' tests cover the freeze/thaw path,
   interruptions and the lifecycle refusals.
@@ -89,9 +92,9 @@ post-restore file as expected. The VM was then deleted with
 
 Not validated: carrying checkpoints across a Snapshot, push-mode or other
 backup tools, SELinux enforcing, UEFI, multiple disks, application-consistent
-workloads, and lifecycle commands after the killed-Backup case beyond
-`snapshot create` (the same checkpoint and job checks apply). Measured times
-are single runs on these hosts, not limits.
+workloads, and `clone` after the killed-Backup case (it needs a shut off VM;
+the same checkpoint check applies). Measured times are single runs on these
+hosts, not limits.
 
 All test guests, sets, keys, working copies and logs were removed from both
 hosts afterward. The destination keeps kvm-vm, the backup tools and cached
@@ -99,4 +102,42 @@ images; its SELinux runtime mode is Permissive, as found.
 
 ## Review gate
 
-Pending.
+Review of `70f3244...fe01849`.
+
+- Standards: Conventional Commit with a detailed body and no co-author
+  trailer. The kvm-vm changes reuse the existing helpers and refusal style.
+  The harness follows the earlier `prepare_*` scripts and asserts every step.
+  Links, anchors, documentation shell blocks (`bash -n`) and `git diff
+  --check` pass.
+- Spec: each issue 07 item maps to this record:
+  - End-to-end sequence with Restore on another host.
+  - Checkpoint and bitmap state before and after retiring and rolling back.
+  - The new full baseline, and refusal of the old history.
+  - Refusals that explain the alternative without discarding Backups.
+  - Invalid tracking, a conflicting Backup job and a killed Backup.
+  - Lifecycle rechecks.
+  - Consistency and tool exclusions in the documentation.
+  - New command-boundary tests and a published matrix.
+- Findings:
+  1. The killed-Backup step rechecked only `snapshot create`, not `reinstall`,
+     `delete` and keep-storage as the checklist asks. Fixed in `83295b8`; the
+     harness now asserts that all three are refused while the job and
+     checkpoint remain.
+  2. `fe01849` and this record said 59 snapshot tests; there are 58. The
+     record is corrected.
+- Advisory, not changed: the lifecycle refusals from ticket 02 do not print
+  the retire command that the snapshot refusals print.
+
+Confirmation with the final code (`kvm-vm` SHA-256 `80ff3282…`, checked on each
+host):
+
+| | Debian 13 | AlmaLinux 9.8 |
+| --- | --- | --- |
+| Unit tests (three files, `-m "not e2e"`) | 274 passed | 274 passed |
+| Real-machine run | `prepare_snapshot_backup_interop.py` passed again (`e2e-sbi-7ed410a9a6ec`), including the new lifecycle checks after the killed Backup; rollback to SSH 43.6 s | `tests/test_snapshot_e2e.py`: 2 passed in 257 s; freeze 108 ms; rollback to SSH 21.4 s |
+
+The destination restore was not repeated: kvm-vm and
+`restore_recovery_point.py` are the same for the earlier restore, and the
+change only affects a failure path. Both hosts were left without test guests,
+sets or logs. This gate used one inline review pass instead of separate review
+agents.
