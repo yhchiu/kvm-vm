@@ -22,6 +22,7 @@ kvm-vm delete <vm> [--yes] [--force] [--keep-storage]
 kvm-vm snapshot create <vm> [--no-quiesce] [--dry-run]
 kvm-vm snapshot status <vm>
 kvm-vm snapshot delete <vm> [--yes]
+kvm-vm snapshot rollback <vm> [--yes] [--force] [--no-start]
 kvm-vm validate <vm.yaml> [--clone]
 ```
 
@@ -668,9 +669,11 @@ kvm-vm create newvm.yaml --refresh-image
 update, without stopping the VM; the guest filesystems are frozen briefly
 through the QEMU guest agent. `kvm-vm snapshot status NAME` shows it, and
 `kvm-vm snapshot delete NAME --yes` removes it while keeping the current data.
-A Snapshot is not a Backup. Supported configurations, pauses, failure recovery
-and AppArmor behavior are in [docs/snapshots.md](docs/snapshots.md). Rollback is
-not available yet.
+If the update went wrong, `kvm-vm snapshot rollback NAME --yes --force` restores
+the captured disk, VM configuration and kvm-vm files and starts the VM again,
+keeping its identity. A Snapshot is not a Backup. Supported configurations,
+pauses, failure recovery and AppArmor behavior are in
+[docs/snapshots.md](docs/snapshots.md).
 
 ## Recovery state safety
 
@@ -794,8 +797,8 @@ It is not a replacement for a cluster manager. It does not currently manage:
 
 - live migration
 - Ceph/RBD storage
-- multiple or long-term snapshots, snapshot rollback, or backups (it keeps one
-  short-lived [Snapshot](docs/snapshots.md); Backups use the external
+- multiple or long-term snapshots, or backups (it keeps one short-lived
+  [Snapshot](docs/snapshots.md); Backups use the external
   [procedure](docs/full-backup-restore.md))
 - multiple NICs
 - multiple managed data disks

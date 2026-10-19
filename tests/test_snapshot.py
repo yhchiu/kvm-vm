@@ -56,6 +56,7 @@ class Host:
         self.manifest = kvm_vm.STATE_DIR / "test01.json"
         self.root = root
         self.power = "running"
+        self.vcpus = 1
         self.top, self.backing = self.base, None
         self.snapshots: list = []
         self.frozen = self.ever_frozen = False
@@ -89,7 +90,8 @@ class Host:
         if self.power != "shut off":
             backing = (f'<backingStore type="file"><format type="qcow2"/><source file="{self.backing}"/>'
                        f'<backingStore/></backingStore>' if self.backing else "<backingStore/>")
-        return (f'<domain><name>test01</name><uuid>uuid-1</uuid><os>{self.os_extra}</os><devices>'
+        return (f'<domain><name>test01</name><uuid>uuid-1</uuid><vcpu>{self.vcpus}</vcpu>'
+                f'<os>{self.os_extra}</os><devices>'
                 f'<disk type="file" device="disk"><driver type="qcow2"/><source file="{self.top}"/>{backing}'
                 f'<target dev="vda"/></disk>'
                 f'<disk type="file" device="cdrom"><source file="{self.seed}"/><target dev="sda"/><readonly/></disk>'
@@ -107,10 +109,15 @@ class Host:
             self.base.write_bytes(self.guest_data())
             Path(cmd[-1]).write_bytes(b"")
         elif action == "define":
-            source = kvm_vm.ET.parse(cmd[4]).getroot().find("./devices/disk[@device='disk']/source")
-            self.top = Path(source.get("file"))
+            root = kvm_vm.ET.parse(cmd[4]).getroot()
+            self.top = Path(root.find("./devices/disk[@device='disk']/source").get("file"))
+            self.vcpus = int(root.findtext("vcpu"))
             if self.top == self.base:
                 self.backing = None
+        elif action == "destroy":
+            self.power = "shut off"
+        elif action == "start":
+            self.power = "running"
         elif cmd[0] == "qemu-img":
             info = {"format": "qcow2", "virtual-size": 10 * 1024**3}
             path = Path(cmd[-1])
@@ -494,9 +501,128 @@ def test_delete_without_a_snapshot_is_refused(host):
         delete()
 
 
+def rollback(yes=True, force=True, no_start=False):
+    return kvm_vm.cmd_snapshot_rollback(argparse.Namespace(name="test01", yes=yes, force=force, no_start=no_start))
+
+
+def change_after_snapshot(host):
+    """An unwanted update: guest data, persistent config, definition and a cloud-init file."""
+    host.write(b"unwanted update")
+    host.vcpus = 2
+    host.definition.write_text(host.definition.read_text().replace("vcpus: 1", "vcpus: 2"))
+    host.seed.write_bytes(b"edited seed")
+
+
+def test_rollback_restores_disk_configuration_and_management_files(host, capsys):
+    originals = {p: host.files()[p] for p in (host.definition, host.manifest, host.seed)}
+    create()
+    overlay = host.top
+    change_after_snapshot(host)
+    assert rollback() == 0
+    out = capsys.readouterr().out
+    assert host.guest_data() == b"data at the recovery point" and host.top == host.base and host.backing is None
+    assert host.vcpus == 1 and host.power == "running"
+    assert {p: p.read_bytes() for p in originals} == originals
+    assert not overlay.exists() and not host.snapshots and not kvm_vm.snapshot_dir("test01").exists()
+    assert "used up" in out and "until the VM started" in out
+    assert status(capsys) == (0, "Snapshot: none\n")
+    assert create() == 0
+
+
+def test_rollback_of_a_shut_off_vm_can_leave_it_off(host):
+    host.power = "shut off"
+    create()
+    change_after_snapshot(host)
+    assert rollback(force=False, no_start=True) == 0
+    assert host.power == "shut off" and host.guest_data() == b"data at the recovery point"
+
+
+@pytest.mark.parametrize("kwargs, message", [
+    ({"yes": False}, "without --yes"),
+    ({"force": False}, "VM is running"),
+])
+def test_rollback_needs_confirmation_and_force_for_a_running_vm(host, kwargs, message):
+    create()
+    change_after_snapshot(host)
+    before = host.files()
+    with pytest.raises(kvm_vm.KVMError, match=message):
+        rollback(**kwargs)
+    assert host.files() == before and host.power == "running" and record()["status"] == "ready"
+
+
+@pytest.mark.parametrize("change, message", [
+    (lambda h: setattr(h, "checkpoints", "virtnbdbackup.0"), "Backup checkpoints"),
+    (lambda h: (kvm_vm.snapshot_dir("test01") / "domain.xml").write_text(
+        h.xml().replace("uuid-1", "another-vm")), "captured configuration"),
+    (lambda h: h.snapshots.append("made-with-virsh"), "not usable for rollback"),
+])
+def test_rollback_refuses_unsafe_states_before_any_change(host, change, message):
+    create()
+    change_after_snapshot(host)
+    change(host)
+    before = host.files()
+    with pytest.raises(kvm_vm.KVMError, match=message):
+        rollback()
+    assert host.files() == before and host.power == "running" and host.guest_data() == b"unwanted update"
+
+
+def test_rollback_without_a_kvm_vm_snapshot_is_refused(host):
+    with pytest.raises(kvm_vm.KVMError, match="no kvm-vm Snapshot"):
+        rollback()
+    host.snapshots.append("made-with-virsh")
+    with pytest.raises(kvm_vm.KVMError, match="none created by kvm-vm"):
+        rollback()
+
+
+@pytest.mark.parametrize("step", ["destroy", "define", "snapshot-delete"])
+def test_interrupted_rollback_keeps_its_state_and_is_finished_by_retrying(host, capsys, step):
+    create()
+    overlay = host.top
+    change_after_snapshot(host)
+    host.interrupt[step] = "after"
+    with pytest.raises(KeyboardInterrupt):
+        rollback()
+    host.interrupt.clear()
+    code, out = status(capsys)
+    assert code == 1 and "rollback did not complete" in out and "snapshot rollback test01" in out
+    with pytest.raises(kvm_vm.KVMError, match="must be finished"):
+        delete()
+    with pytest.raises(kvm_vm.KVMError, match="kvm-vm Snapshot"):
+        kvm_vm.cmd_delete(argparse.Namespace(name="test01", yes=True, force=True, keep_storage=True))
+    if step == "destroy":
+        assert overlay.exists(), "the discarded data is kept until the domain no longer uses it"
+    assert rollback() == 0
+    assert host.guest_data() == b"data at the recovery point" and host.vcpus == 1
+    assert not overlay.exists() and not host.snapshots and not kvm_vm.snapshot_dir("test01").exists()
+
+
+def test_failed_redefine_keeps_the_rollback_retryable(host):
+    create()
+    change_after_snapshot(host)
+    host.fail["define"] = "error: XML error"
+    with pytest.raises(subprocess.CalledProcessError):
+        rollback()
+    assert record()["status"] == "rolling-back" and host.backing == host.base
+    host.fail.clear()
+    assert rollback() == 0 and host.guest_data() == b"data at the recovery point"
+
+
+def test_start_failure_after_rollback_is_reported_as_completed_rollback(host, capsys):
+    create()
+    change_after_snapshot(host)
+    host.fail["start"] = "error: internal error"
+    with pytest.raises(kvm_vm.KVMError, match="Rollback completed, but starting"):
+        rollback()
+    assert host.power == "shut off" and host.guest_data() == b"data at the recovery point"
+    capsys.readouterr()
+    assert status(capsys) == (0, "Snapshot: none\n")
+
+
 def test_snapshot_commands_parse():
     parser = kvm_vm.build_parser()
     args = parser.parse_args(["snapshot", "create", "web01", "--no-quiesce"])
     assert args.func is kvm_vm.cmd_snapshot_create and args.no_quiesce
     assert parser.parse_args(["snapshot", "status", "web01"]).func is kvm_vm.cmd_snapshot_status
     assert parser.parse_args(["snapshot", "delete", "web01", "--yes"]).yes
+    args = parser.parse_args(["snapshot", "rollback", "web01", "--yes", "--force", "--no-start"])
+    assert args.func is kvm_vm.cmd_snapshot_rollback and args.yes and args.force and args.no_start

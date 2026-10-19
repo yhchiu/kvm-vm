@@ -2,16 +2,18 @@
 
 A Snapshot is one short-lived local rollback point per VM, taken before an
 update or configuration change. It is not a Backup: it lives on the same host
-and storage as the VM. Delete it once the change has succeeded. Rollback is
-added separately; until then a Snapshot can be created, inspected and deleted.
+and storage as the VM. Delete it once the change has succeeded, or roll back to
+it if the change went wrong.
 
 ```sh
-kvm-vm snapshot create web01            # running or shut off VM; no reboot
-kvm-vm snapshot status web01            # none, ready or incomplete
-kvm-vm snapshot delete web01 --yes      # keep the current data, remove the Snapshot
+kvm-vm snapshot create web01                     # running or shut off VM; no reboot
+kvm-vm snapshot status web01                     # none, ready or incomplete
+kvm-vm snapshot delete web01 --yes               # keep the current data, remove the Snapshot
+kvm-vm snapshot rollback web01 --yes --force     # discard the changes, restore, start again
 ```
 
-Validation: see the [ticket 05 record](plans/20261018_vm-recovery/ticket-05-validation.md).
+Validation: see the [ticket 05](plans/20261018_vm-recovery/ticket-05-validation.md)
+and [ticket 06](plans/20261018_vm-recovery/ticket-06-validation.md) records.
 
 ## How it works
 
@@ -38,9 +40,9 @@ kvm-vm also keeps a record in `KVM_VM_STATE_DIR/snapshots/NAME/`:
 | `effective.yaml`, `state.json`, `cloud/` | kvm-vm definition, state manifest and cloud-init files at creation |
 
 The record is written before anything changes and is removed only after a
-successful delete, so an interrupted operation is always visible. libvirt also
-stores the domain configuration in its snapshot metadata. RAM and running
-processes are not captured.
+successful delete or rollback, so an interrupted operation is always visible.
+libvirt also stores the domain configuration in its snapshot metadata. RAM and
+running processes are not captured.
 
 ## Supported configuration
 
@@ -90,6 +92,40 @@ one, and 1 when something needs attention:
 
 `kvm-vm status NAME` includes the same summary.
 
+## Roll back
+
+```sh
+kvm-vm snapshot rollback web01 --yes --force       # running VM
+kvm-vm snapshot rollback web01 --yes --no-start    # shut off VM, leave it off
+```
+
+Rollback discards everything changed after the Snapshot and returns the VM to
+the recovery point:
+
+- The disk returns to `NAME.qcow2` as it was at creation. The overlay with the
+  newer writes is deleted.
+- The persistent domain configuration captured at creation is defined again,
+  so vCPU, memory and device changes made since are undone. The effective
+  YAML, the state manifest and the cloud-init files are restored from the
+  record.
+- The VM keeps its identity: UUID, MAC address, machine ID, cloud-init
+  instance ID and SSH host keys. Nothing is reprovisioned or customized, and
+  cloud-init sees the same instance.
+- The guest boots fresh; RAM and running processes are not restored.
+
+Rollback uses up the Snapshot: the record and libvirt's snapshot metadata are
+removed and the disk is again one standalone file. Create a new Snapshot before
+trying the change again. kvm-vm does this itself instead of calling libvirt's
+revert, which keeps the Snapshot and puts the VM on another overlay.
+
+Rollback asks for confirmation (`--yes` in scripts) and, like `reinstall` and
+`delete`, needs `--force` to stop a running VM. It refuses before any change
+when the Snapshot is not ready, when Backup checkpoints exist (they describe
+data that the rollback discards), when the captured configuration does not
+match the Snapshot, or when the recovery-point disk is not a standalone qcow2.
+The output reports how long the rollback took until the VM was started; the
+guest still needs its normal boot time before it is usable.
+
 ## Failures and interruptions
 
 | Situation | Result | What to do |
@@ -100,6 +136,8 @@ one, and 1 when something needs attention:
 | kvm-vm killed while the guest was frozen | Record shows the freeze without a thaw | Thaw with `virsh domfsthaw`, then as above |
 | Deletion interrupted | Record stays `deleting` | Run `kvm-vm snapshot delete NAME --yes` again |
 | libvirt refuses to delete for a running VM | Snapshot left unchanged and `ready` | Shut the VM down and delete again |
+| Rollback interrupted or a step fails | Record stays `rolling-back`; the overlay is kept until the domain no longer uses it; `snapshot delete` and the lifecycle commands refuse | Run `kvm-vm snapshot rollback NAME --yes` again (add `--force` if the VM is running) |
+| VM fails to start after a rollback | Rollback is complete; the Snapshot is gone | Start the VM with `virsh start` after fixing the cause |
 | Snapshot changed with virsh or another tool | Status reports the mismatch; delete refuses | Inspect `virsh snapshot-list` and the domain disks by hand |
 
 `kvm-vm snapshot delete` removes a leftover overlay only when no domain and no
@@ -107,7 +145,7 @@ image in `KVM_VM_DISK_DIR` refers to it; otherwise it keeps the file and warns.
 
 ## Working with other commands and tools
 
-`snapshot create` and `snapshot delete` take the same lifecycle lock as
+`snapshot create`, `snapshot delete` and `snapshot rollback` take the same lifecycle lock as
 `create`, `clone`, `reinstall` and `delete`. `clone`, `reinstall` and `delete`
 (including `--keep-storage`) refuse a VM that has a Snapshot or an incomplete
 Snapshot operation. Delete the Snapshot first; that keeps the current data.
@@ -144,5 +182,11 @@ A Snapshot does not protect against losing the host or its storage; use the
 a VM with Backup checkpoints, because Snapshots together with incremental Backup
 tracking have not been verified yet. The checkpoints and Backups are left
 unchanged. Do not start a Backup while a Snapshot exists. If checkpoints were
-created anyway, `kvm-vm snapshot delete` refuses and changes nothing until the
-checkpoints are retired with the backup tool.
+created anyway, `kvm-vm snapshot delete` and `kvm-vm snapshot rollback` refuse
+and change nothing until the checkpoints are retired with the backup tool.
+
+Because a Snapshot can only be created without checkpoints, no incremental
+Backup history continues across a rollback. Start the next Backup history with
+a full Backup into a new directory, as described in
+[start the next Backup history](full-backup-restore.md#start-the-next-backup-history).
+Backups taken before the Snapshot remain valid historical recovery points.

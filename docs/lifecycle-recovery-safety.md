@@ -44,7 +44,7 @@ before replacement or undefinition.
 
 ## Sequencing and interrupted operations
 
-Create, clone, reinstall, delete, `snapshot create` and `snapshot delete` share an exclusive directory lock at
+Create, clone, reinstall, delete and the mutating `snapshot` commands share an exclusive directory lock at
 `KVM_VM_STATE_DIR/.lifecycle-lock`. Use one state directory for all kvm-vm
 processes controlling a libvirt instance. Commands fail immediately on an
 existing lock; they do not automatically reclaim it based on an old PID. After

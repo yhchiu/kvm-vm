@@ -84,9 +84,7 @@ def snapshot_vm(tmp_path, ssh_keypair):
         shutil.rmtree(directory, ignore_errors=True)
 
 
-def test_snapshot_create_inspect_delete(snapshot_vm, ssh_keypair, tmp_path):
-    name, definition = snapshot_vm
-    key = ssh_keypair["private_key_path"]
+def boot_guest(name: str, definition: Path, key: Path) -> str:
     kvm("create", str(definition))
     ip = E2EHelper.wait_for_ssh(name, key, timeout=E2E_SSH_TIMEOUT)
     E2EHelper.ssh_exec(ip, key, "sudo cloud-init status --wait")
@@ -94,6 +92,13 @@ def test_snapshot_create_inspect_delete(snapshot_vm, ssh_keypair, tmp_path):
     while E2EHelper.virsh("qemu-agent-command", name, '{"execute":"guest-ping"}', check=False).returncode:
         assert time.monotonic() < deadline, "guest agent did not respond"
         time.sleep(3)
+    return ip
+
+
+def test_snapshot_create_inspect_delete(snapshot_vm, ssh_keypair, tmp_path):
+    name, definition = snapshot_vm
+    key = ssh_keypair["private_key_path"]
+    ip = boot_guest(name, definition, key)
     base = VM_DIR / f"{name}.qcow2"
     before = write_marker(ip, key, "a")
 
@@ -184,3 +189,74 @@ def test_snapshot_create_inspect_delete(snapshot_vm, ssh_keypair, tmp_path):
         assert E2EHelper.ssh_exec(ip, key, GUEST_CHECK).splitlines()[:-1] == written.splitlines()[:-1]
     assert_standalone(name, base)
     print("SNAPSHOT_E2E_PASSED", flush=True)
+
+
+IDENTITY = ("cat /etc/machine-id; sudo cat /var/lib/cloud/data/instance-id; "
+            "sudo sha256sum /etc/ssh/ssh_host_*_key.pub; hostname")
+
+
+def persistent_config(name: str) -> tuple:
+    xml = E2EHelper.virsh("dumpxml", name, "--inactive").stdout
+    return (re.search(r"<vcpu[^>]*>(\d+)<", xml).group(1), re.search(r"<memory[^>]*>(\d+)<", xml).group(1),
+            re.search(r"<uuid>([^<]+)<", xml).group(1), re.search(r"<mac address='([^']+)'", xml).group(1))
+
+
+def test_snapshot_rollback(snapshot_vm, ssh_keypair):
+    name, definition = snapshot_vm
+    key = ssh_keypair["private_key_path"]
+    ip = boot_guest(name, definition, key)
+    base = VM_DIR / f"{name}.qcow2"
+    managed = [DEF_DIR / f"{name}.yaml", STATE_DIR / f"{name}.json", *sorted((CLOUD_DIR / name).iterdir())]
+    files_before = {path: path.read_bytes() for path in managed}
+    captured = write_marker(ip, key, "a")
+    identity = E2EHelper.ssh_exec(ip, key, IDENTITY)
+    config = persistent_config(name)
+    kvm("snapshot", "create", name)
+
+    # An unwanted update: guest data, persistent vCPU/memory and the effective definition.
+    write_marker(ip, key, "b")
+    for args in (("setmaxmem", name, "1536M", "--config"), ("setmem", name, "1536M", "--config"),
+                 ("setvcpus", name, "2", "--maximum", "--config"), ("setvcpus", name, "2", "--config")):
+        E2EHelper.virsh(*args)
+    effective = DEF_DIR / f"{name}.yaml"
+    effective.write_text(effective.read_text().replace("vcpus: 1", "vcpus: 2"))
+    assert persistent_config(name) != config
+
+    unconfirmed = kvm("snapshot", "rollback", name, "--force", check=False)
+    assert unconfirmed.returncode == 1 and "without --yes" in unconfirmed.stderr
+    running = kvm("snapshot", "rollback", name, "--yes", check=False)
+    assert running.returncode == 1 and "VM is running" in running.stderr
+    assert E2EHelper.domain_state(name) == "running"
+
+    started = time.monotonic()
+    kvm("snapshot", "rollback", name, "--yes", "--force")
+    ip = E2EHelper.wait_for_ssh(name, key, timeout=E2E_SSH_TIMEOUT)
+    after = E2EHelper.ssh_exec(ip, key, GUEST_CHECK)
+    print(f"SNAPSHOT_ROLLBACK_TO_SSH_SECONDS {time.monotonic() - started:.1f}", flush=True)
+    assert after.splitlines()[:-1] == captured.splitlines()[:-1], "data must be the captured data only"
+    assert after.splitlines()[-1] != captured.splitlines()[-1], "rollback restarts the guest"
+    assert E2EHelper.ssh_exec(ip, key, IDENTITY) == identity
+    assert E2EHelper.ssh_exec(ip, key, "nproc") == "1"
+    assert persistent_config(name) == config
+    assert {path: path.read_bytes() for path in managed} == files_before
+    assert kvm("snapshot", "status", name).stdout.strip() == "Snapshot: none"
+    assert re.search(rf"^{re.escape(name)}\s+running\s+yes", kvm("list", "--managed").stdout, re.M)
+    kvm("validate", str(effective))
+    assert_standalone(name, base)
+
+    # The next Snapshot works, and a shut off VM rolls back without --force and can stay off.
+    kvm("snapshot", "create", name)
+    kvm("snapshot", "delete", name, "--yes")
+    wait_off(name)
+    kvm("snapshot", "create", name)
+    E2EHelper.virsh("start", name)
+    ip = E2EHelper.wait_for_ssh(name, key, timeout=E2E_SSH_TIMEOUT)
+    write_marker(ip, key, "c")
+    wait_off(name)
+    kvm("snapshot", "rollback", name, "--yes", "--no-start")
+    assert E2EHelper.domain_state(name) == "shut off"
+    E2EHelper.virsh("start", name)
+    ip = E2EHelper.wait_for_ssh(name, key, timeout=E2E_SSH_TIMEOUT)
+    assert E2EHelper.ssh_exec(ip, key, GUEST_CHECK).splitlines()[:-1] == captured.splitlines()[:-1]
+    assert_standalone(name, base)
+    print("SNAPSHOT_ROLLBACK_E2E_PASSED", flush=True)

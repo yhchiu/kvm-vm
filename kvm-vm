@@ -1673,7 +1673,7 @@ def cmd_delete(args: argparse.Namespace) -> int:
 # freeze, the management artifacts and the record that exposes interrupted
 # work. The record directory lives under STATE_DIR/snapshots/NAME.
 
-SNAPSHOT_MIN_LIBVIRT = (9, 9, 0)  # external snapshot delete (9.0) and revert (9.9)
+SNAPSHOT_MIN_LIBVIRT = (9, 9, 0)  # mature external snapshot support; tested with 11.3 and 11.10
 SNAPSHOT_RECORD_KEYS = ("snapshot", "status", "base", "overlay", "guest_state", "consistency")
 
 
@@ -1759,7 +1759,8 @@ def inspect_snapshot(name: str) -> Dict[str, Any]:
             if not Path(record[key]).is_file():
                 problems.append(f"{key} file is missing: {record[key]}")
         if record["status"] != "ready":
-            operation = {"creating": "creation", "deleting": "deletion"}.get(record["status"], record["status"])
+            operation = {"creating": "creation", "deleting": "deletion",
+                         "rolling-back": "rollback"}.get(record["status"], record["status"])
             problems.insert(0, f"Snapshot {operation} did not complete")
     info["kind"] = "incomplete" if problems else "ready"
     return info
@@ -1787,6 +1788,10 @@ def snapshot_report(name: str, info: Dict[str, Any]) -> List[str]:
     lines += [f"Warning: {w}" for w in (record.get("warnings") or [])]
     if info["kind"] == "ready":
         lines.append(f"Delete it after the change succeeds: kvm-vm snapshot delete {name}")
+        lines.append(f"Or discard the changes made after it: kvm-vm snapshot rollback {name}")
+    elif record.get("status") == "rolling-back":
+        lines.append(f"Run 'kvm-vm snapshot rollback {name} --yes' again to finish the rollback; "
+                     "the changes made after the Snapshot are being discarded.")
     elif record.get("status") in ("creating", "deleting"):
         lines.append(f"Run 'kvm-vm snapshot delete {name}' to finish or discard the interrupted operation; "
                      "the current guest data is kept.")
@@ -1804,8 +1809,7 @@ def check_snapshot_support() -> None:
     if not match:
         raise KVMError("Cannot determine the libvirt daemon version; Snapshots need libvirt 9.9 or newer")
     if tuple(int(x) for x in match.groups()) < SNAPSHOT_MIN_LIBVIRT:
-        raise KVMError(f"Snapshots need libvirt 9.9 or newer for external snapshot delete and revert; "
-                       f"this host runs {'.'.join(match.groups())}")
+        raise KVMError(f"Snapshots need libvirt 9.9 or newer; this host runs {'.'.join(match.groups())}")
 
 
 def snapshot_target(name: str) -> Dict[str, Any]:
@@ -2075,6 +2079,9 @@ def cmd_snapshot_delete(args: argparse.Namespace) -> int:
         raise KVMError("\n".join(snapshot_report(name, info)))
     if record.get("status") == "unreadable":
         raise KVMError(f"Cannot read the Snapshot record in {snapshot_dir(name)}; inspect it manually")
+    if record["status"] == "rolling-back":
+        raise KVMError(f"A rollback of {name} was started and must be finished, not undone: "
+                       f"run 'kvm-vm snapshot rollback {name} --yes' again. Nothing was changed.")
     if output(["virsh", "-c", LIBVIRT_URI, "checkpoint-list", name, "--name"]):
         raise KVMError(f"Backup checkpoints were created for {name} while it has a Snapshot. Deleting a Snapshot "
                        "together with incremental Backup tracking is not supported yet; the Snapshot and the "
@@ -2129,6 +2136,113 @@ def cmd_snapshot_delete(args: argparse.Namespace) -> int:
     print(f"Deleted Snapshot {snapshot} of {name}; the current guest data is kept in {base}")
     if kept:
         log.warning(f"{overlay} is still referenced and was kept; inspect it before removing it")
+    return 0
+
+
+def replace_file(source: Path, target: Path) -> None:
+    tmp = target.with_name(target.name + ".kvm-vm-rollback")
+    shutil.copy2(source, tmp)
+    os.replace(tmp, target)
+
+
+def restore_snapshot_artifacts(name: str) -> None:
+    """Put the captured definition, state manifest and cloud-init files back in place."""
+    directory = snapshot_dir(name)
+    captured = json.loads((directory / "state.json").read_text(encoding="utf-8"))
+    replace_file(directory / "effective.yaml", Path(captured["definition"]))
+    replace_file(directory / "state.json", STATE_DIR / f"{name}.json")
+    cloud = directory / "cloud"
+    if cloud.is_dir() and captured.get("cloud_dir"):
+        restored = []
+        for source in sorted(cloud.rglob("*")):
+            if source.is_file():
+                target = Path(captured["cloud_dir"]) / source.relative_to(cloud)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                replace_file(source, target)
+                restored.append(target)
+        restore_selinux(restored)
+
+
+def confirm_snapshot_rollback(name: str, snapshot: str, yes: bool) -> None:
+    if yes:
+        return
+    if not sys.stdin.isatty():
+        raise KVMError("Refusing destructive rollback without --yes in non-interactive mode")
+    ans = input(f"Roll back '{name}' to Snapshot {snapshot}? Changes made after it are lost. "
+                "Type the VM name to confirm: ")
+    if ans != name:
+        raise KVMError("Rollback cancelled")
+
+
+@lifecycle_exclusive
+def cmd_snapshot_rollback(args: argparse.Namespace) -> int:
+    require_commands(["virsh", "qemu-img"])
+    name = args.name
+    if not domain_exists(name):
+        raise KVMError(f"Domain does not exist: {name}")
+    started = time.monotonic()
+    info = inspect_snapshot(name)
+    record = info["record"]
+    if info["kind"] == "none":
+        raise KVMError(f"{name} has no kvm-vm Snapshot to roll back to")
+    if info["kind"] == "foreign":
+        raise KVMError("\n".join(snapshot_report(name, info)))
+    if record.get("status") not in ("ready", "rolling-back") or (record["status"] == "ready" and info["kind"] != "ready"):
+        raise KVMError(f"The Snapshot of {name} is not usable for rollback; nothing was changed.\n"
+                       + "\n".join(snapshot_report(name, info)))
+    if output(["virsh", "-c", LIBVIRT_URI, "checkpoint-list", name, "--name"]):
+        raise KVMError(f"Backup checkpoints exist for {name}. They track changes made after the Snapshot, which a "
+                       "rollback discards, so the Backup history cannot continue. Retire the checkpoints with the "
+                       "backup tool, roll back, then start a new full Backup; nothing was changed.")
+    snapshot, overlay, base = record["snapshot"], Path(record["overlay"]), record["base"]
+    captured = ET.parse(snapshot_dir(name) / "domain.xml").getroot()
+    captured_disks = captured.findall("./devices/disk[@device='disk']")
+    if (len(captured_disks) != 1 or not same_path(captured_disks[0].find("source").get("file"), base)
+            or captured.findtext("uuid") != record.get("uuid")):
+        raise KVMError(f"The captured configuration in {snapshot_dir(name)} does not match the Snapshot; "
+                       "nothing was changed. Inspect it manually.")
+    info_base = qemu_img_info(Path(base), shared=True)
+    if info_base.get("backing-filename") or info_base.get("format") != "qcow2":
+        raise KVMError(f"The recovery-point disk {base} is not a standalone qcow2 image; nothing was changed")
+    if record["status"] == "rolling-back":
+        topology = info["topology"]
+        if not (all(same_path(t, str(overlay)) and same_path(b, base) for t, b in topology.values())
+                or all(same_path(t, base) and b is None for t, b in topology.values())):
+            raise KVMError(f"The interrupted rollback of {name} left an unexpected disk topology; "
+                           "nothing was changed.\n" + "\n".join(snapshot_report(name, info)))
+    power = domain_state(name)
+    if is_running_state(power) and not args.force:
+        raise KVMError(f"VM is running ({power}). Rollback stops it: shut it down first, or use --force "
+                       "to destroy it before the rollback.")
+    confirm_snapshot_rollback(name, snapshot, args.yes)
+    if is_running_state(domain_state(name)):
+        check_disk_jobs(name)
+    record.update(status="rolling-back", rollback_started_at=record.get("rollback_started_at") or utc_now())
+    save_snapshot_record(name, record)
+
+    # Each step can be repeated; a retry after an interruption continues from here.
+    if is_running_state(domain_state(name)):
+        run(["virsh", "-c", LIBVIRT_URI, "destroy", name], capture=True)
+    restore_snapshot_artifacts(name)
+    run(["virsh", "-c", LIBVIRT_URI, "define", str(snapshot_dir(name) / "domain.xml")], capture=True)
+    if not all(same_path(t, base) and b is None for t, b in disk_topology(name).values()):
+        raise KVMError(f"{name} was redefined but does not use {base}; run 'kvm-vm snapshot status {name}'")
+    if snapshot in output(["virsh", "-c", LIBVIRT_URI, "snapshot-list", name, "--name"]).split():
+        remove_libvirt_snapshot_metadata(name, snapshot)
+    kept = overlay.exists() and not remove_unreferenced_overlay(name, overlay)
+    shutil.rmtree(snapshot_dir(name))
+    print(f"Rolled back {name} to Snapshot {snapshot}; changes made after it were discarded")
+    print("Restored the captured domain configuration, definition, state manifest and cloud-init files")
+    print(f"The Snapshot was used up; create a new one before the next change: kvm-vm snapshot create {name}")
+    if kept:
+        log.warning(f"{overlay} is still referenced and was kept; inspect it before removing it")
+    if args.no_start:
+        print(f"VM left shut off (--no-start); rollback took {time.monotonic() - started:.1f} s")
+        return 0
+    p = run(["virsh", "-c", LIBVIRT_URI, "start", name], check=False, capture=True)
+    if p.returncode != 0:
+        raise KVMError(f"Rollback completed, but starting {name} failed: {p.stderr.strip()}")
+    print(f"Started {name}; rollback took {time.monotonic() - started:.1f} s until the VM started")
     return 0
 
 
@@ -2192,7 +2306,7 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--keep-storage", action="store_true", help="Undefine domain but keep disks/state")
     q.set_defaults(func=cmd_delete)
 
-    q = sp.add_parser("snapshot", help="Create, inspect or delete the VM's single short-lived Snapshot")
+    q = sp.add_parser("snapshot", help="Create, inspect, delete or roll back the VM's single short-lived Snapshot")
     ssp = q.add_subparsers(dest="snapshot_command", required=True)
     s = ssp.add_parser("create", help="Create a Snapshot of a running or shut off VM without stopping it")
     s.add_argument("name")
@@ -2207,6 +2321,12 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("name")
     s.add_argument("--yes", action="store_true", help="Skip interactive confirmation")
     s.set_defaults(func=cmd_snapshot_delete)
+    s = ssp.add_parser("rollback", help="Discard changes made after the Snapshot and restore its disk and configuration")
+    s.add_argument("name")
+    s.add_argument("--yes", action="store_true", help="Skip interactive confirmation")
+    s.add_argument("--force", action="store_true", help="Destroy a running VM before the rollback")
+    s.add_argument("--no-start", action="store_true", help="Leave the VM shut off after the rollback")
+    s.set_defaults(func=cmd_snapshot_rollback)
 
     q = sp.add_parser("console", help="Attach to the VM serial console")
     q.add_argument("name")

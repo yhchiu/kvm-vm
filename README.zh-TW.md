@@ -20,6 +20,7 @@ kvm-vm delete <vm> [--yes] [--force] [--keep-storage]
 kvm-vm snapshot create <vm> [--no-quiesce] [--dry-run]
 kvm-vm snapshot status <vm>
 kvm-vm snapshot delete <vm> [--yes]
+kvm-vm snapshot rollback <vm> [--yes] [--force] [--no-start]
 kvm-vm validate <vm.yaml> [--clone]
 ```
 
@@ -621,8 +622,9 @@ kvm-vm create newvm.yaml --refresh-image
 `kvm-vm snapshot create NAME` 可在更新前建立一個短期的回復點，不需停止 VM；
 會透過 QEMU guest agent 短暫凍結 guest 檔案系統。`kvm-vm snapshot status NAME`
 可查看狀態，`kvm-vm snapshot delete NAME --yes` 會刪除快照並保留目前資料。
-快照不是備份。支援的設定、暫停時間、失敗後的處理與 AppArmor 行為請見
-[docs/snapshots.md](docs/snapshots.md)。目前尚未提供回復（rollback）。
+若更新出問題，`kvm-vm snapshot rollback NAME --yes --force` 會還原快照當時的磁碟、
+VM 設定與 kvm-vm 檔案，並重新啟動 VM，身分保持不變。快照不是備份。支援的設定、
+暫停時間、失敗後的處理與 AppArmor 行為請見 [docs/snapshots.md](docs/snapshots.md)。
 
 ## 復原狀態安全檢查
 
@@ -737,7 +739,7 @@ DISTROS = {
 
 - 即時遷移（live migration）
 - Ceph/RBD 儲存系統
-- 多個或長期保存的快照、快照回復（rollback）或備份（本工具只保留一個短期
+- 多個或長期保存的快照，或備份（本工具只保留一個短期
   [快照](docs/snapshots.md)；備份請使用外部工具的[操作流程](docs/full-backup-restore.md)）
 - 多張網路卡（multiple NICs）
 - 多個受管理的資料磁碟
