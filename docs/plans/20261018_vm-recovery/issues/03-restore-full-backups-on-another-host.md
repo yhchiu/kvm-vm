@@ -7,7 +7,7 @@ The deliverable includes the procedure and evidence that it works.
 
 **Blocked by:** 02: Guard lifecycle commands against unsafe recovery state.
 
-**Status:** acceptance passed on 2026-10-19; committed-code review gate pending
+**Status:** complete
 
 Procedure and evidence: [validation record](../ticket-03-validation.md).
 

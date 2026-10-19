@@ -1,7 +1,7 @@
 # Ticket 03 validation
 
 Status: cross-host acceptance passed on 2026-10-19 (Debian 13 to AlmaLinux 9.8,
-synced-marker workload); committed-code review gate pending.
+synced-marker workload); review gate closed.
 
 Implementation/review fixed point: `4a4b189e278db9a9bccd139830e7e8fccfaa76df`.
 
@@ -190,5 +190,16 @@ no longer needed.
 ### Outcome
 
 The cross-host checks above passed; no mocked or same-host result was used. The
-sealed set was held on a host other than the source. The ticket remains open
-until the committed-code Standards and Spec review gate closes.
+sealed set was held on a host other than the source. The committed-code review gate is recorded below.
+
+## Review gate
+
+Review of `0afdabf...44cdb5a` (documentation and evidence only; no runtime code
+changed). Standards: Conventional Commit with a detailed body and no co-author
+trailer, relative links resolve, terminology follows the glossary. Spec: each
+ticket 03 criterion maps to evidence above. The procedure, inventory, concurrency
+sequencing and consistency wording come from the earlier commits. The
+cross-host restore, identity, management and delete/redefine checks are in the
+destination tables. The helper question is answered with a recorded reason (no
+demonstrated correctness gap). No must-fix findings. This gate used one inline
+review pass instead of separate review agents because the change set has no code.
