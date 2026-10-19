@@ -618,6 +618,9 @@ kvm-vm create newvm.yaml --refresh-image
 Clone、reinstall 與 delete 會拒絕 checkpoint、snapshot、backing chain、
 不一致的磁碟路徑與進行中的復原工作；目前支援單一獨立的 qcow2 系統磁碟。
 Create／clone 失敗會保留現存資源供檢查，重試不會覆寫既有檔案。
+若 VM 已不存在且僅剩管理 state／定義檔，`create` 可重新使用同一名稱。
+它會檢查目前與 state 記錄的磁碟、cloud-init 路徑及磁碟轉換暫存檔，
+並只在建立成功後更新 state。若仍有資料檔，會拒絕建立並顯示待檢查的路徑。
 依賴檢查、keep-storage、操作鎖與外部工具的執行順序，請見
 [lifecycle 復原安全說明](docs/lifecycle-recovery-safety.md)。
 

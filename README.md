@@ -665,6 +665,10 @@ Clone, reinstall and delete refuse checkpoints, snapshots, backing chains,
 inconsistent disk paths and active recovery jobs. They support a single
 independent qcow2 system disk. Failed create/clone operations retain surviving
 resources for inspection; retrying does not overwrite existing artifacts.
+If a VM is absent and only its managed state/definition remain, `create` can
+reuse the name. It checks both current and recorded disk/cloud-init paths,
+including conversion temporary files, and replaces the state only on success.
+Existing data still blocks creation; the error identifies the path to inspect.
 See [lifecycle recovery safety](docs/lifecycle-recovery-safety.md) for dependency
 checks, keep-storage behavior, operation locking and external-tool sequencing.
 

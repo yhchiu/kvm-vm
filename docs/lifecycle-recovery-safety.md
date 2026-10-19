@@ -63,6 +63,12 @@ surviving resources and reports whether replacement began; it cannot undo an
 already completed destructive replacement. Inspect actual domain references,
 then recover or explicitly remove only resources no longer needed.
 
+Create permits a stale managed state record when a successful libvirt inventory
+confirms the domain is absent and neither current nor recorded disk/cloud-init
+paths (including disk conversion temporary files) survive. Existing definition
+files alone do not block creation. The old state remains during dry-run and
+failed attempts and is replaced only after the new domain is created.
+
 ## Validation
 
 Fast regression tests use the actual command handlers and temporary files, with

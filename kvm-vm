@@ -1027,6 +1027,31 @@ def check_new_artifacts(name: str, disk: Path) -> None:
             raise KVMError(f"Existing artifacts at {path}; inspect and recover them before retrying {name}")
 
 
+def check_create_state(name: str, disk: Path) -> None:
+    state = load_state(name)
+    if state is None:
+        return
+    # dominfo failures alone do not prove absence (e.g. libvirt is unavailable).
+    domains = run(["virsh", "-c", LIBVIRT_URI, "list", "--all", "--name"], capture=True)
+    if name in domains.stdout.splitlines():
+        raise KVMError(f"Domain already exists: {name}")
+    if not isinstance(state, dict) or state.get("managed_by") != "kvm-vm" or state.get("name") != name:
+        raise KVMError(f"Invalid managed state for {name}; inspect {STATE_DIR / (name + '.json')}")
+    check_new_artifacts(name, disk)
+    for field in ("disk", "cloud_dir", "seed"):
+        value = state.get(field)
+        if not isinstance(value, str) or not value:
+            raise KVMError(f"Invalid managed state field {field} for {name}")
+        path = Path(value)
+        paths = (path, path.with_suffix(path.suffix + ".tmp")) if field == "disk" else (path,)
+        for artifact in paths:
+            if artifact.exists() or artifact.is_symlink():
+                raise KVMError(
+                    f"Existing artifacts at {artifact}; inspect and recover them before retrying {name}"
+                )
+    log.warning(f"Stale managed state for {name}; it will be replaced only after successful creation")
+
+
 def cmd_validate(args: argparse.Namespace) -> int:
     p = Path(args.definition)
     raw = yaml_load(p)
@@ -1072,8 +1097,7 @@ def cmd_create(args: argparse.Namespace) -> int:
     name = cfg["vm"]["name"]
     if domain_exists(name):
         raise KVMError(f"Domain already exists: {name}")
-    if load_state(name):
-        raise KVMError(f"Managed state already exists for {name}; resolve it before creating")
+    check_create_state(name, VM_DIR / f"{name}.qcow2")
     validate_network_attachment(cfg["network"])
     if cfg["network"]["mac"] == "auto":
         cfg["network"]["mac"] = generate_mac(exclude=existing_macs())

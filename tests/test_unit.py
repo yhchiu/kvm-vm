@@ -1335,6 +1335,83 @@ def test_delete_checks_references_to_manifest_cloud_directory(reinstall_machine)
     assert machine["defined"]
 
 
+@pytest.fixture
+def stale_create(tmp_path, monkeypatch):
+    for attr in ("VM_DIR", "CLOUD_DIR", "DEF_DIR", "BASE_DIR"):
+        path = tmp_path / attr
+        path.mkdir()
+        monkeypatch.setattr(kvm_vm, attr, path)
+    kvm_vm.STATE_DIR.mkdir()
+    definition = tmp_path / "vm.yaml"
+    kvm_vm.yaml_dump(definition, _minimal_raw())
+    disk = kvm_vm.VM_DIR / "test01.qcow2"
+    kvm_vm.save_state(kvm_vm.normalize_definition(_minimal_raw()), disk, {}, "old", definition)
+    manifest = kvm_vm.STATE_DIR / "test01.json"
+    for func in ("require_commands", "require_cloud_seed_generator", "validate_network_attachment",
+                 "resolve_ssh_keys", "restore_selinux", "define_vm"):
+        monkeypatch.setattr(kvm_vm, func, MagicMock())
+    monkeypatch.setattr(kvm_vm, "domain_exists", lambda name: False)
+    monkeypatch.setattr(kvm_vm, "run", MagicMock(return_value=subprocess.CompletedProcess([], 0, "", "")))
+    monkeypatch.setattr(kvm_vm, "existing_macs", lambda: set())
+    monkeypatch.setattr(kvm_vm, "acquire_base_image", lambda *args: (tmp_path / "base", "ubuntu"))
+    monkeypatch.setattr(kvm_vm, "make_disk_from_base", lambda base, target, size: target.write_bytes(b"new disk"))
+    monkeypatch.setattr(kvm_vm, "make_cloud_files", lambda *args: (None, None, None, "new"))
+    return kvm_vm.build_parser().parse_args(["create", str(definition), "--no-start"]), manifest, disk
+
+
+def test_create_replaces_state_when_domain_and_artifacts_are_absent(stale_create):
+    args, manifest, disk = stale_create
+    assert kvm_vm.cmd_create(args) == 0
+    assert disk.read_bytes() == b"new disk"
+    assert json.loads(manifest.read_text())["instance_id"] == "new"
+
+
+@pytest.mark.parametrize("field", ["disk", "cloud_dir", "seed", "disk_tmp", "target_disk", "target_cloud"])
+def test_create_preserves_surviving_artifacts(stale_create, field, tmp_path):
+    args, manifest, disk = stale_create
+    state = json.loads(manifest.read_text())
+    if field == "target_disk":
+        artifact = disk
+    elif field == "target_cloud":
+        artifact = kvm_vm.CLOUD_DIR / "test01"
+    else:
+        key = "disk" if field == "disk_tmp" else field
+        artifact = tmp_path / (field + "-relocated")
+        state[key] = str(artifact)
+        if field == "disk_tmp":
+            artifact = artifact.with_suffix(".tmp")
+    artifact.write_bytes(b"preserved data")
+    manifest.write_text(json.dumps(state))
+    original = manifest.read_bytes()
+    with pytest.raises(kvm_vm.KVMError, match="Existing artifacts"):
+        kvm_vm.cmd_create(args)
+    assert artifact.read_bytes() == b"preserved data"
+    assert manifest.read_bytes() == original
+    kvm_vm.define_vm.assert_not_called()
+
+
+@pytest.mark.parametrize("failure", ["dry_run", "image", "libvirt", "domain"])
+def test_create_retains_stale_state_until_success(stale_create, monkeypatch, failure):
+    args, manifest, disk = stale_create
+    original = manifest.read_bytes()
+    if failure == "dry_run":
+        args.dry_run = True
+        assert kvm_vm.cmd_create(args) == 0
+    else:
+        if failure == "domain":
+            kvm_vm.run.return_value.stdout = "test01\n"
+            error = kvm_vm.KVMError
+        else:
+            error = subprocess.CalledProcessError
+            target = "run" if failure == "libvirt" else "acquire_base_image"
+            monkeypatch.setattr(kvm_vm, target, MagicMock(side_effect=error(1, failure)))
+        with pytest.raises(error):
+            kvm_vm.cmd_create(args)
+    assert manifest.read_bytes() == original
+    assert not disk.exists()
+    kvm_vm.define_vm.assert_not_called()
+
+
 class TestCmdReinstall:
     def test_domain_not_found_raises(self):
         args = MagicMock()
