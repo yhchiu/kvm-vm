@@ -669,8 +669,10 @@ See [lifecycle recovery safety](docs/lifecycle-recovery-safety.md) for dependenc
 checks, keep-storage behavior, operation locking and external-tool sequencing.
 
 The [full Backup/Restore procedure](docs/full-backup-restore.md) and
-[two-host acceptance workflow](docs/full-backup-acceptance.md) are under
-validation. Cross-host recovery is not yet an accepted capability; see the
+[two-host acceptance workflow](docs/full-backup-acceptance.md) passed one
+cross-host exercise (Debian 13 to AlmaLinux 9.8, one guest, synced-marker
+workload). It is an operator procedure, not a kvm-vm command, and other guests,
+applications and host combinations are untested; see the
 [ticket 03 evidence](docs/plans/20261018_vm-recovery/ticket-03-validation.md).
 
 ## `--no-start`

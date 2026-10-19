@@ -71,7 +71,11 @@ the directory must already exist and permit that guest's socket creation.
 2. Transfer only the sealed recovery set to authorized independent storage or
    the destination, then verify SHA-256 and external-tool integrity there.
    Supply the dedicated guest test key separately through the operator's secure
-   channel; never transfer the source host's administrative private key.
+   channel; never transfer the source host's administrative private key. If a
+   direct host-to-host path is one-way or the operator link is slow, let the
+   destination pull with a temporary key that the source restricts to a forced
+   read-only `tar -cf - recovery-set` command, and remove that key and the
+   `known_hosts` entry before the destination phase.
 3. Run the destination phase from its own SSH session with no agent forwarding,
    source credentials or source filesystem mounts. Record this isolation and
    the different host identity. All recovery commands must use only the set,

@@ -106,3 +106,27 @@ All temporary test domains, managed disks, cloud-init seeds, state files, and
 definitions were removed. Uploaded source and diagnostic scripts, generated
 test private keys, and the remote workspace were cleaned up after downloading
 the evidence. The original `acsvm-vm-910001` domain remained shut off.
+
+## Follow-up on an x86-64-v2 host — 2026-10-19
+
+`rocky9` and `almalinux9` were rerun on a host that meets x86-64-v2:
+AlmaLinux 9.8, Intel Xeon E5-2650 (Sandy Bridge-EP: SSE4.2, POPCNT and AVX, no
+AVX2), libvirt 11.10.0, qemu-kvm 10.1.0, Python 3.9.25, default libvirt NAT.
+Guests used `host-passthrough`, 2 vCPUs, 2048 MiB RAM, a 20 GiB disk and SSH
+port 2222, with the same test steps as above. The host has EPT and unrestricted
+guest support, so the GRUB stall seen on the L5420 host did not need
+investigation here.
+
+| Alias | Create | SSH and cloud-init | Notes |
+| --- | --- | --- | --- |
+| `rocky9` | Passed | Passed | Actual VERSION_ID: 9.8; SELinux Enforcing |
+| `almalinux9` | Passed | Passed | Actual VERSION_ID: 9.8; SELinux Enforcing |
+
+The first run (images downloaded) passed in 405 s. A second run on the exact
+`0afdabf` tree (LF line endings) passed in 116 s with cached images. The first
+run used a CRLF copy produced by a Windows checkout, which Python tolerated; the
+second run is the evidence for the commit. `rocky10` and `almalinux10` remain
+unverified because this CPU lacks x86-64-v3. This is consistent with the earlier
+`rocky9` and `almalinux9` failures coming from the host CPU rather than from kvm-vm.
+Test domains were removed by the fixtures; pytest logs and JUnit XML are on the
+host under `/root/evidence`.

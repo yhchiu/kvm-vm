@@ -1,8 +1,11 @@
 # Full Backup and replacement-host Restore
 
-Status: procedure under validation. Ticket 03 remains open until the
-[two-host exercise](full-backup-acceptance.md) passes. Do not treat the current
-source-host checks as a tested disaster-recovery guarantee.
+Status: validated once on 2026-10-19 by the [two-host exercise](full-backup-acceptance.md)
+(Debian 13 source, AlmaLinux 9.8 destination, one Debian 12 guest with a synced
+marker workload). See the
+[ticket 03 record](plans/20261018_vm-recovery/ticket-03-validation.md) for the
+scope and limits. That is one tested path, not a guarantee for other guests,
+applications, firmware modes or host combinations.
 
 A Snapshot is a short-lived local rollback point. A Backup recovery set must
 survive loss of the original host and storage. This procedure uses
@@ -19,8 +22,10 @@ The source candidate is Debian 13, libvirt 11.3.0, QEMU 10.0.13 and Debian's
 virtnbdbackup 2.28-1. Record actual versions on both hosts before testing;
 compatibility is not established by matching version strings alone.
 
-Install the distribution's virtnbdbackup package on both hosts, including its
-libvirt/libnbd Python dependencies. Existing kvm-vm operations do not require
+The tested destination is AlmaLinux 9.8 with libvirt 11.10.0, QEMU 10.1.0 and
+virtnbdbackup 2.47 from EPEL; it restored a set written by version 2.28.
+Install the distribution's (or EPEL's) virtnbdbackup package on both hosts,
+including its libvirt/libnbd Python dependencies. Existing kvm-vm operations do not require
 these optional tools. The destination also needs kvm-vm and its normal runtime
 dependencies. Do not install the unrelated PyPI package named `nbd`.
 
@@ -170,6 +175,7 @@ copies of the saved persistent XML and JSON, leaving the sealed set untouched.
 | Destination item | Required reconciliation |
 | --- | --- |
 | Domain XML | Set the writable disk's `source file` to the reconstructed disk and the CD-ROM source to the restored seed; retain name, UUID, MAC and device configuration |
+| Domain XML `<emulator>` and machine type | Set both to values the destination offers (`virsh capabilities`). RHEL-family hosts use `/usr/libexec/qemu-kvm` and `pc-q35-rhel9.x.0`, not the upstream `/usr/bin/qemu-system-x86_64` and `pc-q35-10.0` saved from a Debian host. Review the resulting `diff` against the saved XML; a changed machine type may move device addresses |
 | JSON `disk` | Exact same reconstructed disk path as XML |
 | JSON `definition` | Installed effective YAML path |
 | JSON `cloud_dir`, `seed` | Restored cloud directory and seed path, consistent with XML |
