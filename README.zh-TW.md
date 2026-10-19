@@ -621,6 +621,11 @@ Create／clone 失敗會保留現存資源供檢查，重試不會覆寫既有�
 依賴檢查、keep-storage、操作鎖與外部工具的執行順序，請見
 [lifecycle 復原安全說明](docs/lifecycle-recovery-safety.md)。
 
+完整備份與跨主機復原仍在驗證中，尚未通過驗收。請參閱
+[操作流程](docs/full-backup-restore.md)、
+[雙主機驗收步驟](docs/full-backup-acceptance.md)與
+[ticket 03 驗證紀錄](docs/plans/20261018_vm-recovery/ticket-03-validation.md)。
+
 ## `--no-start`
 
 `create`、`clone` 與 `reinstall` 皆支援：

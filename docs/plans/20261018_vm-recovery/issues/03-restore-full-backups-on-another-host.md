@@ -7,7 +7,9 @@ The deliverable includes the procedure and evidence that it works.
 
 **Blocked by:** 02: Guard lifecycle commands against unsafe recovery state.
 
-**Status:** ready-for-agent
+**Status:** in progress; source preparation passed, replacement host pending
+
+Procedure and evidence: [validation record](../ticket-03-validation.md).
 
 **Spec coverage:** User Stories 1, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 38
 and 40; ADR-0001.

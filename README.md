@@ -668,6 +668,11 @@ resources for inspection; retrying does not overwrite existing artifacts.
 See [lifecycle recovery safety](docs/lifecycle-recovery-safety.md) for dependency
 checks, keep-storage behavior, operation locking and external-tool sequencing.
 
+The [full Backup/Restore procedure](docs/full-backup-restore.md) and
+[two-host acceptance workflow](docs/full-backup-acceptance.md) are under
+validation. Cross-host recovery is not yet an accepted capability; see the
+[ticket 03 evidence](docs/plans/20261018_vm-recovery/ticket-03-validation.md).
+
 ## `--no-start`
 
 `create`, `clone`, and `reinstall` support:
