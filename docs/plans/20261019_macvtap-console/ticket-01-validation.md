@@ -21,4 +21,20 @@ Real guest/LAN acceptance belongs to ticket 05 and has not been claimed here.
 The fixture filesystem and mocked iproute2 responses prove orchestration and
 preservation, not physical-switch compatibility or guest boot.
 
-Review gate: pending committed Standards and Spec review.
+## Standards review
+
+Committed review of `3c764cd...897ad72`: no blocking findings. Commit format,
+command-boundary tests, domain vocabulary and procedural style meet the
+documented requirements. No Fowler smell warrants action; three explicit
+network modes do not justify a polymorphic abstraction.
+
+## Spec review
+
+No must-fix findings. The selected attachment, override conflicts, parent
+preflight, effective persistence and lifecycle behavior meet ticket 01.
+The reviewer suggested extra invalid-parent reinstall preservation coverage.
+Disposition: advisory and deferred; inspection confirms the shared preflight
+runs before destructive operations, and current tests cover invalid create
+preflight and reinstall failure preservation. No functional gap was found.
+
+Review gate closed without review-driven code changes or a follow-up loop.
