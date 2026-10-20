@@ -1668,6 +1668,97 @@ def cmd_delete(args: argparse.Namespace) -> int:
     return 0
 
 
+# --- Backup check: refuse a virtnbdbackup directory before Restore (ADR 0002) ---
+#
+# virtnbdrestore exits 0 for a missing increment, an unknown --until (2.28) or a
+# missing checkpoint list, and it applies data and saved configuration files in
+# modification-time order, not checkpoint order. A copy that renews one file's
+# time therefore restores the wrong data with exit 0. These checks read only the
+# directory; checksums and 'virtnbdrestore -o verify' stay separate steps.
+
+class BackupChainError(KVMError):
+    pass
+
+
+def backup_checkpoint_names(backup: Path) -> List[str]:
+    lists = sorted(backup.glob("*.cpt"))
+    if len(lists) != 1:
+        raise BackupChainError(f"Expected exactly one checkpoint list (*.cpt) in {backup}, found {len(lists)}")
+    try:
+        names = json.loads(lists[0].read_text(encoding="utf-8"))
+    except ValueError as exc:
+        raise BackupChainError(f"Checkpoint list {lists[0].name} is not valid JSON: {exc}") from exc
+    if not isinstance(names, list) or not names or not all(isinstance(n, str) for n in names):
+        raise BackupChainError(f"Checkpoint list {lists[0].name} is empty or malformed")
+    for index, name in enumerate(names):
+        if name != f"virtnbdbackup.{index}":
+            raise BackupChainError(f"Checkpoint list is not a consecutive history from virtnbdbackup.0: {names}")
+    return names
+
+
+def check_backup_file_order(backup: Path, pattern: str, expected: List[str]) -> None:
+    """Require the files virtnbdrestore globs with 'pattern' to sort into checkpoint order."""
+    present = sorted(backup.glob(pattern), key=lambda p: p.stat().st_mtime_ns)
+    unknown = [p.name for p in present if p.name not in expected]
+    if unknown:
+        raise BackupChainError("Files not in the checkpoint list: " + ", ".join(unknown))
+    ranks = [expected.index(p.name) for p in present]
+    times = [p.stat().st_mtime_ns for p in present]
+    if ranks != sorted(ranks) or len(set(times)) != len(times):
+        raise BackupChainError(
+            f"{pattern} files are out of checkpoint modification-time order "
+            f"({', '.join(p.name for p in present)}); virtnbdrestore applies them oldest first and would "
+            "restore the wrong data. Re-copy the set with timestamps preserved (tar, cp -a, rsync -a) or, "
+            "on a working copy whose checksums still pass, set the times in checkpoint order with touch")
+
+
+def check_backup_chain(backup: Path, until: Optional[str] = None) -> List[str]:
+    """Return the checkpoints a restore up to 'until' applies, or raise BackupChainError."""
+    backup = Path(backup)
+    if not backup.is_dir():
+        raise BackupChainError(f"Backup directory not found: {backup}")
+    names = backup_checkpoint_names(backup)
+    if until is not None and until not in names:
+        raise BackupChainError(f"Unknown recovery point {until!r}; the set holds {', '.join(names)}")
+    selected = names[:names.index(until) + 1] if until else names
+    disks = sorted(p.name[:-len(".full.data")] for p in backup.glob("*.full.data"))
+    if not disks:
+        raise BackupChainError("The full Backup data file (*.full.data) is missing")
+    for disk in disks:
+        required = [backup / f"{disk}.full.data"] + [backup / f"{disk}.inc.{n}.data" for n in selected[1:]]
+        for data in required:
+            for path in (data, data.with_name(data.name + ".chksum")):
+                if not path.is_file():
+                    raise BackupChainError(f"Incomplete Backup history: missing {path.name}")
+        check_backup_file_order(backup, f"{disk}*.data",
+                                [f"{disk}.full.data"] + [f"{disk}.inc.{n}.data" for n in names[1:]])
+    check_backup_file_order(backup, "vmconfig*.xml", [f"vmconfig.{n}.xml" for n in names])
+    previous = None
+    for name in selected:
+        meta = backup / "checkpoints" / f"{name}.xml"
+        if not meta.is_file() or not (backup / f"vmconfig.{name}.xml").is_file():
+            raise BackupChainError(f"Incomplete Backup history: missing metadata for {name}")
+        try:
+            parent = ET.parse(meta).getroot().findtext("parent/name")
+        except ET.ParseError as exc:
+            raise BackupChainError(f"Checkpoint metadata {meta.name} is not valid XML: {exc}") from exc
+        if parent != previous:
+            raise BackupChainError(f"Checkpoint {name} has parent {parent!r}, expected {previous!r}")
+        previous = name
+    return selected
+
+
+def cmd_backup_check(args: argparse.Namespace) -> int:
+    try:
+        applied = check_backup_chain(Path(args.directory), args.until)
+    except BackupChainError as exc:
+        raise KVMError(f"Do not restore from {args.directory}: {exc}") from exc
+    print(f"Backup history complete up to {applied[-1]}: {', '.join(applied)}")
+    print("Before restoring, also check the sealed set (sha256sum -c SHA256SUMS) and run "
+          f"'virtnbdrestore -i {args.directory} -o verify'.")
+    return 0
+
+
 # --- Snapshot: one short-lived libvirt external disk-only snapshot per VM ---
 #
 # The original disk becomes the read-only recovery point and a new overlay in
@@ -2325,6 +2416,15 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--force", action="store_true", help="Destroy a running VM before deleting")
     q.add_argument("--keep-storage", action="store_true", help="Undefine domain but keep disks/state")
     q.set_defaults(func=cmd_delete)
+
+    q = sp.add_parser("backup", help="Check an external virtnbdbackup Backup before restoring it")
+    bsp = q.add_subparsers(dest="backup_command", required=True)
+    b = bsp.add_parser("check", help="Refuse a Backup directory that virtnbdrestore would restore incompletely "
+                                     "or out of order")
+    b.add_argument("directory", help="The virtnbdbackup output directory")
+    b.add_argument("--until", metavar="CHECKPOINT",
+                   help="Recovery point to restore, e.g. virtnbdbackup.1 (default: the whole history)")
+    b.set_defaults(func=cmd_backup_check)
 
     q = sp.add_parser("snapshot", help="Create, inspect, delete or roll back the VM's single short-lived Snapshot")
     ssp = q.add_subparsers(dest="snapshot_command", required=True)

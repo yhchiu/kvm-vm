@@ -165,15 +165,16 @@ SET=/mnt/recovery/example-vm-full-20261019
 RESTORED=/var/lib/libvirt/images/recovered-example-vm
 test ! -e "$RESTORED"
 (cd "$SET" && sha256sum -c SHA256SUMS)
-python3 KVM_VM_SOURCE/tests/recovery_checks.py "$SET/backup"
+kvm-vm backup check "$SET/backup"
 virtnbdrestore -i "$SET/backup" -o verify
 virtnbdrestore -i "$SET/backup" -o "$RESTORED"
 ```
 
-`KVM_VM_SOURCE` is the kvm-vm source tree of the recorded release. The check
-refuses a Backup directory that `virtnbdrestore` would restore incompletely or
-in the wrong order while still exiting 0; see
-[restore a chosen point](#restore-a-chosen-point).
+`kvm-vm backup check` (a kvm-vm release that includes it, see
+[ADR 0002](adr/0002-pre-restore-backup-check.md)) refuses a Backup directory
+that `virtnbdrestore` would restore incompletely or in the wrong order while
+still exiting 0; see [restore a chosen point](#restore-a-chosen-point). It reads
+the directory only and needs no root or backup tools.
 
 Do not pass `-c` or `-D`: keep control of identity and definition. Inspect the
 actual output disk filename and `qemu-img info`/`qemu-img check` while offline.
@@ -288,7 +289,7 @@ N=1
 RESTORED=/var/lib/libvirt/images/recovered-example-vm
 test ! -e "$RESTORED"
 (cd "$SET" && sha256sum -c SHA256SUMS)
-python3 KVM_VM_SOURCE/tests/recovery_checks.py "$SET/backup" "virtnbdbackup.$N"
+kvm-vm backup check "$SET/backup" --until "virtnbdbackup.$N"
 virtnbdrestore -i "$SET/backup" -o verify
 virtnbdrestore -i "$SET/backup" -o "$RESTORED" --until "virtnbdbackup.$N"
 ```
@@ -300,16 +301,16 @@ success for several broken sets:
 
 | Broken set | `virtnbdrestore` 2.28 | `virtnbdrestore` 2.47 | Refused by |
 | --- | --- | --- | --- |
-| Increment before the chosen point missing | `verify` 0, restore 0 | `verify` 0, restore 1 with a Python traceback | SHA256SUMS, chain check |
-| Chosen point not in the history | restore 0 | restore 1 with a Python traceback | Chain check |
-| `NAME.cpt` missing | `verify` 0, restore 0 | `verify` 0, restore 0 | SHA256SUMS, chain check |
+| Increment before the chosen point missing | `verify` 0, restore 0 | `verify` 0, restore 1 with a Python traceback | SHA256SUMS, `kvm-vm backup check` |
+| Chosen point not in the history | restore 0 | restore 1 with a Python traceback | `kvm-vm backup check` |
+| `NAME.cpt` missing | `verify` 0, restore 0 | `verify` 0, restore 0 | SHA256SUMS, `kvm-vm backup check` |
 | Increment corrupted | `verify` 1, restore 0 | `verify` 1, restore 0 | SHA256SUMS, `verify` |
-| Increment newer than a later increment (timestamp only) | Same sort by time in its code; not run | `verify` 0, restore 0, wrong disk | Chain check only |
+| Increment newer than a later increment (timestamp only) | Same sort by time in its code; not run | `verify` 0, restore 0, wrong disk | `kvm-vm backup check` only |
 
 In the last case the bytes and SHA256SUMS are intact. With `--until
 virtnbdbackup.2`, version 2.47 applied the full Backup and increment 2, then
 stopped without applying increment 1. The guest booted with a corrupted
-`point-1.bin`. The chain check refuses the set and names the order. To repair
+`point-1.bin`. `kvm-vm backup check` refuses the set and names the order. To repair
 it, copy the set again with times preserved. Or, on a working copy whose
 SHA256SUMS still pass, set the times in checkpoint order with `touch -d`; that
 copy restored a disk identical to the original set's.

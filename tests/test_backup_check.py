@@ -1,10 +1,21 @@
-"""Backup-chain checks reject the sets that virtnbdrestore would restore with exit 0."""
+"""`kvm-vm backup check` refuses the sets that virtnbdrestore would restore with exit 0."""
+import importlib.util
+from importlib.machinery import SourceFileLoader
 import json
 import os
+from pathlib import Path
+import sys
 
 import pytest
 
-from recovery_checks import ChainError, check_backup_chain, main
+_loader = SourceFileLoader("kvm_vm_backup", str(Path(__file__).resolve().parent.parent / "kvm-vm"))
+_spec = importlib.util.spec_from_loader(_loader.name, _loader)
+kvm_vm = importlib.util.module_from_spec(_spec)
+sys.modules[_loader.name] = kvm_vm
+_loader.exec_module(kvm_vm)
+
+ChainError = kvm_vm.BackupChainError
+check_backup_chain = kvm_vm.check_backup_chain
 
 CHECKPOINT = """<domaincheckpoint><name>{name}</name>{parent}</domaincheckpoint>"""
 BASE_TIME = 1_760_000_000
@@ -132,10 +143,41 @@ def test_data_file_outside_the_listed_history_is_refused(tmp_path):
         check_backup_chain(backup, "virtnbdbackup.1")
 
 
-def test_command_line_reports_the_chain_or_an_actionable_refusal(tmp_path, capsys):
+def test_invalid_checkpoint_metadata_is_refused(tmp_path):
     backup = build_set(tmp_path)
-    assert main([str(backup), "virtnbdbackup.1"]) == 0
-    assert "virtnbdbackup.0, virtnbdbackup.1" in capsys.readouterr().out
+    (backup / "checkpoints" / "virtnbdbackup.1.xml").write_text("<domaincheckpoint>")
+    with pytest.raises(ChainError, match="not valid XML"):
+        check_backup_chain(backup)
+
+
+def test_missing_directory_is_refused(tmp_path):
+    with pytest.raises(ChainError, match="not found"):
+        check_backup_chain(tmp_path / "absent")
+
+
+def kvm_vm_cli(monkeypatch, *args):
+    monkeypatch.setattr(sys, "argv", ["kvm-vm", *args])
+    return kvm_vm.main()
+
+
+def test_command_reports_the_chain_and_the_remaining_checks(tmp_path, monkeypatch, capsys):
+    backup = build_set(tmp_path)
+    assert kvm_vm_cli(monkeypatch, "backup", "check", str(backup), "--until", "virtnbdbackup.1") == 0
+    out = capsys.readouterr().out
+    assert "complete up to virtnbdbackup.1: virtnbdbackup.0, virtnbdbackup.1" in out
+    assert "sha256sum -c SHA256SUMS" in out and "-o verify" in out
+    assert kvm_vm_cli(monkeypatch, "backup", "check", str(backup)) == 0
+    assert "virtnbdbackup.0, virtnbdbackup.1, virtnbdbackup.2" in capsys.readouterr().out
+
+
+def test_command_refuses_with_exit_1_and_the_reason(tmp_path, monkeypatch, caplog):
+    backup = build_set(tmp_path)
     (backup / "vda.inc.virtnbdbackup.1.data").unlink()
-    assert main([str(backup), "virtnbdbackup.2"]) == 1
-    assert "REFUSED: Incomplete Backup history" in capsys.readouterr().err
+    assert kvm_vm_cli(monkeypatch, "backup", "check", str(backup), "--until", "virtnbdbackup.2") == 1
+    assert "Do not restore from" in caplog.text and "missing vda.inc.virtnbdbackup.1.data" in caplog.text
+
+
+def test_command_needs_no_backup_tools_or_libvirt(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(kvm_vm.shutil, "which", lambda name: None)
+    monkeypatch.setattr(kvm_vm.subprocess, "run", lambda *a, **k: pytest.fail("no external command expected"))
+    assert kvm_vm_cli(monkeypatch, "backup", "check", str(build_set(tmp_path))) == 0
