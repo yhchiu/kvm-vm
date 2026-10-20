@@ -1,6 +1,8 @@
 # `kvm-vm backup check` validation
 
-Status: implemented and validated on 2026-10-20 on two hosts; review gate pending.
+Status: implemented and validated on 2026-10-20 on two hosts; review gate closed.
+
+Implementation/review fixed point: `79bc474`.
 
 The operator decided to turn the pre-restore chain check from ticket 04 into a
 supported command. The decision and its scope are recorded in
@@ -54,4 +56,20 @@ production guests were not touched.
 
 ## Review gate
 
-Pending.
+Review of `cb82fcf...79bc474`.
+
+- Standards: Conventional Commit with a detailed body and no co-author
+  trailer. The command follows the existing CLI style (`KVMError`, a
+  subcommand group like `snapshot`); it is read-only, so it takes no lifecycle
+  lock. The harness import keeps one implementation. Links, the procedure's
+  shell blocks (`bash -n`) and `git diff --check` pass.
+- Spec (ADR 0002): only the virtnbdbackup layout tested with 2.28 and 2.47 is
+  accepted, and other layouts are refused (for example a `-l copy` set without
+  a checkpoint list). The command changes nothing and runs without external
+  commands (unit test) or root (real run). Its output keeps checksums and
+  `verify` as required steps. The procedure and READMEs call it before every
+  `virtnbdrestore`.
+- No must-fix findings. Advisory: the command needs kvm-vm's usual Python
+  dependency (PyYAML), like every other kvm-vm command.
+
+This gate used one inline review pass instead of separate review agents.
