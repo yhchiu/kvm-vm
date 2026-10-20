@@ -143,7 +143,7 @@ def test_destination_cannot_enable_password(console_machine):
 
 
 @pytest.mark.skipif(os.name != "posix", reason="Requires POSIX delivery")
-@pytest.mark.parametrize("failure", ["race", "write"])
+@pytest.mark.parametrize("failure", ["race", "write", "partial_write"])
 def test_delivery_failure_precedes_guest_mutation(console_machine, monkeypatch, failure):
     destination = console_machine["credential"]
     original_open = os.open
@@ -159,8 +159,16 @@ def test_delivery_failure_precedes_guest_mutation(console_machine, monkeypatch, 
             raise OSError("synthetic write failure")
         return original_fsync(fd)
 
-    monkeypatch.setattr(os, "open" if failure == "race" else "fsync",
-                        race_open if failure == "race" else failed_sync)
+    def partial_dump(value, output):
+        output.write('{"password": "')
+        output.flush()
+        raise OSError("synthetic partial write")
+
+    if failure == "partial_write":
+        monkeypatch.setattr(kvm_vm.json, "dump", partial_dump)
+    else:
+        monkeypatch.setattr(os, "open" if failure == "race" else "fsync",
+                            race_open if failure == "race" else failed_sync)
     with pytest.raises(kvm_vm.KVMError, match="securely deliver"):
         invoke("create", console_machine["args"].definition,
                "--console-password-file", str(destination))
@@ -205,8 +213,10 @@ def test_unsupported_lifecycle_refuses_before_mutation(console_machine, operatio
 
 
 @pytest.mark.skipif(os.name != "posix", reason="Requires POSIX delivery")
-@pytest.mark.parametrize("ssh_valid", [True, False])
+@pytest.mark.parametrize("ssh_valid", [True, False, "actual_parser"])
 def test_generated_guest_script_hardens_conditions_before_unlock(console_machine, monkeypatch, ssh_valid):
+    if ssh_valid == "actual_parser" and (os.geteuid() != 0 or not kvm_vm.Path("/usr/sbin/sshd").is_file()):
+        pytest.skip("Actual SSH parser verification requires a Linux root host with sshd installed")
     invoke("create", console_machine["args"].definition, "--no-start",
            "--console-password-file", str(console_machine["credential"]))
     data = kvm_vm.yaml_load(kvm_vm.CLOUD_DIR / "clone01" / "user-data")
@@ -244,6 +254,16 @@ def test_generated_guest_script_hardens_conditions_before_unlock(console_machine
     for path in (ssh_dir / "sshd_config", included):
         assert "yes" not in path.read_text()
     assert data["users"][0]["sudo"] == "ALL=(ALL) NOPASSWD:ALL"
+    if ssh_valid == "actual_parser":
+        for address in ("127.0.0.1", "192.0.2.5", "198.51.100.5"):
+            cmd = ["/usr/sbin/sshd", "-T", "-f", str(ssh_dir / "sshd_config"),
+                   "-C", f"user=admin,host=localhost,addr={address}"]
+            with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as proc:
+                output, errors = proc.communicate()
+            assert proc.returncode == 0, errors
+            effective = dict(line.split(None, 1) for line in output.splitlines() if " " in line)
+            assert effective["passwordauthentication"] == "no"
+            assert effective["kbdinteractiveauthentication"] == "no"
 
 
 @pytest.mark.skipif(os.name != "posix", reason="Requires POSIX delivery")
@@ -268,3 +288,18 @@ def test_delete_keeps_operator_credential(console_machine):
     destination.write_text("operator-owned credential")
     invoke("delete", "test01", "--yes")
     assert destination.read_text() == "operator-owned credential"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Requires POSIX ownership")
+def test_foreign_private_directory_is_rejected(console_machine):
+    if os.geteuid() != 0:
+        pytest.skip("Ownership setup requires root")
+    directory = console_machine["credential"].parent
+    os.chown(directory, 65534, -1)
+    try:
+        with pytest.raises(kvm_vm.KVMError, match="owned by"):
+            invoke("create", console_machine["args"].definition,
+                   "--console-password-file", str(console_machine["credential"]))
+        assert not (kvm_vm.VM_DIR / "clone01.qcow2").exists()
+    finally:
+        os.chown(directory, os.geteuid(), -1)

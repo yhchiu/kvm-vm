@@ -845,7 +845,7 @@ fi
 """
 
 
-def console_credential(cfg: Dict[str, Any], destination: Optional[str], *, preview: bool) -> Optional[str]:
+def deliver_console_credential(cfg: Dict[str, Any], destination: Optional[str], *, preview: bool) -> Optional[str]:
     """Validate private delivery, then deliver before any guest can use the hash."""
     if not cfg["cloud_init"].get("console_password"):
         if destination is not None:
@@ -1266,7 +1266,7 @@ def cmd_create(args: argparse.Namespace) -> int:
         raise KVMError(f"Domain already exists: {name}")
     check_create_state(name, VM_DIR / f"{name}.qcow2")
     destination = vars(args).get("console_password_file")
-    console_credential(cfg, destination, preview=True)
+    deliver_console_credential(cfg, destination, preview=True)
     validate_network_attachment(cfg["network"])
     if cfg["network"]["mac"] == "auto":
         cfg["network"]["mac"] = generate_mac(exclude=existing_macs())
@@ -1280,7 +1280,7 @@ def cmd_create(args: argparse.Namespace) -> int:
     base, default_variant = acquire_base_image(cfg, args.refresh_image)
     disk = VM_DIR / f"{name}.qcow2"
     check_new_artifacts(name, disk)
-    password_hash = console_credential(cfg, destination, preview=False)
+    password_hash = deliver_console_credential(cfg, destination, preview=False)
     try:
         make_disk_from_base(base, disk, int(cfg["storage"]["disk_gib"]))
         restore_selinux([disk])
