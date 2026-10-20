@@ -191,22 +191,14 @@ def test_late_failure_preserves_delivered_credential(console_machine):
     assert console_machine["target_defined"]
 
 
-@pytest.mark.parametrize("operation", ["reinstall"])
-def test_unsupported_lifecycle_refuses_before_mutation(console_machine, operation):
-    if operation != "clone_target":
-        source = kvm_vm.DEF_DIR / "test01.yaml"
-        raw = kvm_vm.yaml_load(source)
-        raw["cloud_init"]["console_password"] = True
-        kvm_vm.yaml_dump(source, raw)
-        target = kvm_vm.Path(console_machine["args"].definition)
-        raw = kvm_vm.yaml_load(target)
-        raw["cloud_init"]["console_password"] = False
-        kvm_vm.yaml_dump(target, raw)
+def test_reinstall_refuses_before_mutation(console_machine):
+    source = kvm_vm.DEF_DIR / "test01.yaml"
+    raw = kvm_vm.yaml_load(source)
+    raw["cloud_init"]["console_password"] = True
+    kvm_vm.yaml_dump(source, raw)
     snapshots = {p: p.read_bytes() for p in console_machine["root"].rglob("*") if p.is_file()}
-    args = (["reinstall", "test01", "--yes"] if operation == "reinstall" else
-            ["clone", "test01", console_machine["args"].definition])
     with pytest.raises(kvm_vm.KVMError, match="not supported yet"):
-        invoke(*args)
+        invoke("reinstall", "test01", "--yes")
     assert console_machine["defined"]
     assert not (kvm_vm.VM_DIR / "clone01.qcow2").exists()
     for path, content in snapshots.items():
@@ -345,7 +337,7 @@ def test_foreign_private_directory_is_rejected(console_machine):
 
 
 @pytest.mark.skipif(os.name != "posix", reason="Requires POSIX delivery")
-@pytest.mark.parametrize("case", ["preview", "delivery", "late_failure"])
+@pytest.mark.parametrize("case", ["preview", "delivery", "late_failure", "offline_lock"])
 def test_clone_failure_and_preview_preserve_source(console_machine, monkeypatch, case):
     originals = {p: p.read_bytes() for p in console_machine["root"].rglob("*") if p.is_file()}
     destination = console_machine["credential"]
@@ -361,9 +353,22 @@ def test_clone_failure_and_preview_preserve_source(console_machine, monkeypatch,
             invoke(*args)
         assert destination.read_text() == "existing credential"
     else:
-        console_machine["install_succeeds"] = False
+        if case == "offline_lock":
+            external = kvm_vm.subprocess.run
+
+            def fail_lock(cmd, **kwargs):
+                if cmd[0] == "virt-customize" and "usermod -L" in cmd[-1]:
+                    raise subprocess.CalledProcessError(1, cmd)
+                return external(cmd, **kwargs)
+
+            monkeypatch.setattr(kvm_vm.subprocess, "run", fail_lock)
+        else:
+            console_machine["install_succeeds"] = False
         with pytest.raises(subprocess.CalledProcessError):
             invoke(*args)
+        assert (kvm_vm.VM_DIR / "clone01.qcow2").exists()
+        if case == "offline_lock":
+            assert not console_machine.get("target_defined")
         password = json.loads(destination.read_text())["password"]
         assert all(password not in " ".join(cmd) for cmd in console_machine["commands"])
         for root in (kvm_vm.STATE_DIR, kvm_vm.DEF_DIR, kvm_vm.CLOUD_DIR):
@@ -372,7 +377,7 @@ def test_clone_failure_and_preview_preserve_source(console_machine, monkeypatch,
                     assert password.encode() not in path.read_bytes()
     for path, content in originals.items():
         assert path.read_bytes() == content
-    if case != "late_failure":
+    if case in ("preview", "delivery"):
         assert not (kvm_vm.VM_DIR / "clone01.qcow2").exists()
 
 
