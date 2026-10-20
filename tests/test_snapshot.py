@@ -13,6 +13,8 @@ import argparse
 import importlib.util
 import json
 import re
+import shutil
+import signal
 import subprocess
 import sys
 from importlib.machinery import SourceFileLoader
@@ -68,6 +70,9 @@ class Host:
         self.disk_info: dict = {}
         self.fail: dict = {}
         self.interrupt: dict = {}
+        self.kill: dict = {}  # SystemExit stands in for kvm-vm being killed
+        self.signals: dict = {}
+        self.partial_commit = False
         self.leave_overlay_on_failure = False
         monkeypatch.setattr(kvm_vm.shutil, "which", lambda name: None if name == "restorecon" else name)
         monkeypatch.setattr(kvm_vm.subprocess, "run", self.run)
@@ -102,6 +107,10 @@ class Host:
         action = cmd[3] if cmd[0] == "virsh" else cmd[1]
         if self.interrupt.get(action) == "before":
             raise KeyboardInterrupt
+        if self.kill.get(action) == "before":
+            raise SystemExit("kvm-vm killed")
+        if action in ("domfsfreeze", "snapshot-create-as", "domfsthaw", "snapshot-list"):
+            self.signals[action] = (signal.getsignal(signal.SIGINT), signal.getsignal(signal.SIGTERM))
         if action in self.fail:
             code, stderr = 1, self.fail[action]
         elif action == "commit":
@@ -164,6 +173,10 @@ class Host:
             overlay.write_bytes(b"")
             self.top, self.backing = overlay, self.base
             self.snapshots.append(cmd[5])
+        elif action == "snapshot-delete" and self.partial_commit:
+            # The live commit wrote part of the newer data into the base, then ran out of space.
+            self.base.write_bytes(b"part of the newer data")
+            code, stderr = 1, "error: block commit failed while deleting disk 'vda' snapshot: 'No space left on device'"
         elif action == "snapshot-delete" and "--metadata" in cmd:
             self.snapshots.remove(cmd[5])
         elif action == "snapshot-delete":
@@ -178,6 +191,8 @@ class Host:
             Path(re.search(r"file=(\S+)", " ".join(cmd)).group(1)).write_bytes(b"")
         if self.interrupt.get(action) == "after":
             raise KeyboardInterrupt
+        if self.kill.get(action) == "after":
+            raise SystemExit("kvm-vm killed")
         if code and kwargs.get("check"):
             raise subprocess.CalledProcessError(code, cmd, stdout, stderr)
         return subprocess.CompletedProcess(cmd, code, stdout, stderr)
@@ -269,33 +284,41 @@ def test_failure_after_freeze_thaws_the_guest_and_creates_nothing(host):
     assert host.files() == before and host.top == host.base and not host.snapshots
 
 
+def test_ctrl_c_and_sigterm_are_ignored_while_the_guest_is_frozen(host):
+    assert create() == 0
+    # snapshot-list here is the check after the thaw, the last step before the record is ready.
+    for action in ("domfsfreeze", "snapshot-create-as", "domfsthaw", "snapshot-list"):
+        assert host.signals[action] == (signal.SIG_IGN, signal.SIG_IGN), action
+    assert signal.getsignal(signal.SIGINT) is not signal.SIG_IGN, "handlers are put back afterwards"
+    assert not host.frozen and record()["status"] == "ready"
+
+
 @pytest.mark.parametrize("when", ["before", "after"])
-def test_interrupted_creation_thaws_the_guest_and_keeps_what_libvirt_made(host, capsys, when):
-    host.interrupt["snapshot-create-as"] = when
-    with pytest.raises(kvm_vm.KVMError, match="interrupted"):
+def test_kvm_vm_killed_during_creation_leaves_a_record_for_the_operator(host, capsys, when):
+    host.kill["snapshot-create-as"] = when
+    with pytest.raises(SystemExit):
         create()
-    assert not host.frozen
-    if when == "before":
-        assert not kvm_vm.snapshot_dir("test01").exists() and host.top == host.base
-        return
-    # libvirt finished before the interruption: the record stays and explains the state.
+    host.kill.clear()
     code, out = status(capsys)
-    assert code == 1 and "creation did not complete" in out and "kvm-vm snapshot delete test01" in out
-    host.write(b"written while the record was incomplete")
+    assert code == 1 and "needs attention" in out and "Creation stopped" in out
+    with pytest.raises(kvm_vm.KVMError, match="Only a ready Snapshot"):
+        rollback()
+    if when == "after":  # libvirt made the Snapshot: delete merges it and keeps the current data
+        host.write(b"current data")
     assert delete() == 0
-    assert host.base.read_bytes() == b"written while the record was incomplete"
-    assert not kvm_vm.snapshot_dir("test01").exists() and not host.snapshots
+    assert not kvm_vm.snapshot_dir("test01").exists() and not host.snapshots and host.top == host.base
+    assert host.base.read_bytes() == (b"current data" if when == "after" else b"data at the recovery point")
 
 
 def test_failed_creation_that_left_an_overlay_is_reported_and_cleaned_on_request(host, capsys):
     host.fail["snapshot-create-as"] = "disk full"
     host.leave_overlay_on_failure = True
-    with pytest.raises(kvm_vm.KVMError, match="may have changed"):
+    with pytest.raises(kvm_vm.KVMError, match="libvirt or storage changed"):
         create()
     overlay = Path(record()["overlay"])
     assert overlay.exists() and host.top == host.base
     code, out = status(capsys)
-    assert code == 1 and "creation did not complete" in out
+    assert code == 1 and "Snapshot creation failed: disk full" in out and "Creation stopped" in out
     assert delete() == 0
     assert not overlay.exists() and host.base.read_bytes() == b"data at the recovery point"
 
@@ -395,31 +418,34 @@ def test_lifecycle_commands_refuse_a_vm_with_a_snapshot(host, tmp_path, operatio
 
 
 @pytest.mark.parametrize("when", ["before", "after"])
-def test_interrupted_deletion_is_finished_by_retrying(host, capsys, when):
+def test_interrupted_deletion_stops_and_a_new_delete_finishes_it(host, capsys, when):
     create()
     host.write(b"keep me")
     host.interrupt["snapshot-delete"] = when
-    with pytest.raises(KeyboardInterrupt):
+    with pytest.raises(kvm_vm.KVMError, match="Snapshot deletion stopped"):
         delete()
     host.interrupt.clear()
     code, out = status(capsys)
-    assert code == 1 and "deletion did not complete" in out
+    assert code == 1 and "needs attention" in out and "Rollback is disabled" in out
     assert not (kvm_vm.STATE_DIR / ".lifecycle-lock").exists()
+    with pytest.raises(kvm_vm.KVMError, match="Only a ready Snapshot"):
+        rollback()
     assert delete() == 0
     assert host.base.read_bytes() == b"keep me" and host.top == host.base
     assert not kvm_vm.snapshot_dir("test01").exists() and not host.snapshots
 
 
-def test_running_delete_refused_by_libvirt_keeps_the_snapshot_until_an_offline_delete(host, capsys):
+def test_running_delete_refused_by_libvirt_disables_rollback_until_an_offline_delete(host, capsys):
     create()
     host.write(b"keep me")
-    before = host.files()
     host.fail["snapshot-delete"] = ("internal error: unable to execute QEMU command 'block-commit': "
                                     "Could not open base: Permission denied")
-    with pytest.raises(kvm_vm.KVMError, match="(?s)Permission denied.*Snapshot is unchanged.*Shut the VM down"):
+    with pytest.raises(kvm_vm.KVMError, match="(?s)Permission denied.*Rollback is disabled.*AppArmor"):
         delete()
-    assert host.files() == before and record()["status"] == "ready"
-    assert status(capsys)[0] == 0
+    assert record()["status"] == "deleting" and host.guest_data() == b"keep me"
+    assert status(capsys)[0] == 1
+    with pytest.raises(kvm_vm.KVMError, match="Only a ready Snapshot"):
+        rollback()
     host.fail.clear()
     host.power = "shut off"
     assert delete() == 0
@@ -427,18 +453,35 @@ def test_running_delete_refused_by_libvirt_keeps_the_snapshot_until_an_offline_d
     assert sorted(kvm_vm.VM_DIR.iterdir()) == [host.base] and not host.snapshots
 
 
+def test_failed_live_commit_that_wrote_part_of_the_base_cannot_be_rolled_back(host):
+    create()
+    host.write(b"newer data")
+    host.partial_commit = True
+    with pytest.raises(kvm_vm.KVMError, match="(?s)No space left on device.*Rollback is disabled"):
+        delete()
+    with pytest.raises(kvm_vm.KVMError, match="Only a ready Snapshot"):
+        rollback()
+    assert host.guest_data() == b"newer data", "the current guest view is intact"
+    host.partial_commit = False
+    assert delete() == 0 and host.base.read_bytes() == b"newer data"
+
+
 @pytest.mark.parametrize("step", ["commit", "define"])
-def test_interrupted_offline_delete_is_finished_by_retrying(host, capsys, step):
+def test_interrupted_offline_delete_stops_for_the_operator(host, capsys, step):
     host.power = "shut off"
     create()
     host.write(b"keep me")
     host.interrupt[step] = "after"
-    with pytest.raises(KeyboardInterrupt):
+    with pytest.raises(kvm_vm.KVMError, match="Snapshot deletion stopped"):
         delete()
     host.interrupt.clear()
     assert host.guest_data() == b"keep me"
     code, out = status(capsys)
-    assert code == 1 and "deletion did not complete" in out
+    assert code == 1 and "Rollback is disabled" in out
+    if step == "define":  # the VM is back on its disk; only libvirt's metadata is left
+        with pytest.raises(kvm_vm.KVMError, match="cannot be deleted in its current state"):
+            delete()
+        host.snapshots.clear()  # the operator runs: virsh snapshot-delete NAME SNAPSHOT --metadata
     assert delete() == 0
     assert host.base.read_bytes() == b"keep me" and host.top == host.base and not host.snapshots
     assert sorted(kvm_vm.VM_DIR.iterdir()) == [host.base]
@@ -473,7 +516,7 @@ def test_delete_refuses_a_snapshot_changed_outside_kvm_vm(host):
     create()
     host.snapshots.append("made-with-virsh")
     before = host.files()
-    with pytest.raises(kvm_vm.KVMError, match="does not match"):
+    with pytest.raises(kvm_vm.KVMError, match="cannot be deleted in its current state"):
         delete()
     assert host.files() == before and len(host.snapshots) == 2
 
@@ -577,7 +620,7 @@ def test_rollback_needs_confirmation_and_force_for_a_running_vm(host, kwargs, me
     (lambda h: setattr(h, "checkpoints", "virtnbdbackup.0"), "Backup checkpoints"),
     (lambda h: (kvm_vm.snapshot_dir("test01") / "domain.xml").write_text(
         h.xml().replace("uuid-1", "another-vm")), "captured configuration"),
-    (lambda h: h.snapshots.append("made-with-virsh"), "not usable for rollback"),
+    (lambda h: h.snapshots.append("made-with-virsh"), "Only a ready Snapshot"),
 ])
 def test_rollback_refuses_unsafe_states_before_any_change(host, change, message):
     create()
@@ -598,36 +641,77 @@ def test_rollback_without_a_kvm_vm_snapshot_is_refused(host):
 
 
 @pytest.mark.parametrize("step", ["destroy", "define", "snapshot-delete"])
-def test_interrupted_rollback_keeps_its_state_and_is_finished_by_retrying(host, capsys, step):
+def test_interrupted_rollback_stops_and_the_operator_finishes_it(host, capsys, step):
+    originals = {p: p.read_bytes() for p in (host.definition, host.manifest, host.seed)}
     create()
     overlay = host.top
     change_after_snapshot(host)
     host.interrupt[step] = "after"
-    with pytest.raises(KeyboardInterrupt):
+    with pytest.raises(kvm_vm.KVMError, match="Rollback stopped"):
         rollback()
     host.interrupt.clear()
     code, out = status(capsys)
-    assert code == 1 and "rollback did not complete" in out and "snapshot rollback test01" in out
-    with pytest.raises(kvm_vm.KVMError, match="must be finished"):
-        delete()
+    assert code == 1 and "does not continue a rollback" in out
+    with pytest.raises(kvm_vm.KVMError, match="Only a ready Snapshot"):
+        rollback()
     with pytest.raises(kvm_vm.KVMError, match="kvm-vm Snapshot"):
         kvm_vm.cmd_delete(argparse.Namespace(name="test01", yes=True, force=True, keep_storage=True))
-    if step == "destroy":
-        assert overlay.exists(), "the discarded data is kept until the domain no longer uses it"
-    assert rollback() == 0
+    captured = kvm_vm.snapshot_dir("test01")
+    if step != "snapshot-delete":
+        with pytest.raises(kvm_vm.KVMError, match="cannot be deleted in its current state"):
+            delete()
+        assert overlay.exists(), "the discarded data stays until the operator finishes"
+        # The documented manual steps: put back the files, define the captured XML, drop the metadata.
+        for source, target in ((captured / "effective.yaml", host.definition), (captured / "state.json", host.manifest),
+                               (captured / "cloud" / "seed.img", host.seed)):
+            shutil.copy2(source, target)
+        host.run(["virsh", "-c", "qemu:///system", "define", str(captured / "domain.xml")])
+        host.snapshots.clear()
+    assert delete() == 0
     assert host.guest_data() == b"data at the recovery point" and host.vcpus == 1
-    assert not overlay.exists() and not host.snapshots and not kvm_vm.snapshot_dir("test01").exists()
+    assert {p: p.read_bytes() for p in originals} == originals
+    assert not overlay.exists() and not captured.exists()
 
 
-def test_failed_redefine_keeps_the_rollback_retryable(host):
+def test_failed_redefine_stops_the_rollback(host, capsys):
     create()
     change_after_snapshot(host)
     host.fail["define"] = "error: XML error"
-    with pytest.raises(subprocess.CalledProcessError):
+    with pytest.raises(kvm_vm.KVMError, match="Rollback stopped: error: XML error"):
         rollback()
     assert record()["status"] == "rolling-back" and host.backing == host.base
     host.fail.clear()
-    assert rollback() == 0 and host.guest_data() == b"data at the recovery point"
+    with pytest.raises(kvm_vm.KVMError, match="Only a ready Snapshot"):
+        rollback()
+    assert "docs/snapshots.md" in status(capsys)[1]
+
+
+def test_record_removal_cannot_leave_a_partial_record(host, monkeypatch, capsys):
+    create()
+    host.write(b"kept")
+    real_rmtree = kvm_vm.shutil.rmtree
+
+    def interrupted(path, *args, **kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(kvm_vm.shutil, "rmtree", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        delete()
+    monkeypatch.setattr(kvm_vm.shutil, "rmtree", real_rmtree)
+    capsys.readouterr()
+    assert status(capsys) == (0, "Snapshot: none\n")
+    assert host.base.read_bytes() == b"kept" and create() == 0
+
+
+def test_unreadable_record_is_removed_once_nothing_is_left(host, capsys):
+    kvm_vm.snapshot_dir("test01").mkdir(parents=True)  # for example a crash right after creating it
+    code, out = status(capsys)
+    assert code == 1 and "unreadable" in out and "removes the leftover record" in out
+    with pytest.raises(kvm_vm.KVMError, match="kvm-vm Snapshot"):
+        kvm_vm.cmd_delete(argparse.Namespace(name="test01", yes=True, force=True, keep_storage=True))
+    assert delete() == 0
+    capsys.readouterr()
+    assert status(capsys) == (0, "Snapshot: none\n") and create() == 0
 
 
 def test_start_failure_after_rollback_is_reported_as_completed_rollback(host, capsys):

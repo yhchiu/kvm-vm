@@ -18,6 +18,7 @@ import os
 import random
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -1254,7 +1255,7 @@ def check_recovery_metadata(name: str) -> None:
             "retire its incremental baseline with the backup tool before retrying. "
             "After disk replacement, establish a new full Backup; do not reuse the old baseline."
         )
-    if output(["virsh", "-c", LIBVIRT_URI, "snapshot-list", name, "--name"]):
+    if libvirt_snapshots(name):
         raise KVMError(f"Conflicting recovery operation: {name} has snapshots; resolve them with their owning tool first")
     check_domain_job(name)
 
@@ -1765,11 +1766,24 @@ def cmd_backup_check(args: argparse.Namespace) -> int:
 # the same directory receives guest writes. libvirt creates the snapshot and,
 # for a running VM, commits the overlay back on delete; a shut off VM is
 # committed with qemu-img. kvm-vm owns the one-Snapshot limit, the filesystem
-# freeze, the management artifacts and the record that exposes interrupted
-# work. The record directory lives under STATE_DIR/snapshots/NAME.
+# freeze, the captured configuration and a record in STATE_DIR/snapshots/NAME.
+# A failed or interrupted operation is never continued automatically (ADR 0003):
+# the record keeps it, and the status says what the operator does next.
 
 SNAPSHOT_MIN_LIBVIRT = (9, 9, 0)  # mature external snapshot support; tested with 11.3 and 11.10
 SNAPSHOT_RECORD_KEYS = ("snapshot", "status", "base", "overlay", "guest_state", "consistency")
+SNAPSHOT_NEXT_STEP = {
+    "creating": "Creation stopped. If libvirt lists the Snapshot and the VM uses the overlay, "
+                "'kvm-vm snapshot delete {name}' merges it and keeps the current data; if neither, it removes this record.",
+    "deleting": "Rollback is disabled, because the recovery-point disk may already hold newer data; the current "
+                "guest data is intact. Fix the cause, shut the VM down and run 'kvm-vm snapshot delete {name}' again.",
+    "rolling-back": "kvm-vm does not continue a rollback. Finish it by hand as described in docs/snapshots.md "
+                    "(Failures and interruptions), then 'kvm-vm snapshot delete {name}' removes this record.",
+    "unreadable": "Check 'virsh snapshot-list {name}' and the VM disk. Once no snapshot or overlay is in use, "
+                  "'kvm-vm snapshot delete {name}' removes the leftover record.",
+    "ready": "The Snapshot changed outside kvm-vm. Inspect 'virsh snapshot-list' and the domain disks; "
+             "kvm-vm will not change them automatically.",
+}
 
 
 def snapshot_dir(name: str) -> Path:
@@ -1794,6 +1808,13 @@ def save_snapshot_record(name: str, record: Dict[str, Any]) -> None:
     tmp = snapshot_dir(name) / "record.json.tmp"
     tmp.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
     os.replace(tmp, snapshot_dir(name) / "record.json")
+
+
+def remove_snapshot_record(name: str) -> None:
+    """Retire the record with one rename, so an interruption never leaves part of it in place."""
+    retired = snapshot_dir(name).with_name(f".{name}.retired-{time.time_ns()}")
+    os.replace(snapshot_dir(name), retired)
+    shutil.rmtree(retired, ignore_errors=True)
 
 
 def utc_now() -> str:
@@ -1831,10 +1852,22 @@ def disk_topology(name: str) -> Dict[str, Tuple[Optional[str], Optional[str]]]:
     return topology
 
 
+def libvirt_snapshots(name: str) -> List[str]:
+    return output(["virsh", "-c", LIBVIRT_URI, "snapshot-list", name, "--name"]).split()
+
+
+def on_overlay(topology: Dict[str, Tuple[Optional[str], Optional[str]]], overlay: str, base: str) -> bool:
+    return all(same_path(top, overlay) and same_path(backing, base) for top, backing in topology.values())
+
+
+def on_base(topology: Dict[str, Tuple[Optional[str], Optional[str]]], base: str) -> bool:
+    return all(same_path(top, base) and backing is None for top, backing in topology.values())
+
+
 def inspect_snapshot(name: str) -> Dict[str, Any]:
-    """Classify the Snapshot state as none, ready, incomplete or foreign (not kvm-vm's)."""
+    """Classify the Snapshot as none, ready, attention (needs the operator) or foreign."""
     record = load_snapshot_record(name)
-    names = output(["virsh", "-c", LIBVIRT_URI, "snapshot-list", name, "--name"]).split()
+    names = libvirt_snapshots(name)
     info: Dict[str, Any] = {"record": record, "libvirt": names, "problems": [], "topology": {}}
     if record is None:
         info["kind"] = "foreign" if names else "none"
@@ -1844,20 +1877,13 @@ def inspect_snapshot(name: str) -> Dict[str, Any]:
         problems.append(f"Snapshot record is unreadable: {record.get('error')}")
     else:
         info["topology"] = topology = disk_topology(name)
+        if record["status"] != "ready":
+            problems.append(record.get("problem") or f"Snapshot operation '{record['status']}' was interrupted")
         if names != [record["snapshot"]]:
             problems.append(f"libvirt snapshots are [{', '.join(names)}]; expected [{record['snapshot']}]")
-        for label, (top, backing) in topology.items():
-            if not (same_path(top, record["overlay"]) and same_path(backing, record["base"])):
-                problems.append(f"{label} disk is {top} on {backing or 'no backing file'}; "
-                                f"expected {record['overlay']} on {record['base']}")
-        for key in ("base", "overlay"):
-            if not Path(record[key]).is_file():
-                problems.append(f"{key} file is missing: {record[key]}")
-        if record["status"] != "ready":
-            operation = {"creating": "creation", "deleting": "deletion",
-                         "rolling-back": "rollback"}.get(record["status"], record["status"])
-            problems.insert(0, f"Snapshot {operation} did not complete")
-    info["kind"] = "incomplete" if problems else "ready"
+        if not on_overlay(topology, record["overlay"], record["base"]):
+            problems.append(f"the VM disk is {topology['live'][0]}, not {record['overlay']} on {record['base']}")
+    info["kind"] = "attention" if problems else "ready"
     return info
 
 
@@ -1870,7 +1896,7 @@ def snapshot_report(name: str, info: Dict[str, Any]) -> List[str]:
                 "kvm-vm does not delete or roll back them, and refuses to create a Snapshot until "
                 "they are resolved with virsh."]
     lines = [f"Snapshot:       {record.get('snapshot', '?')}",
-             f"State:          {'ready (usable recovery point)' if info['kind'] == 'ready' else 'incomplete; needs attention'}"]
+             f"State:          {'ready (usable recovery point)' if info['kind'] == 'ready' else 'needs attention'}"]
     if record.get("status") != "unreadable":
         lines += [f"Created:        {record.get('created_at') or record.get('requested_at')} "
                   f"(VM {record['guest_state']}, {record['consistency']})",
@@ -1884,15 +1910,8 @@ def snapshot_report(name: str, info: Dict[str, Any]) -> List[str]:
     if info["kind"] == "ready":
         lines.append(f"Delete it after the change succeeds: kvm-vm snapshot delete {name}")
         lines.append(f"Or discard the changes made after it: kvm-vm snapshot rollback {name}")
-    elif record.get("status") == "rolling-back":
-        lines.append(f"Run 'kvm-vm snapshot rollback {name} --yes' again to finish the rollback; "
-                     "the changes made after the Snapshot are being discarded.")
-    elif record.get("status") in ("creating", "deleting"):
-        lines.append(f"Run 'kvm-vm snapshot delete {name}' to finish or discard the interrupted operation; "
-                     "the current guest data is kept.")
     else:
-        lines.append("The Snapshot changed outside kvm-vm. Inspect 'virsh snapshot-list' and the domain disks; "
-                     "kvm-vm will not change them automatically.")
+        lines.append("Next: " + SNAPSHOT_NEXT_STEP.get(record["status"], SNAPSHOT_NEXT_STEP["ready"]).format(name=name))
     if record.get("freeze_started_at") and not record.get("thawed_at"):
         lines.append(f"Guest filesystems may still be frozen: run 'virsh -c {LIBVIRT_URI} domfsthaw {name}'.")
     return lines
@@ -1958,45 +1977,20 @@ def snapshot_devices(name: str) -> Tuple[str, List[str], str, str]:
     return system, cdroms, root.findtext("uuid") or "", xml
 
 
-def capture_snapshot_artifacts(name: str, state: Dict[str, Any], xml: str, running: bool) -> None:
+def capture_snapshot_artifacts(name: str, state: Dict[str, Any], xml: str) -> None:
     """Copy the configuration a later rollback needs into the new record directory."""
     directory = snapshot_dir(name)
     (directory / "domain.xml").write_text(xml, encoding="utf-8")
-    if running:
-        (directory / "live.xml").write_text(output(["virsh", "-c", LIBVIRT_URI, "dumpxml", name]), encoding="utf-8")
     shutil.copy2(state["definition"], directory / "effective.yaml")
     shutil.copy2(STATE_DIR / f"{name}.json", directory / "state.json")
     if state.get("cloud_dir") and Path(state["cloud_dir"]).is_dir():
         shutil.copytree(state["cloud_dir"], directory / "cloud")
 
 
-def thaw_guest(name: str) -> Optional[str]:
-    p = run(["virsh", "-c", LIBVIRT_URI, "domfsthaw", name], check=False, capture=True)
-    return None if p.returncode == 0 else (p.stderr.strip() or f"domfsthaw exited {p.returncode}")
-
-
-def settle_failed_creation(name: str, record: Dict[str, Any], exc: BaseException, thaw_error: Optional[str]) -> KVMError:
-    """Discard the record only when libvirt and storage are provably unchanged."""
-    detail = (exc.stderr.strip() if isinstance(exc, subprocess.CalledProcessError) and exc.stderr else None) \
-        or (str(exc) if not isinstance(exc, KeyboardInterrupt) else "interrupted")
-    try:
-        names = output(["virsh", "-c", LIBVIRT_URI, "snapshot-list", name, "--name"]).split()
-        unchanged = (not names and not Path(record["overlay"]).exists() and all(
-            same_path(top, record["base"]) and backing is None for top, backing in disk_topology(name).values()))
-    except (KVMError, subprocess.CalledProcessError):
-        unchanged = False
-    if unchanged:
-        shutil.rmtree(snapshot_dir(name))
-        message = f"Snapshot creation failed: {detail}. No Snapshot was created and the VM disk is unchanged."
-    else:
-        message = (f"Snapshot creation failed: {detail}. libvirt or storage may have changed; "
-                   f"run 'kvm-vm snapshot status {name}' before any other operation.")
-    if thaw_error:
-        message += (f" Thawing guest filesystems failed ({thaw_error}); run "
-                    f"'virsh -c {LIBVIRT_URI} domfsthaw {name}' now.")
-    elif record.get("freeze_started_at"):
-        message += " Guest filesystems were thawed."
-    return KVMError(message)
+def error_detail(exc: BaseException) -> str:
+    if isinstance(exc, subprocess.CalledProcessError) and exc.stderr:
+        return exc.stderr.strip()
+    return str(exc) or type(exc).__name__
 
 
 @lifecycle_exclusive
@@ -2008,7 +2002,6 @@ def cmd_snapshot_create(args: argparse.Namespace) -> int:
     power = domain_state(name)
     if power not in ("running", "shut off"):
         raise KVMError(f"Snapshots need a running or shut off VM; {name} is {power}")
-    running = power == "running"
     info = inspect_snapshot(name)
     if info["kind"] == "foreign":
         raise KVMError(f"{name} already has a Snapshot that kvm-vm did not create; it was not changed.\n"
@@ -2029,7 +2022,7 @@ def cmd_snapshot_create(args: argparse.Namespace) -> int:
     overlay = disk.with_name(f"{name}.{snapshot}.qcow2")
     if overlay.exists() or overlay.is_symlink():
         raise KVMError(f"Existing file at {overlay}; inspect it before creating a Snapshot")
-    quiesce = running and not args.no_quiesce
+    quiesce = power == "running" and not args.no_quiesce
     if quiesce:
         ping = run(["virsh", "-c", LIBVIRT_URI, "qemu-agent-command", name, '{"execute":"guest-ping"}'],
                    check=False, capture=True)
@@ -2037,7 +2030,7 @@ def cmd_snapshot_create(args: argparse.Namespace) -> int:
             raise KVMError(f"The QEMU guest agent of {name} does not respond, so its filesystems cannot be frozen "
                            "for a consistent Snapshot. Start qemu-guest-agent in the guest, or pass --no-quiesce "
                            "for a crash-consistent Snapshot.")
-    consistency = "filesystems frozen" if quiesce else ("crash-consistent" if running else "offline")
+    consistency = "filesystems frozen" if quiesce else ("crash-consistent" if power == "running" else "offline")
     if args.dry_run:
         print("dry-run: all pre-flight checks passed")
         print(f"Would create Snapshot {snapshot} of {name} ({consistency}); new writes would go to {overlay}")
@@ -2048,7 +2041,7 @@ def cmd_snapshot_create(args: argparse.Namespace) -> int:
         "requested_at": utc_now(), "base": str(disk), "overlay": str(overlay),
         "guest_state": power, "consistency": consistency, "warnings": [],
     }
-    # The record exists before any change, so every later interruption is visible.
+    # The record exists before any change, so a later interruption is always visible.
     snapshot_dir(name).parent.mkdir(parents=True, exist_ok=True)
     snapshot_dir(name).mkdir()
     save_snapshot_record(name, record)
@@ -2057,45 +2050,68 @@ def cmd_snapshot_create(args: argparse.Namespace) -> int:
                "--diskspec", f"{system},snapshot=external,file={overlay}"]
     for target in cdroms:
         command += ["--diskspec", f"{target},snapshot=no"]
-    thaw_error: Optional[str] = None
+    failure: Optional[Exception] = None
+    # Ctrl-C and SIGTERM are ignored until the result is recorded; virsh inherits that,
+    # because a killed virsh can leave the guest frozen or the snapshot half-known.
+    previous = {s: signal.signal(s, signal.SIG_IGN) for s in (signal.SIGINT, signal.SIGTERM)}
     try:
-        capture_snapshot_artifacts(name, state, xml, running)
-        frozen_at = None
         try:
-            if quiesce:
-                record["freeze_started_at"] = utc_now()
-                save_snapshot_record(name, record)
-                freeze = run(["virsh", "-c", LIBVIRT_URI, "domfsfreeze", name], check=False, capture=True)
-                frozen_at = time.monotonic()
-                count = re.search(r"Froze (\d+) filesystem", freeze.stdout)
-                if freeze.returncode != 0 or not count or int(count.group(1)) < 1:
-                    raise KVMError("could not freeze guest filesystems ("
-                                   + (freeze.stderr.strip() or freeze.stdout.strip() or "no filesystem frozen")
-                                   + "); pass --no-quiesce for a crash-consistent Snapshot")
-            run(command, capture=True)
-        finally:
-            if record.get("freeze_started_at"):
-                thaw_error = thaw_guest(name)
-                if frozen_at is not None:
-                    record["pause_ms"] = round((time.monotonic() - frozen_at) * 1000)
-                if not thaw_error:
-                    record["thawed_at"] = utc_now()
-    except BaseException as exc:  # includes KeyboardInterrupt: the guest was thawed above
-        raise settle_failed_creation(name, record, exc, thaw_error) from exc
-
-    topology = disk_topology(name)
-    names = output(["virsh", "-c", LIBVIRT_URI, "snapshot-list", name, "--name"]).split()
-    if names != [snapshot] or not all(same_path(top, str(overlay)) and same_path(backing, str(disk))
-                                      for top, backing in topology.values()):
+            capture_snapshot_artifacts(name, state, xml)
+            frozen_at = None
+            try:
+                if quiesce:
+                    record["freeze_started_at"] = utc_now()
+                    save_snapshot_record(name, record)
+                    freeze = run(["virsh", "-c", LIBVIRT_URI, "domfsfreeze", name], check=False, capture=True)
+                    frozen_at = time.monotonic()
+                    count = re.search(r"Froze (\d+) filesystem", freeze.stdout)
+                    if freeze.returncode != 0 or not count or int(count.group(1)) < 1:
+                        raise KVMError("could not freeze guest filesystems ("
+                                       + (freeze.stderr.strip() or freeze.stdout.strip() or "no filesystem frozen")
+                                       + "); pass --no-quiesce for a crash-consistent Snapshot")
+                run(command, capture=True)
+            finally:
+                if record.get("freeze_started_at"):
+                    thaw = run(["virsh", "-c", LIBVIRT_URI, "domfsthaw", name], check=False, capture=True)
+                    if frozen_at is not None:
+                        record["pause_ms"] = round((time.monotonic() - frozen_at) * 1000)
+                    if thaw.returncode == 0 and "Thawed" in thaw.stdout:
+                        record["thawed_at"] = utc_now()
+                    else:
+                        record["warnings"].append("thawing guest filesystems failed: " + (
+                            thaw.stderr.strip() or thaw.stdout.strip() or f"exit {thaw.returncode}"))
+        except Exception as exc:
+            failure = exc
+        thawed = record.get("thawed_at") or not record.get("freeze_started_at")
+        thaw_note = ("" if not record.get("freeze_started_at") else " Guest filesystems were thawed." if thawed
+                     else f" Thawing guest filesystems failed; run 'virsh -c {LIBVIRT_URI} domfsthaw {name}' now.")
+        if failure is not None:
+            detail = error_detail(failure)
+            try:
+                unchanged = (not libvirt_snapshots(name) and not overlay.exists()
+                             and on_base(disk_topology(name), str(disk)))
+            except (KVMError, subprocess.CalledProcessError):
+                unchanged = False
+            if unchanged:
+                remove_snapshot_record(name)
+                raise KVMError(f"Snapshot creation failed: {detail}. No Snapshot was created and the VM disk is "
+                               f"unchanged.{thaw_note}") from failure
+            record["problem"] = f"Snapshot creation failed: {detail}"
+            save_snapshot_record(name, record)
+            raise KVMError(f"{record['problem']}. libvirt or storage changed, and kvm-vm does not continue it; "
+                           f"see 'kvm-vm snapshot status {name}'.{thaw_note}") from failure
+        if libvirt_snapshots(name) != [snapshot] or not on_overlay(disk_topology(name), str(overlay), str(disk)):
+            record["problem"] = "libvirt reported success, but the disk topology is unexpected"
+            save_snapshot_record(name, record)
+            raise KVMError(f"libvirt reported success, but the disk topology of {name} is unexpected; "
+                           f"see 'kvm-vm snapshot status {name}'.{thaw_note}")
+        record.update(status="ready", created_at=utc_now())
         save_snapshot_record(name, record)
-        raise KVMError(f"libvirt reported success, but the disk topology of {name} is unexpected; "
-                       f"run 'kvm-vm snapshot status {name}' before any other operation.")
-    if thaw_error:
-        record["warnings"].append(f"thawing guest filesystems failed after creation: {thaw_error}")
-    record.update(status="ready", created_at=utc_now())
-    save_snapshot_record(name, record)
-    if thaw_error:
-        raise KVMError(f"Snapshot {snapshot} was created, but thawing guest filesystems failed ({thaw_error}). "
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+    if not thawed:
+        raise KVMError(f"Snapshot {snapshot} was created, but thawing guest filesystems failed. "
                        f"Run 'virsh -c {LIBVIRT_URI} domfsthaw {name}' now.")
     print(f"Created Snapshot {snapshot} of {name}")
     print(f"Recovery point: {disk} (read-only while the Snapshot exists)")
@@ -2142,8 +2158,7 @@ def commit_offline(name: str, record: Dict[str, Any]) -> None:
 
     libvirt's own offline deletion runs block-commit inside a confined QEMU. On
     AppArmor hosts virt-aa-helper denies writes to the base disk of a VM started
-    on a Snapshot (libvirt issue #806), so kvm-vm commits outside it. Each step
-    can be repeated: the overlay keeps its data until the commit completes.
+    on a Snapshot (libvirt issue #806), so kvm-vm commits outside it.
     """
     overlay, base = record["overlay"], record["base"]
     run(["qemu-img", "commit", "-q", "-f", "qcow2", overlay], capture=True)
@@ -2185,65 +2200,52 @@ def cmd_snapshot_delete(args: argparse.Namespace) -> int:
         raise KVMError(f"{name} has no kvm-vm Snapshot")
     if info["kind"] == "foreign":
         raise KVMError("\n".join(snapshot_report(name, info)))
-    if record.get("status") == "unreadable":
-        raise KVMError(f"Cannot read the Snapshot record in {snapshot_dir(name)}; inspect it manually")
-    if record["status"] == "rolling-back":
-        raise KVMError(f"A rollback of {name} was started and must be finished, not undone: "
-                       f"run 'kvm-vm snapshot rollback {name} --yes' again. Nothing was changed.")
     checkpoints = backup_checkpoints(name)
     if checkpoints:
         raise KVMError(f"Backup checkpoints were created for {name} while it has a Snapshot "
                        f"({', '.join(checkpoints)}). Deleting a Snapshot together with incremental Backup tracking "
                        "is not supported; the Snapshot and the checkpoints were not changed. "
                        + retire_checkpoints_hint(name, checkpoints))
-    snapshot, overlay, base = record["snapshot"], Path(record["overlay"]), record["base"]
+    base = record.get("base") or (load_state(name) or {}).get("disk")
     topology = info["topology"] or disk_topology(name)
-    on_overlay = all(same_path(top, str(overlay)) and same_path(backing, base) for top, backing in topology.values())
-    on_base = all(same_path(top, base) and backing is None for top, backing in topology.values())
-    if info["libvirt"] == [snapshot] and on_overlay:
-        action = "merge"
-    elif info["libvirt"] == [snapshot] and on_base and record["status"] == "deleting":
-        action = "metadata"  # an offline commit finished; only libvirt's record remains
-    elif not info["libvirt"] and on_base and record["status"] in ("creating", "deleting"):
-        action = "cleanup"
+    # A merge always starts from a verified state, so it keeps the current guest data.
+    merge = (record.get("status") in ("ready", "creating", "deleting") and info["libvirt"] == [record["snapshot"]]
+             and on_overlay(topology, record["overlay"], base))
+    # Otherwise only the record may go, once nothing else of the Snapshot is in use.
+    if not merge and (info["libvirt"] or not base or not on_base(topology, base)
+                      or qemu_img_info(Path(base), shared=True).get("backing-filename")):
+        raise KVMError(f"The Snapshot of {name} cannot be deleted in its current state; nothing was changed.\n"
+                       + "\n".join(snapshot_report(name, info)))
+    overlay = Path(record["overlay"]) if record.get("overlay") else None
+    if merge:
+        confirm_snapshot_delete(name, record["snapshot"], args.yes)
+        running = is_running_state(domain_state(name))
+        if running:
+            check_disk_jobs(name)
+        record["status"] = "deleting"
+        save_snapshot_record(name, record)
+        try:
+            if running:  # libvirt commits the overlay into the recovery-point disk and pivots back to it
+                p = run(["virsh", "-c", LIBVIRT_URI, "snapshot-delete", name, record["snapshot"]],
+                        check=False, capture=True)
+                if p.returncode != 0:
+                    raise KVMError(f"libvirt could not delete the Snapshot of the running VM: {p.stderr.strip()}")
+            else:
+                commit_offline(name, record)
+            if not on_base(disk_topology(name), base) or qemu_img_info(Path(base), shared=running).get("backing-filename"):
+                raise KVMError(f"{name} is not back on a standalone {base} after the merge")
+        except BaseException as exc:
+            record["problem"] = f"Snapshot deletion stopped: {error_detail(exc)}"
+            save_snapshot_record(name, record)
+            apparmor = (" If the VM was started after the Snapshot was created on an AppArmor host, libvirt "
+                        "cannot write the recovery-point disk while the VM runs (libvirt issue #806)." if running else "")
+            raise KVMError(f"{record['problem']}\n" + SNAPSHOT_NEXT_STEP["deleting"].format(name=name) + apparmor) from exc
+    kept = bool(overlay and overlay.exists() and not remove_unreferenced_overlay(name, overlay))
+    remove_snapshot_record(name)
+    if merge:
+        print(f"Deleted Snapshot {record['snapshot']} of {name}; the current guest data is kept in {base}")
     else:
-        raise KVMError(f"The Snapshot state of {name} does not match a kvm-vm operation that can be "
-                       "finished safely; nothing was changed.\n" + "\n".join(snapshot_report(name, info)))
-    confirm_snapshot_delete(name, snapshot, args.yes)
-    running = is_running_state(domain_state(name))
-    if action == "merge" and running:
-        check_disk_jobs(name)
-        record["status"] = "deleting"
-        save_snapshot_record(name, record)
-        # libvirt commits the overlay into the recovery-point disk and pivots back to it.
-        p = run(["virsh", "-c", LIBVIRT_URI, "snapshot-delete", name, snapshot], check=False, capture=True)
-        if p.returncode != 0:
-            unchanged = (output(["virsh", "-c", LIBVIRT_URI, "snapshot-list", name, "--name"]).split() == [snapshot]
-                         and all(same_path(top, str(overlay)) and same_path(backing, base)
-                                 for top, backing in disk_topology(name).values()))
-            if unchanged:
-                record["status"] = "ready"
-                save_snapshot_record(name, record)
-            raise KVMError(
-                f"libvirt could not delete Snapshot {snapshot} of the running VM: {p.stderr.strip()}\n"
-                + ("The Snapshot is unchanged. " if unchanged else f"Run 'kvm-vm snapshot status {name}'. ")
-                + "If the VM was started after the Snapshot was created on an AppArmor host, libvirt denies "
-                "writes to the recovery-point disk (libvirt issue #806). Shut the VM down and run "
-                f"'kvm-vm snapshot delete {name}' again; a shut off VM is committed with qemu-img.")
-        if not all(same_path(top, base) and backing is None for top, backing in disk_topology(name).values()):
-            raise KVMError(f"libvirt deleted Snapshot {snapshot}, but {name} is not back on {base}; "
-                           f"run 'kvm-vm snapshot status {name}' and inspect the domain disks.")
-    elif action == "merge":
-        record["status"] = "deleting"
-        save_snapshot_record(name, record)
-        commit_offline(name, record)
-    elif action == "metadata":
-        remove_libvirt_snapshot_metadata(name, snapshot)
-    if qemu_img_info(Path(base), shared=running).get("backing-filename"):
-        raise KVMError(f"{base} still has a backing file; inspect it before removing the Snapshot record")
-    kept = overlay.exists() and not remove_unreferenced_overlay(name, overlay)
-    shutil.rmtree(snapshot_dir(name))
-    print(f"Deleted Snapshot {snapshot} of {name}; the current guest data is kept in {base}")
+        print(f"No Snapshot is left for {name}; removed its record")
     if kept:
         log.warning(f"{overlay} is still referenced and was kept; inspect it before removing it")
     return 0
@@ -2255,7 +2257,7 @@ def replace_file(source: Path, target: Path) -> None:
     os.replace(tmp, target)
 
 
-def restore_snapshot_artifacts(name: str) -> None:
+def reinstate_snapshot_artifacts(name: str) -> None:
     """Put the captured definition, state manifest and cloud-init files back in place."""
     directory = snapshot_dir(name)
     captured = json.loads((directory / "state.json").read_text(encoding="utf-8"))
@@ -2263,14 +2265,14 @@ def restore_snapshot_artifacts(name: str) -> None:
     replace_file(directory / "state.json", STATE_DIR / f"{name}.json")
     cloud = directory / "cloud"
     if cloud.is_dir() and captured.get("cloud_dir"):
-        restored = []
+        reinstated = []
         for source in sorted(cloud.rglob("*")):
             if source.is_file():
                 target = Path(captured["cloud_dir"]) / source.relative_to(cloud)
                 target.parent.mkdir(parents=True, exist_ok=True)
                 replace_file(source, target)
-                restored.append(target)
-        restore_selinux(restored)
+                reinstated.append(target)
+        restore_selinux(reinstated)
 
 
 def confirm_snapshot_rollback(name: str, snapshot: str, yes: bool) -> None:
@@ -2295,10 +2297,8 @@ def cmd_snapshot_rollback(args: argparse.Namespace) -> int:
     record = info["record"]
     if info["kind"] == "none":
         raise KVMError(f"{name} has no kvm-vm Snapshot to roll back to")
-    if info["kind"] == "foreign":
-        raise KVMError("\n".join(snapshot_report(name, info)))
-    if record.get("status") not in ("ready", "rolling-back") or (record["status"] == "ready" and info["kind"] != "ready"):
-        raise KVMError(f"The Snapshot of {name} is not usable for rollback; nothing was changed.\n"
+    if info["kind"] != "ready":
+        raise KVMError(f"Only a ready Snapshot can be rolled back; nothing was changed.\n"
                        + "\n".join(snapshot_report(name, info)))
     checkpoints = backup_checkpoints(name)
     if checkpoints:
@@ -2315,12 +2315,6 @@ def cmd_snapshot_rollback(args: argparse.Namespace) -> int:
     info_base = qemu_img_info(Path(base), shared=True)
     if info_base.get("backing-filename") or info_base.get("format") != "qcow2":
         raise KVMError(f"The recovery-point disk {base} is not a standalone qcow2 image; nothing was changed")
-    if record["status"] == "rolling-back":
-        topology = info["topology"]
-        if not (all(same_path(t, str(overlay)) and same_path(b, base) for t, b in topology.values())
-                or all(same_path(t, base) and b is None for t, b in topology.values())):
-            raise KVMError(f"The interrupted rollback of {name} left an unexpected disk topology; "
-                           "nothing was changed.\n" + "\n".join(snapshot_report(name, info)))
     power = domain_state(name)
     if is_running_state(power) and not args.force:
         raise KVMError(f"VM is running ({power}). Rollback stops it: shut it down first, or use --force "
@@ -2328,22 +2322,25 @@ def cmd_snapshot_rollback(args: argparse.Namespace) -> int:
     confirm_snapshot_rollback(name, snapshot, args.yes)
     if is_running_state(domain_state(name)):
         check_disk_jobs(name)
-    record.update(status="rolling-back", rollback_started_at=record.get("rollback_started_at") or utc_now())
+    record.update(status="rolling-back", rollback_started_at=utc_now())
     save_snapshot_record(name, record)
-
-    # Each step can be repeated; a retry after an interruption continues from here.
-    if is_running_state(domain_state(name)):
-        run(["virsh", "-c", LIBVIRT_URI, "destroy", name], capture=True)
-    restore_snapshot_artifacts(name)
-    run(["virsh", "-c", LIBVIRT_URI, "define", str(snapshot_dir(name) / "domain.xml")], capture=True)
-    if not all(same_path(t, base) and b is None for t, b in disk_topology(name).values()):
-        raise KVMError(f"{name} was redefined but does not use {base}; run 'kvm-vm snapshot status {name}'")
-    if snapshot in output(["virsh", "-c", LIBVIRT_URI, "snapshot-list", name, "--name"]).split():
-        remove_libvirt_snapshot_metadata(name, snapshot)
-    kept = overlay.exists() and not remove_unreferenced_overlay(name, overlay)
-    shutil.rmtree(snapshot_dir(name))
+    try:
+        if is_running_state(domain_state(name)):
+            run(["virsh", "-c", LIBVIRT_URI, "destroy", name], capture=True)
+        reinstate_snapshot_artifacts(name)
+        run(["virsh", "-c", LIBVIRT_URI, "define", str(snapshot_dir(name) / "domain.xml")], capture=True)
+        if not on_base(disk_topology(name), base):
+            raise KVMError(f"the redefined VM does not use {base}")
+        if snapshot in libvirt_snapshots(name):
+            remove_libvirt_snapshot_metadata(name, snapshot)
+        kept = overlay.exists() and not remove_unreferenced_overlay(name, overlay)
+    except BaseException as exc:
+        record["problem"] = f"Rollback stopped: {error_detail(exc)}"
+        save_snapshot_record(name, record)
+        raise KVMError(f"{record['problem']}\n" + SNAPSHOT_NEXT_STEP["rolling-back"].format(name=name)) from exc
+    remove_snapshot_record(name)
     print(f"Rolled back {name} to Snapshot {snapshot}; changes made after it were discarded")
-    print("Restored the captured domain configuration, definition, state manifest and cloud-init files")
+    print("Put back the captured domain configuration, definition, state manifest and cloud-init files")
     print(f"The Snapshot was used up; create a new one before the next change: kvm-vm snapshot create {name}")
     if kept:
         log.warning(f"{overlay} is still referenced and was kept; inspect it before removing it")
@@ -2441,7 +2438,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("name")
     s.add_argument("--yes", action="store_true", help="Skip interactive confirmation")
     s.set_defaults(func=cmd_snapshot_delete)
-    s = ssp.add_parser("rollback", help="Discard changes made after the Snapshot and restore its disk and configuration")
+    s = ssp.add_parser("rollback", help="Discard changes made after the Snapshot and return to its disk and configuration")
     s.add_argument("name")
     s.add_argument("--yes", action="store_true", help="Skip interactive confirmation")
     s.add_argument("--force", action="store_true", help="Destroy a running VM before the rollback")

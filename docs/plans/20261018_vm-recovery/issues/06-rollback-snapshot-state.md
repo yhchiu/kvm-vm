@@ -15,7 +15,7 @@ and 40; ADR-0001.
 - [x] Expose rollback through the existing CLI and its established destructive
   confirmation conventions. Refuse unsupported capabilities, unexpected
   topology or conflicting work before unsafe mutation.
-- [x] Restore the Snapshot's disk contents and corresponding VM configuration.
+- [x] Return to the Snapshot's disk contents and corresponding VM configuration.
   Stopping and restarting the guest is allowed; restoring RAM or process
   execution state is not required.
 - [x] Restore coherent libvirt configuration, effective definition, management

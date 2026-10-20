@@ -166,8 +166,8 @@ def test_snapshot_create_inspect_delete(snapshot_vm, ssh_keypair, tmp_path):
     ip = E2EHelper.wait_for_ssh(name, key, timeout=E2E_SSH_TIMEOUT)
     assert E2EHelper.ssh_exec(ip, key, GUEST_CHECK).splitlines()[:-1] == written.splitlines()[:-1]
 
-    # A VM restarted on its Snapshot: deleting while it runs either works or is refused
-    # with the Snapshot unchanged (AppArmor, libvirt issue #806); offline deletion then works.
+    # A VM restarted on its Snapshot: deleting while it runs either works or stops with rollback
+    # disabled (AppArmor, libvirt issue #806); offline deletion then works.
     kvm("snapshot", "create", name)
     wait_off(name)
     E2EHelper.virsh("start", name)
@@ -179,8 +179,9 @@ def test_snapshot_create_inspect_delete(snapshot_vm, ssh_keypair, tmp_path):
         assert E2EHelper.ssh_exec(ip, key, GUEST_CHECK) == written
     else:
         print("SNAPSHOT_DELETE_AFTER_RESTART refused online, then offline", flush=True)
-        assert "The Snapshot is unchanged" in online.stderr and "Shut the VM down" in online.stderr
-        assert "ready (usable recovery point)" in kvm("snapshot", "status", name).stdout
+        assert "Rollback is disabled" in online.stderr and "shut the VM down" in online.stderr
+        stopped = kvm("snapshot", "status", name, check=False)
+        assert stopped.returncode == 1 and "needs attention" in stopped.stdout
         assert E2EHelper.ssh_exec(ip, key, GUEST_CHECK) == written
         wait_off(name)
         kvm("snapshot", "delete", name, "--yes")

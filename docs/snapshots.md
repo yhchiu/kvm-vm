@@ -9,7 +9,7 @@ it if the change went wrong.
 kvm-vm snapshot create web01                     # running or shut off VM; no reboot
 kvm-vm snapshot status web01                     # none, ready or incomplete
 kvm-vm snapshot delete web01 --yes               # keep the current data, remove the Snapshot
-kvm-vm snapshot rollback web01 --yes --force     # discard the changes, restore, start again
+kvm-vm snapshot rollback web01 --yes --force     # discard the changes, return to it, start again
 ```
 
 Validation: see the [ticket 05](plans/20261018_vm-recovery/ticket-05-validation.md)
@@ -79,14 +79,15 @@ guest and host and are not a guaranteed limit.
 ## Inspect
 
 `kvm-vm snapshot status NAME` exits 0 when there is no Snapshot or a usable
-one, and 1 when something needs attention:
+one, and 1 when something needs the operator:
 
 - **none**: no Snapshot.
 - **ready**: the record, the libvirt snapshot and both domain XMLs agree on
   the overlay and the recovery point.
-- **incomplete**: an operation was interrupted, failed part way, or the
-  Snapshot was changed outside kvm-vm. The output lists each problem and what
-  to do.
+- **needs attention**: an operation (`creating`, `deleting` or
+  `rolling-back`) failed or was interrupted, the record cannot be read, or the
+  Snapshot was changed outside kvm-vm. The output lists each problem and the
+  next step.
 - **other libvirt snapshots**: snapshots that kvm-vm did not create. kvm-vm
   does not delete or roll them back, and refuses to create one of its own.
 
@@ -106,12 +107,12 @@ the recovery point:
   newer writes is deleted.
 - The persistent domain configuration captured at creation is defined again,
   so vCPU, memory and device changes made since are undone. The effective
-  YAML, the state manifest and the cloud-init files are restored from the
+  YAML, the state manifest and the cloud-init files are put back from the
   record.
 - The VM keeps its identity: UUID, MAC address, machine ID, cloud-init
   instance ID and SSH host keys. Nothing is reprovisioned or customized, and
   cloud-init sees the same instance.
-- The guest boots fresh; RAM and running processes are not restored.
+- The guest boots fresh; RAM and running processes are not brought back.
 
 Rollback uses up the Snapshot: the record and libvirt's snapshot metadata are
 removed and the disk is again one standalone file. Create a new Snapshot before
@@ -128,20 +129,43 @@ guest still needs its normal boot time before it is usable.
 
 ## Failures and interruptions
 
+kvm-vm never continues a failed or interrupted Snapshot operation by itself
+([ADR 0003](adr/0003-snapshot-failures-stop-for-the-operator.md)). It keeps
+the record, marks the Snapshot as needing attention and says what to do next.
+Only a ready Snapshot can be rolled back.
+
 | Situation | Result | What to do |
 | --- | --- | --- |
 | Agent missing, freeze fails, or libvirt refuses the snapshot | Guest thawed, record removed, disk unchanged | Fix the cause or use `--no-quiesce` |
+| Ctrl-C or SIGTERM while the guest is frozen | Ignored until the guest is thawed; the command finishes normally | Nothing |
 | Thaw fails after the snapshot was created | Snapshot kept as ready with a warning; command fails | Run `virsh -c qemu:///system domfsthaw NAME` at once |
-| Creation interrupted (Ctrl-C) | Guest thawed. If libvirt had not started, nothing is left; otherwise the record stays `creating` | `kvm-vm snapshot status`, then `kvm-vm snapshot delete NAME --yes` to finish or discard it |
-| kvm-vm killed while the guest was frozen | Record shows the freeze without a thaw | Thaw with `virsh domfsthaw`, then as above |
-| Deletion interrupted | Record stays `deleting` | Run `kvm-vm snapshot delete NAME --yes` again |
-| libvirt refuses to delete for a running VM | Snapshot left unchanged and `ready` | Shut the VM down and delete again |
-| Rollback interrupted or a step fails | Record stays `rolling-back`; the overlay is kept until the domain no longer uses it; `snapshot delete` and the lifecycle commands refuse | Run `kvm-vm snapshot rollback NAME --yes` again (add `--force` if the VM is running) |
+| Creation stopped for another reason, or kvm-vm was killed | Record stays `creating` | If libvirt lists the Snapshot and the VM uses the overlay, `kvm-vm snapshot delete NAME --yes` merges it; if neither, it removes the record |
+| kvm-vm killed while the guest was frozen | Status shows the freeze without a thaw | Thaw with `virsh domfsthaw`, then as above |
+| Deletion fails or is interrupted (for example disk full, or the AppArmor case below) | Record stays `deleting`; rollback is disabled, because the recovery-point disk may already hold newer data; the current data is intact | Fix the cause, shut the VM down and run `kvm-vm snapshot delete NAME --yes` again |
+| A shut off delete stopped after the VM was redefined | The VM uses its disk again, libvirt still lists the Snapshot | `virsh snapshot-delete NAME SNAPSHOT --metadata`, then `kvm-vm snapshot delete NAME --yes` |
+| Rollback fails or is interrupted | Record stays `rolling-back`; the overlay is kept; `snapshot delete`, `snapshot rollback` and the lifecycle commands refuse | Finish the rollback by hand (below) |
 | VM fails to start after a rollback | Rollback is complete; the Snapshot is gone | Start the VM with `virsh start` after fixing the cause |
-| Snapshot changed with virsh or another tool | Status reports the mismatch; delete refuses | Inspect `virsh snapshot-list` and the domain disks by hand |
+| Record unreadable (for example a crash right after it was created) | Status says so; the lifecycle commands refuse | Once no snapshot or overlay is in use, `kvm-vm snapshot delete NAME --yes` removes the record |
+| Snapshot changed with virsh or another tool | Status reports the mismatch; delete and rollback refuse | Inspect `virsh snapshot-list` and the domain disks by hand |
 
-`kvm-vm snapshot delete` removes a leftover overlay only when no domain and no
-image in `KVM_VM_DISK_DIR` refers to it; otherwise it keeps the file and warns.
+To finish an interrupted rollback, use the files in
+`KVM_VM_STATE_DIR/snapshots/NAME/` (status prints the paths):
+
+```sh
+virsh -c qemu:///system destroy NAME                     # if it is running
+cp -p effective.yaml DEFINITION                          # the path in state.json "definition"
+cp -p state.json KVM_VM_STATE_DIR/NAME.json
+cp -a cloud/. CLOUD_DIR/                                  # the path in state.json "cloud_dir"
+virsh -c qemu:///system define domain.xml
+virsh -c qemu:///system snapshot-delete NAME SNAPSHOT --metadata
+kvm-vm snapshot delete NAME --yes                        # removes the overlay and the record
+virsh -c qemu:///system start NAME
+```
+
+When only the record is left, `kvm-vm snapshot delete` removes it, together
+with a leftover overlay that no domain and no image in `KVM_VM_DISK_DIR` uses.
+A referenced overlay is kept with a warning. The record is removed with a
+single rename, so an interruption never leaves part of it behind.
 
 ## Working with other commands and tools
 

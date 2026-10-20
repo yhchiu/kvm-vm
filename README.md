@@ -670,8 +670,8 @@ kvm-vm create newvm.yaml --refresh-image
 update, without stopping the VM; the guest filesystems are frozen briefly
 through the QEMU guest agent. `kvm-vm snapshot status NAME` shows it, and
 `kvm-vm snapshot delete NAME --yes` removes it while keeping the current data.
-If the update went wrong, `kvm-vm snapshot rollback NAME --yes --force` restores
-the captured disk, VM configuration and kvm-vm files and starts the VM again,
+If the update went wrong, `kvm-vm snapshot rollback NAME --yes --force` returns
+to the captured disk, VM configuration and kvm-vm files and starts the VM again,
 keeping its identity. A Snapshot is not a Backup, and it is never combined with
 incremental Backup tracking: retire the tracking before the Snapshot and start
 a new full Backup after it, as described in
