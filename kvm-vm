@@ -17,7 +17,9 @@ import logging
 import os
 import random
 import re
+import secrets
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -381,6 +383,11 @@ def normalize_definition(raw: Dict[str, Any], *, for_clone: bool = False) -> Dic
     user = ci.get("user", "admin")
     if not re.match(r"^[a-z_][a-z0-9_-]*[$]?$", user):
         raise KVMError(f"Invalid cloud_init.user: {user}")
+    console_password = ci.get("console_password", False)
+    if type(console_password) is not bool:
+        raise KVMError("cloud_init.console_password must be a boolean")
+    if console_password and user == "root":
+        raise KVMError("Console password login requires a non-root management user")
 
     ssh_port = ci.get("ssh_port", 22)
     if type(ssh_port) is not int or not 1 <= ssh_port <= 65535:
@@ -435,6 +442,7 @@ def normalize_definition(raw: Dict[str, Any], *, for_clone: bool = False) -> Dic
         },
         "cloud_init": {
             "user": user,
+            "console_password": console_password,
             "ssh_port": ssh_port,
             "ssh_authorized_keys": keys,
             "package_update": bool(ci.get("package_update", False)),
@@ -837,7 +845,115 @@ fi
 """
 
 
-def make_cloud_files(cfg: Dict[str, Any], source_def_dir: Path, *, reset_ssh_port: bool = False) -> Tuple[Path, Path, Path, str]:
+def console_credential(cfg: Dict[str, Any], destination: Optional[str], *, preview: bool) -> Optional[str]:
+    """Validate private delivery, then deliver before any guest can use the hash."""
+    if not cfg["cloud_init"].get("console_password"):
+        if destination is not None:
+            raise KVMError("--console-password-file requires cloud_init.console_password: true")
+        return None
+    if not destination:
+        raise KVMError("Console password login requires --console-password-file")
+    if os.name != "posix":
+        raise KVMError("Console credential delivery requires POSIX permissions")
+    require_commands(["openssl"])
+    path = Path(os.path.abspath(os.path.expanduser(destination)))
+    directory = None
+    try:
+        directory = os.open(path.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        for part in path.parent.parts[1:]:
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+            os.close(directory)
+            directory = child
+        parent = os.fstat(directory)
+        if parent.st_uid != os.geteuid() or stat.S_IMODE(parent.st_mode) & 0o077:
+            raise KVMError("Credential directory must be owned by the invoking administrator and private (0700)")
+        try:
+            os.stat(path.name, dir_fd=directory, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise KVMError("Credential destination already exists; choose a new file")
+        if preview:
+            return None
+        password = "".join(secrets.choice("ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789") for _ in range(24))
+        result = run(["openssl", "passwd", "-6", "-stdin"], input_text=password + "\n", capture=True, check=False)
+        password_hash = result.stdout.strip()
+        if result.returncode or not re.fullmatch(r"\$6\$[./A-Za-z0-9]{1,16}\$[./A-Za-z0-9]{86}", password_hash):
+            raise KVMError("Could not generate a supported console password hash")
+        fd = os.open(path.name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+        with os.fdopen(fd, "w", encoding="utf-8") as output:
+            os.fchmod(output.fileno(), 0o600)
+            json.dump({"vm": cfg["vm"]["name"], "user": cfg["cloud_init"]["user"], "password": password}, output)
+            output.write("\n")
+            output.flush()
+            os.fsync(output.fileno())
+        os.fsync(directory)
+        log.info("Console credential delivered to %s; retain it if provisioning fails", path)
+        return password_hash
+    except OSError:
+        raise KVMError("Could not securely deliver console credential; inspect the destination before retrying") from None
+    finally:
+        if directory is not None:
+            os.close(directory)
+
+
+CONSOLE_LOGIN_SCRIPT = r"""
+import datetime
+import glob
+from pathlib import Path
+import re
+import shlex
+import subprocess
+import sys
+
+policy = ("PasswordAuthentication no\nKbdInteractiveAuthentication no\n"
+          "ChallengeResponseAuthentication no\n")
+seen = set()
+def harden(path):
+    path = path.resolve()
+    if path in seen:
+        return
+    seen.add(path)
+    output = []
+    for line in path.read_text().splitlines(keepends=True):
+        fields = shlex.split(line, comments=True)
+        key = fields[0].split("=")[0].lower() if fields else ""
+        if key in ("passwordauthentication", "kbdinteractiveauthentication", "challengeresponseauthentication"):
+            line = key + " no\n"
+        elif key == "include":
+            value = re.sub(r"^\s*Include\s*=?\s*", "", line, flags=re.I)
+            for pattern in shlex.split(value, comments=True):
+                if not pattern.startswith("/"):
+                    pattern = "/etc/ssh/" + pattern
+                for included in sorted(glob.glob(pattern)):
+                    harden(Path(included))
+        output.append(line)
+    path.write_text(policy + "".join(output))
+
+harden(Path("/etc/ssh/sshd_config"))
+subprocess.run(["/usr/sbin/sshd", "-t"], check=True)
+effective = subprocess.check_output(
+    ["/usr/sbin/sshd", "-T", "-C", "user=" + sys.argv[1] + ",host=localhost,addr=127.0.0.1"],
+    text=True)
+settings = dict(line.split(None, 1) for line in effective.splitlines() if " " in line)
+assert settings.get("passwordauthentication") == "no"
+assert settings.get("kbdinteractiveauthentication") == "no"
+for service in ("ssh.service", "sshd.service"):
+    loaded = subprocess.run(["systemctl", "show", "-p", "LoadState", "--value", service],
+                            capture_output=True, text=True, check=True)
+    if loaded.stdout.strip() == "loaded":
+        subprocess.run(["systemctl", "try-restart", service], check=True)
+subprocess.run(["systemctl", "enable", "--now", "serial-getty@ttyS0.service"], check=True)
+subprocess.run(["chage", "-M", "-1", "-I", "-1", "-E", "-1",
+                "-d", datetime.date.today().isoformat(), sys.argv[1]], check=True)
+subprocess.run(["usermod", "-U", sys.argv[1]], check=True)
+"""
+
+
+def make_cloud_files(cfg: Dict[str, Any], source_def_dir: Path, *, reset_ssh_port: bool = False,
+                     password_hash: Optional[str] = None) -> Tuple[Path, Path, Path, str]:
+    if cfg["cloud_init"].get("console_password") and not password_hash:
+        raise KVMError("Console password provisioning requires a delivered credential")
     name = cfg["vm"]["name"]
     cdir = CLOUD_DIR / name
     if cdir.exists():
@@ -879,6 +995,9 @@ def make_cloud_files(cfg: Dict[str, Any], source_def_dir: Path, *, reset_ssh_por
         "disable_root": True,
         "package_update": cfg["cloud_init"]["package_update"],
     }
+    if cfg["cloud_init"].get("console_password"):
+        user_cfg["users"][0]["hashed_passwd"] = password_hash
+        runcmd.append(["python3", "-c", CONSOLE_LOGIN_SCRIPT, user])
     if packages:
         user_cfg["packages"] = packages
     if cfg["cloud_init"].get("timezone"):
@@ -887,6 +1006,7 @@ def make_cloud_files(cfg: Dict[str, Any], source_def_dir: Path, *, reset_ssh_por
         user_cfg["runcmd"] = runcmd
 
     user_data = cdir / "user-data"
+    user_data.touch(mode=0o600)
     user_data.write_text("#cloud-config\n" + yaml.safe_dump(user_cfg, sort_keys=False, allow_unicode=True), encoding="utf-8")
 
     instance_id = "iid-" + hashlib.sha256(f"{name}-{dt.datetime.now(dt.timezone.utc).isoformat()}-{random.random()}".encode()).hexdigest()[:24]
@@ -926,7 +1046,12 @@ def make_cloud_files(cfg: Dict[str, Any], source_def_dir: Path, *, reset_ssh_por
     network_config.write_text(yaml.safe_dump(network_data, sort_keys=False), encoding="utf-8")
 
     seed = cdir / "seed.img"
-    create_cloud_seed(seed, user_data, meta_data, network_config)
+    previous_umask = os.umask(0o077)
+    try:
+        create_cloud_seed(seed, user_data, meta_data, network_config)
+        seed.chmod(0o600)
+    finally:
+        os.umask(previous_umask)
     return user_data, meta_data, network_config, instance_id
 
 
@@ -1140,6 +1265,8 @@ def cmd_create(args: argparse.Namespace) -> int:
     if domain_exists(name):
         raise KVMError(f"Domain already exists: {name}")
     check_create_state(name, VM_DIR / f"{name}.qcow2")
+    destination = vars(args).get("console_password_file")
+    console_credential(cfg, destination, preview=True)
     validate_network_attachment(cfg["network"])
     if cfg["network"]["mac"] == "auto":
         cfg["network"]["mac"] = generate_mac(exclude=existing_macs())
@@ -1153,10 +1280,12 @@ def cmd_create(args: argparse.Namespace) -> int:
     base, default_variant = acquire_base_image(cfg, args.refresh_image)
     disk = VM_DIR / f"{name}.qcow2"
     check_new_artifacts(name, disk)
+    password_hash = console_credential(cfg, destination, preview=False)
     try:
         make_disk_from_base(base, disk, int(cfg["storage"]["disk_gib"]))
         restore_selinux([disk])
-        _, _, _, instance_id = make_cloud_files(cfg, p.parent)
+        cloud_options = {"password_hash": password_hash} if password_hash else {}
+        _, _, _, instance_id = make_cloud_files(cfg, p.parent, **cloud_options)
         seed = CLOUD_DIR / name / "seed.img"
         define_vm(cfg, disk, seed, default_variant, no_start=args.no_start)
         save_state(cfg, disk, {"type": "base-image", "path": str(base)}, instance_id, p)
@@ -1198,6 +1327,12 @@ def cmd_clone(args: argparse.Namespace) -> int:
 
     p = Path(args.definition)
     cfg = normalize_definition(yaml_load(p), for_clone=True)
+    source_definition = Path(source_state.get("definition") or DEF_DIR / f"{source_name}.yaml") if source_state else DEF_DIR / f"{source_name}.yaml"
+    source_config = yaml_load(source_definition) if source_definition.exists() else {}
+    if (cfg["cloud_init"].get("console_password")
+            or source_config.get("cloud_init", {}).get("console_password")
+            or vars(args).get("console_password_file") is not None):
+        raise KVMError("Console password cloning is not supported yet; no guest resources changed")
     name = cfg["vm"]["name"]
     if name == source_name:
         raise KVMError("Clone target name must differ from source")
@@ -1434,6 +1569,8 @@ def cmd_reinstall(args: argparse.Namespace) -> int:
         raise KVMError(f"VM is running ({st}). Shut it down first, or use --force to destroy it before reinstall.")
 
     raw_cfg = yaml_load(def_path)
+    if raw_cfg.get("cloud_init", {}).get("console_password") or vars(args).get("console_password_file") is not None:
+        raise KVMError("Console password reinstall is not supported yet; no guest resources changed")
     apply_os_override(
         raw_cfg,
         os_arg=getattr(args, "os", None),
@@ -1732,6 +1869,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp = p.add_subparsers(dest="command", required=True)
 
     q = sp.add_parser("create", help="Create a VM from a YAML definition and cloud image")
+    q.add_argument("--console-password-file", help="New credential file in a private administrator-owned directory")
     q.add_argument("definition")
     q.add_argument("--refresh-image", action="store_true", help="Redownload a URL/distro base image")
     q.add_argument("--no-start", action="store_true", help="Define the VM but do not boot it")
@@ -1739,6 +1877,7 @@ def build_parser() -> argparse.ArgumentParser:
     q.set_defaults(func=cmd_create)
 
     q = sp.add_parser("clone", help="Offline full clone of a VM, then sysprep and apply target YAML")
+    q.add_argument("--console-password-file", help="Console credential destination (not yet supported for clone)")
     q.add_argument("source", help="Source libvirt domain name; must be shut off")
     q.add_argument("definition", help="Target VM YAML definition")
     q.add_argument("--no-start", action="store_true", help="Define the clone but do not boot it")
@@ -1746,6 +1885,7 @@ def build_parser() -> argparse.ArgumentParser:
     q.set_defaults(func=cmd_clone)
 
     q = sp.add_parser("reinstall", help="Reinstall an existing VM OS while keeping other configurations unchanged")
+    q.add_argument("--console-password-file", help="Console credential destination (not yet supported for reinstall)")
     q.add_argument("name", help="VM domain name to reinstall")
     os_grp = q.add_mutually_exclusive_group()
     os_grp.add_argument("--os", help=f"New operating system distro ({', '.join(sorted(DISTROS))}) or cloud image URL/path")

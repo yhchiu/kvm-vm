@@ -136,10 +136,12 @@ or YAML support. Do not infer opt-in from `KVM_VM_MACVTAP`.
 - Generate at least 24 random characters from an unambiguous console-friendly
   alphabet using a cryptographically secure generator. Use an independent value
   for each VM; do not derive it from VM names, timestamps or a shared seed.
-- Set `lock_passwd: false` and supply a salted hash compatible with the supported
-  guest's password stack. Prefer `hashed_passwd` over `passwd` for an account that
-  may already exist in the cloud image. Supplying the hash must not depend on
-  downloading packages inside a guest whose network may need repair.
+- Supply a salted hash through `hashed_passwd`, including for an account already
+  present in the image. Initially retain `lock_passwd: true`; unlock the account
+  only after SSH password methods have been disabled and checked and the serial
+  getty has started. This ordering avoids a temporary SSH password-login window.
+  Supplying the hash must not depend on downloading packages inside a guest
+  whose network may need repair.
 - Keep `ssh_pwauth: false`. Verify the effective OpenSSH configuration disables
   both password and password-capable keyboard-interactive authentication,
   including relevant Match blocks and distro configuration. Preserve key login.

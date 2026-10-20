@@ -7,7 +7,7 @@ python3 -m py_compile "$ROOT/kvm-vm"
 "$ROOT/kvm-vm" --version
 
 if python3 -m pytest --version >/dev/null 2>&1; then
-  python3 -m pytest "$ROOT/tests/test_unit.py" "$ROOT/tests/test_macvtap.py" -q
+  python3 -m pytest "$ROOT/tests/test_unit.py" "$ROOT/tests/test_macvtap.py" "$ROOT/tests/test_console_password.py" -q
 fi
 
 tmp="$(mktemp -d)"

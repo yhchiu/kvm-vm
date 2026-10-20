@@ -759,7 +759,7 @@ class TestMakeCloudFiles:
         raw = _minimal_raw()
         raw["cloud_init"]["user"] = user
         cfg = kvm_vm.normalize_definition(raw)
-        with patch("kvm_vm.create_cloud_seed"):
+        with patch("kvm_vm.create_cloud_seed", side_effect=lambda seed, *args: seed.touch()):
             ud, _, _, _ = kvm_vm.make_cloud_files(cfg, tmp_path)
         data = kvm_vm.yaml.safe_load(ud.read_text(encoding="utf-8"))
         assert data["users"][0]["primary_group"] == user
@@ -776,7 +776,7 @@ class TestMakeCloudFiles:
         if port is None:
             # Older stored definitions do not have the new field.
             cfg["cloud_init"].pop("ssh_port")
-        with patch("kvm_vm.create_cloud_seed"):
+        with patch("kvm_vm.create_cloud_seed", side_effect=lambda seed, *args: seed.touch()):
             ud, _, _, _ = kvm_vm.make_cloud_files(cfg, tmp_path, **kwargs)
         assert cfg["cloud_init"]["runcmd"] == [["echo", "user command"]]
         return kvm_vm.yaml.safe_load(ud.read_text(encoding="utf-8"))
@@ -861,7 +861,7 @@ class TestMakeCloudFiles:
             }
         )
         cfg = kvm_vm.normalize_definition(raw)
-        with patch("kvm_vm.create_cloud_seed"):
+        with patch("kvm_vm.create_cloud_seed", side_effect=lambda seed, *args: seed.touch()):
             ud, md, nc, iid = kvm_vm.make_cloud_files(cfg, tmp_path)
 
         import yaml
@@ -890,7 +890,7 @@ class TestMakeCloudFiles:
             }
         )
         cfg = kvm_vm.normalize_definition(raw)
-        with patch("kvm_vm.create_cloud_seed"):
+        with patch("kvm_vm.create_cloud_seed", side_effect=lambda seed, *args: seed.touch()):
             ud, md, nc, iid = kvm_vm.make_cloud_files(cfg, tmp_path)
 
         import yaml
@@ -912,7 +912,7 @@ class TestMakeCloudFiles:
             }
         )
         cfg = kvm_vm.normalize_definition(raw)
-        with patch("kvm_vm.create_cloud_seed"):
+        with patch("kvm_vm.create_cloud_seed", side_effect=lambda seed, *args: seed.touch()):
             ud, md, nc, iid = kvm_vm.make_cloud_files(cfg, tmp_path)
 
         import yaml

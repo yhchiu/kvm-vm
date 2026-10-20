@@ -1,5 +1,3 @@
-[English](README.md) | 繁體中文
-
 # kvm-vm
 
 `kvm-vm` 是一個專為長期運行的獨立 KVM/libvirt 主機設計的輕量宣告式虛擬機器（VM）管理工具。
@@ -841,3 +839,37 @@ sudo KVM_VM_E2E_DISTROS=ubuntu26.04,debian13,rocky8,rocky9,rocky10,almalinux8,al
 
 實測映像、開機修正及測試主機的硬體限制，請見
 [實機驗證報告](tests/REAL_MACHINE_RESULTS.md)。
+## 選用 Console 密碼登入
+
+設定 `cloud_init.console_password: true`，可為指定的非 root 管理帳號產生隨機
+本機密碼。此設定與 bridge、NAT、Macvtap 網路無關，預設仍鎖定密碼。
+SSH 公鑰設定仍為必要項目。
+
+```bash
+sudo install -d -m 0700 /root/vm-credentials
+sudo kvm-vm create vm.yaml --console-password-file /root/vm-credentials/vm.json
+sudo kvm-vm console vm
+```
+
+目的檔案必須尚不存在，並放在執行管理員擁有的私有目錄內；既有檔案與符號連結
+會被拒絕。JSON 包含 `vm`、`user` 與新的 24 字元密碼，權限為 0600。
+請透過已授權的管理連線在本機讀取。CLI 不輸出密碼，受管理的定義與 state
+不儲存密碼；cloud-init 的受限檔案僅包含加鹽雜湊。宿主機需要 OpenSSL。
+`validate` 與 `create --dry-run` 不產生密碼或憑證檔。
+
+Guest 起初保持帳號密碼鎖定；最後的佈建步驟關閉 SSH password 與
+keyboard-interactive 驗證、檢查 SSH 設定並啟動 serial getty，成功後才解鎖。
+SSH 公鑰登入保留。建立成功不代表佈建或 Console 登入成功，應檢查 cloud-init
+並實際登入；支援映像的驗收另行追蹤。不設定 root 密碼或自動登入：
+`disable_root` 控制 SSH 存取，本身不決定本機 root 帳號的密碼政策。
+
+本機密碼並非只限於 Serial console 使用。持有人可透過管理帳號既有的免密碼 sudo
+取得管理權限。預設不強制到期或首次登入更換。後續建立失敗時應保留憑證檔，
+因為殘留資源可能已使用該密碼；重試必須選用新目的檔案。
+刪除 VM 不會刪除此檔案，清理責任屬於管理員。在 Guest 內更換密碼後，初始檔案
+即失效；遺失憑證時需使用其他已授權存取方式或離線重設，沒有密碼取回命令。
+
+目前涉及啟用此功能的來源或目標之 clone，以及已啟用 VM 的 reinstall，
+會在修改 Guest 前拒絕；待各自的生命週期票完成後才支援。
+
+[English](README.md) | 繁體中文

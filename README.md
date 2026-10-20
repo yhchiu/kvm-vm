@@ -907,3 +907,43 @@ sudo KVM_VM_E2E_DISTROS=ubuntu26.04,debian13,rocky8,rocky9,rocky10,almalinux8,al
 
 See [the real-machine verification report](tests/REAL_MACHINE_RESULTS.md) for
 the tested images, boot fix, and hardware limitations of the verification host.
+
+## Optional console password login
+
+Set `cloud_init.console_password: true` to enable a random local password for
+the configured non-root management user. This is independent of bridge, NAT or
+Macvtap networking; the default remains locked. Keep SSH authorized keys configured.
+
+```bash
+sudo install -d -m 0700 /root/vm-credentials
+sudo kvm-vm create vm.yaml --console-password-file /root/vm-credentials/vm.json
+sudo kvm-vm console vm
+```
+
+The destination must be a new file inside a private directory owned by the
+invoking administrator. Symlinks and existing destinations are rejected.
+The JSON file contains `vm`, `user`, and a new 24-character password, with mode
+0600. Read it locally through an authorized administrative session. Passwords
+are never printed by the CLI or saved in managed definitions/state; only a
+salted hash enters restricted cloud-init artifacts. The host needs OpenSSL.
+`validate` and `create --dry-run` generate no password or credential file.
+
+The guest initially keeps the password locked. Final provisioning disables SSH
+password and keyboard-interactive authentication, checks SSH configuration and
+starts the serial getty before unlocking. SSH key login remains available.
+Creation success does not prove provisioning or console login succeeded; check
+cloud-init and test the login. Supported-image acceptance is tracked separately.
+No root password or autologin is enabled: `disable_root` controls SSH access and
+does not by itself establish the local root account's password policy.
+
+The password is not intrinsically limited to the serial device. Its holder gains
+administrator access through the management user's existing passwordless sudo.
+There is no forced expiration or first-login password change. Protect the file,
+and retain it after a later creation failure because surviving resources may use
+it. Retries require a new destination. Deleting a VM does not delete this file;
+the operator owns cleanup. Guest-side password changes make the initial file
+stale. Lost credentials require another authorized access path or an offline
+reset; there is no password retrieval command.
+
+Clone involving an opted-in source or target, and reinstall of an opted-in VM,
+currently refuse before guest mutation pending their dedicated lifecycle tickets.
