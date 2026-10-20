@@ -1,6 +1,8 @@
 # Snapshot simplification validation
 
-Status: implemented and validated on 2026-10-20 on two hosts; review gate pending.
+Status: implemented and validated on 2026-10-20 on two hosts; review gate closed.
+
+Implementation/review fixed point: `a736b62`.
 
 The operator chose to simplify the Snapshot lifecycle after a code review of
 the whole batch (`ec1845f...e3843df`). The decision is recorded in
@@ -59,4 +61,36 @@ committed code is in the review gate.
 
 ## Review gate
 
-Pending.
+Review of `e3843df...a736b62` against ADR 0003 and the review findings.
+
+- Standards: Conventional Commit with a detailed body and no co-author
+  trailer. The rollback wording follows the glossary. The shared helpers
+  replace the repeated topology and snapshot-list checks. Links, anchors and
+  `git diff --check` pass.
+- Spec (ADR 0003): no branch continues a stopped operation. Rollback accepts
+  only a ready Snapshot. A merge starts only from a verified overlay-on-base
+  state. A failed delete disables rollback. Only an empty Snapshot lets its
+  record go. The freeze section cannot be interrupted, and the record is
+  retired in one step.
+- Edge cases checked by reading the code:
+  - A Snapshot deleted or reverted with virsh: delete removes the record in
+    the first case and refuses in the second.
+  - An unreadable record: never merged.
+  - A failure while capturing files: the record is removed only after
+    checking that nothing changed.
+  - Every error path puts the signal handlers back.
+- No must-fix findings. Advisory: an interrupted rollback now needs the manual
+  steps in docs/snapshots.md, which is the accepted cost of ADR 0003.
+
+Confirmation with the committed code (`kvm-vm` SHA-256 `78f425b9…`, checked on
+each host):
+
+| | AlmaLinux 9.8 | Debian 13 |
+| --- | --- | --- |
+| Unit tests (three files, `-m "not e2e"`) | 282 passed | 282 passed |
+| `tests/test_snapshot_e2e.py` | 2 passed in 249 s; freeze 104 ms; rollback to SSH 20.7 s | 2 passed in 742 s; freeze 1031 ms; rollback to SSH 54.1 s; delete after restart refused online, then offline |
+| SIGINT during `snapshot-create-as` (9 delays, 0-100 ms) | All 9 completed with exit 0, record ready, guest thawed | not run |
+| Live delete with the commit out of space | Exit 1, record `deleting`, base changed, rollback refused; offline delete after growing the disk directory kept the data (checksum OK) | not run |
+
+Both hosts were left without test guests, loop filesystems or logs. This gate
+used one inline review pass instead of separate review agents.
