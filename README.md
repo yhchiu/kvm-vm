@@ -959,5 +959,17 @@ unchanged. Delivery failure leaves guest resources untouched; later failures
 retain target resources and delivered credentials. Actual rejection of old
 passwords remains part of real-image acceptance.
 
-Reinstall of an opted-in VM currently refuses before guest mutation pending its
-dedicated lifecycle ticket.
+Reinstall preserves the saved console policy and network configuration. An
+enabled VM requires a new destination and receives a new password:
+
+```bash
+sudo kvm-vm reinstall vm --yes --console-password-file /root/vm-credentials/vm-reinstalled.json
+```
+
+Credential validation and delivery finish before forced shutdown or disk
+replacement. Existing credential files are never overwritten or removed. A
+disabled or legacy VM remains password-locked and needs no destination.
+`--dry-run` generates no credential. After replacement, the previous password
+does not apply; verify guest provisioning and login with the newly delivered
+credential. Failures after replacement retain surviving resources and cannot
+promise restoration of the original disk.

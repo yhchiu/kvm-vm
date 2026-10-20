@@ -1577,8 +1577,6 @@ def cmd_reinstall(args: argparse.Namespace) -> int:
         raise KVMError(f"VM is running ({st}). Shut it down first, or use --force to destroy it before reinstall.")
 
     raw_cfg = yaml_load(def_path)
-    if raw_cfg.get("cloud_init", {}).get("console_password") or vars(args).get("console_password_file") is not None:
-        raise KVMError("Console password reinstall is not supported yet; no guest resources changed")
     apply_os_override(
         raw_cfg,
         os_arg=getattr(args, "os", None),
@@ -1617,6 +1615,8 @@ def cmd_reinstall(args: argparse.Namespace) -> int:
         if cand.exists():
             source_dir = cand
     resolve_ssh_keys(cfg["cloud_init"]["ssh_authorized_keys"], source_dir)
+    destination = vars(args).get("console_password_file")
+    deliver_console_credential(cfg, destination, preview=True)
 
     if args.dry_run:
         print("dry-run: all pre-flight checks passed")
@@ -1629,6 +1629,7 @@ def cmd_reinstall(args: argparse.Namespace) -> int:
     check_storage_dependents(name, current_disk, state)
     base, default_variant = acquire_base_image(cfg, args.refresh_image)
     disk = current_disk
+    password_hash = deliver_console_credential(cfg, destination, preview=False)
     # An exclusively created directory owns both conversion intermediates and
     # the prepared image; never remove a previous attempt's staging files.
     staging = Path(tempfile.mkdtemp(prefix=f".{name}-reinstall-", dir=disk.parent))
@@ -1647,7 +1648,8 @@ def cmd_reinstall(args: argparse.Namespace) -> int:
         replacement_started = True
         tmp_disk.replace(disk)
         restore_selinux([disk])
-        _, _, _, instance_id = make_cloud_files(cfg, source_dir)
+        cloud_options = {"password_hash": password_hash} if password_hash else {}
+        _, _, _, instance_id = make_cloud_files(cfg, source_dir, **cloud_options)
         seed = CLOUD_DIR / name / "seed.img"
         define_vm(cfg, disk, seed, default_variant, no_start=args.no_start)
         orig_def = Path(state["definition_source"]) if state and state.get("definition_source") else def_path
@@ -1893,7 +1895,7 @@ def build_parser() -> argparse.ArgumentParser:
     q.set_defaults(func=cmd_clone)
 
     q = sp.add_parser("reinstall", help="Reinstall an existing VM OS while keeping other configurations unchanged")
-    q.add_argument("--console-password-file", help="Console credential destination (not yet supported for reinstall)")
+    q.add_argument("--console-password-file", help="New credential file in a private administrator-owned directory")
     q.add_argument("name", help="VM domain name to reinstall")
     os_grp = q.add_mutually_exclusive_group()
     os_grp.add_argument("--os", help=f"New operating system distro ({', '.join(sorted(DISTROS))}) or cloud image URL/path")

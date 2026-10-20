@@ -191,18 +191,28 @@ def test_late_failure_preserves_delivered_credential(console_machine):
     assert console_machine["target_defined"]
 
 
-def test_reinstall_refuses_before_mutation(console_machine):
+@pytest.mark.skipif(os.name != "posix", reason="Requires POSIX delivery")
+def test_reinstall_preserves_policy_with_new_credential(console_machine, monkeypatch):
     source = kvm_vm.DEF_DIR / "test01.yaml"
     raw = kvm_vm.yaml_load(source)
     raw["cloud_init"]["console_password"] = True
     kvm_vm.yaml_dump(source, raw)
-    snapshots = {p: p.read_bytes() for p in console_machine["root"].rglob("*") if p.is_file()}
-    with pytest.raises(kvm_vm.KVMError, match="not supported yet"):
-        invoke("reinstall", "test01", "--yes")
+    old_credential = console_machine["credential"].with_name("old.json")
+    old_credential.write_text("old password must survive")
+    monkeypatch.setenv("KVM_VM_MACVTAP", "not-the-saved-parent")
+    monkeypatch.setenv("KVM_VM_NAME", "not-the-saved-name")
+    assert invoke("reinstall", "test01", "--yes", "--no-start",
+                  "--console-password-file", str(console_machine["credential"])) == 0
     assert console_machine["defined"]
-    assert not (kvm_vm.VM_DIR / "clone01.qcow2").exists()
-    for path, content in snapshots.items():
-        assert path.read_bytes() == content
+    delivered = json.loads(console_machine["credential"].read_text())
+    assert delivered["vm"] == "test01"
+    assert delivered["password"] != old_credential.read_text()
+    assert old_credential.read_text() == "old password must survive"
+    saved = kvm_vm.yaml_load(source)
+    assert saved["cloud_init"]["console_password"] is True
+    assert saved["network"] == raw["network"]
+    user = kvm_vm.yaml_load(kvm_vm.CLOUD_DIR / "test01" / "user-data")["users"][0]
+    assert user["hashed_passwd"].startswith("$6$")
 
 
 @pytest.mark.skipif(os.name != "posix", reason="Requires POSIX delivery")
@@ -394,3 +404,97 @@ def test_clone_locks_previous_management_account_when_user_changes(console_machi
     target_lock = next(i for i, cmd in enumerate(commands) if "usermod -L admin" in cmd[-1])
     install = next(i for i, cmd in enumerate(commands) if cmd[0] == "virt-install")
     assert previous_lock < install and target_lock < install
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Requires POSIX delivery")
+@pytest.mark.parametrize("case", ["preview", "missing", "existing", "symlink", "public", "write", "undefine", "late"])
+def test_reinstall_credential_failure_boundaries(console_machine, monkeypatch, case):
+    source = kvm_vm.DEF_DIR / "test01.yaml"
+    raw = kvm_vm.yaml_load(source)
+    raw["cloud_init"]["console_password"] = True
+    kvm_vm.yaml_dump(source, raw)
+    originals = {p: p.read_bytes() for p in console_machine["root"].rglob("*") if p.is_file()}
+    destination = console_machine["credential"]
+    args = ["reinstall", "test01", "--yes", "--force", "--no-start"]
+    if case != "missing":
+        args += ["--console-password-file", str(destination)]
+    if case == "existing":
+        destination.write_text("keep existing")
+    elif case == "symlink":
+        destination.symlink_to(destination.parent / "absent")
+    elif case == "public":
+        destination.parent.chmod(0o755)
+    elif case == "write":
+        def failed_write(*args):
+            raise OSError("synthetic write failure")
+        monkeypatch.setattr(kvm_vm.json, "dump", failed_write)
+    elif case == "undefine":
+        console_machine["failure"] = "synthetic undefine failure"
+    elif case == "late":
+        console_machine["install_succeeds"] = False
+    if case in ("preview", "missing", "existing", "symlink", "public", "write"):
+        console_machine["power"] = "running"
+    if case == "preview":
+        monkeypatch.setattr(kvm_vm.secrets, "choice", lambda *args: pytest.fail("Preview generated a secret"))
+        assert invoke(*args, "--dry-run") == 0
+        assert not destination.exists()
+    else:
+        with pytest.raises((kvm_vm.KVMError, subprocess.CalledProcessError)):
+            invoke(*args)
+    if case != "late":
+        for path, content in originals.items():
+            assert path.read_bytes() == content
+    if case in ("preview", "missing", "existing", "symlink", "public", "write"):
+        assert not any(cmd[0] == "virsh" and cmd[3] in ("destroy", "undefine")
+                       for cmd in console_machine["commands"])
+    if case in ("undefine", "late"):
+        password = json.loads(destination.read_text())["password"]
+        assert all(password not in " ".join(cmd) for cmd in console_machine["commands"])
+        for root in (kvm_vm.STATE_DIR, kvm_vm.DEF_DIR, kvm_vm.CLOUD_DIR):
+            for path in root.rglob("*"):
+                if path.is_file():
+                    assert password.encode() not in path.read_bytes()
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_reinstall_disabled_policy_keeps_password_locked(console_machine, legacy):
+    source = kvm_vm.DEF_DIR / "test01.yaml"
+    raw = kvm_vm.yaml_load(source)
+    if legacy:
+        raw["cloud_init"].pop("console_password", None)
+    else:
+        raw["cloud_init"]["console_password"] = False
+    kvm_vm.yaml_dump(source, raw)
+    assert invoke("reinstall", "test01", "--yes", "--no-start") == 0
+    account = kvm_vm.yaml_load(kvm_vm.CLOUD_DIR / "test01" / "user-data")["users"][0]
+    assert account["lock_passwd"] is True
+    assert "hashed_passwd" not in account
+    assert not console_machine["credential"].exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Requires POSIX delivery")
+def test_forced_reinstall_delivers_before_shutdown_with_changed_image(console_machine, monkeypatch):
+    source = kvm_vm.DEF_DIR / "test01.yaml"
+    raw = kvm_vm.yaml_load(source)
+    raw["cloud_init"]["console_password"] = True
+    kvm_vm.yaml_dump(source, raw)
+    replacement = kvm_vm.BASE_DIR / "different.qcow2"
+    replacement.write_bytes(b"different base")
+    console_machine["power"] = "running"
+    external = kvm_vm.subprocess.run
+    shutdown = []
+
+    def host(cmd, **kwargs):
+        if cmd[0] == "virsh" and cmd[3] == "destroy":
+            assert len(json.loads(console_machine["credential"].read_text())["password"]) == 24
+            shutdown.append(cmd)
+            console_machine["power"] = "shut off"
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        return external(cmd, **kwargs)
+
+    monkeypatch.setattr(kvm_vm.subprocess, "run", host)
+    assert invoke("reinstall", "test01", "--force", "--yes", "--no-start",
+                  "--image-path", str(replacement),
+                  "--console-password-file", str(console_machine["credential"])) == 0
+    assert len(shutdown) == 1
+    assert kvm_vm.yaml_load(source)["storage"]["image"]["path"] == str(replacement)

@@ -880,7 +880,16 @@ sudo kvm-vm clone source target.yaml --console-password-file /root/vm-credential
 套用新憑證並解鎖。未啟用的目標保持鎖定，來源 VM 不變。交付失敗不修改 Guest
 資源；較晚的失敗保留目標資源與已交付憑證。舊密碼實際被拒絕仍需實機映像驗收。
 
-目前已啟用此功能之 VM 的 reinstall 會在修改 Guest 前拒絕，待專屬生命週期票
-完成後才支援。
+Reinstall 保留已儲存的 Console 政策與網路設定。啟用密碼的 VM 必須指定新的
+目的檔案，並取得新密碼：
+
+```bash
+sudo kvm-vm reinstall vm --yes --console-password-file /root/vm-credentials/vm-reinstalled.json
+```
+
+憑證檢查與交付會在強制關機或替換磁碟前完成。既有憑證檔不會被覆寫或刪除。
+未啟用此功能或舊版定義的 VM 保持密碼鎖定，不需指定目的檔案。
+`--dry-run` 不產生憑證。替換後舊密碼不再適用，應使用新交付的憑證驗證 Guest
+佈建與登入。替換後失敗會保留殘存資源，但不保證能還原原始磁碟。
 
 [English](README.md) | 繁體中文
