@@ -37,6 +37,8 @@ def isolated_state_directory(tmp_path, monkeypatch):
 def lifecycle_probe(cmd, disk, **kwargs):
     """Read-only host responses for older orchestration tests."""
     stdout = ""
+    if cmd[0] == "virt-customize":
+        return subprocess.CompletedProcess(cmd, 0, "", "")
     if cmd[0] == "qemu-img":
         stdout = json.dumps({"format": "qcow2", "virtual-size": 20 * 1024**3})
     elif cmd[3] == "dumpxml":

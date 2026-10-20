@@ -18,6 +18,7 @@ import os
 import random
 import re
 import secrets
+import shlex
 import shutil
 import stat
 import subprocess
@@ -1329,10 +1330,8 @@ def cmd_clone(args: argparse.Namespace) -> int:
     cfg = normalize_definition(yaml_load(p), for_clone=True)
     source_definition = Path(source_state.get("definition") or DEF_DIR / f"{source_name}.yaml") if source_state else DEF_DIR / f"{source_name}.yaml"
     source_config = yaml_load(source_definition) if source_definition.exists() else {}
-    if (cfg["cloud_init"].get("console_password")
-            or source_config.get("cloud_init", {}).get("console_password")
-            or vars(args).get("console_password_file") is not None):
-        raise KVMError("Console password cloning is not supported yet; no guest resources changed")
+    destination = vars(args).get("console_password_file")
+    deliver_console_credential(cfg, destination, preview=True)
     name = cfg["vm"]["name"]
     if name == source_name:
         raise KVMError("Clone target name must differ from source")
@@ -1355,11 +1354,20 @@ def cmd_clone(args: argparse.Namespace) -> int:
 
     disk = VM_DIR / f"{name}.qcow2"
     check_new_artifacts(name, disk)
+    password_hash = deliver_console_credential(cfg, destination, preview=False)
     try:
         make_disk_from_clone(src_disk, disk, cfg["storage"].get("disk_gib"))
         restore_selinux([disk])
         sysprep_clone_disk(disk)
-        _, _, _, instance_id = make_cloud_files(cfg, p.parent, reset_ssh_port=True)
+        users_to_lock = {cfg["cloud_init"]["user"]}
+        if source_config.get("cloud_init", {}).get("console_password"):
+            users_to_lock.add(source_config["cloud_init"].get("user", "admin"))
+        for user in sorted(users_to_lock):
+            quoted = shlex.quote(user)
+            run(["virt-customize", "-a", str(disk), "--run-command",
+                 f"if id -u {quoted} >/dev/null 2>&1; then usermod -L {quoted}; fi"])
+        cloud_options = {"password_hash": password_hash} if password_hash else {}
+        _, _, _, instance_id = make_cloud_files(cfg, p.parent, reset_ssh_port=True, **cloud_options)
         seed = CLOUD_DIR / name / "seed.img"
         define_vm(cfg, disk, seed, None, no_start=args.no_start)
         save_state(cfg, disk, {"type": "clone", "source_vm": source_name, "source_disk": str(src_disk)}, instance_id, p)
@@ -1877,7 +1885,7 @@ def build_parser() -> argparse.ArgumentParser:
     q.set_defaults(func=cmd_create)
 
     q = sp.add_parser("clone", help="Offline full clone of a VM, then sysprep and apply target YAML")
-    q.add_argument("--console-password-file", help="Console credential destination (not yet supported for clone)")
+    q.add_argument("--console-password-file", help="New credential file in a private administrator-owned directory")
     q.add_argument("source", help="Source libvirt domain name; must be shut off")
     q.add_argument("definition", help="Target VM YAML definition")
     q.add_argument("--no-start", action="store_true", help="Define the clone but do not boot it")

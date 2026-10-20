@@ -869,7 +869,18 @@ SSH 公鑰登入保留。建立成功不代表佈建或 Console 登入成功，�
 刪除 VM 不會刪除此檔案，清理責任屬於管理員。在 Guest 內更換密碼後，初始檔案
 即失效；遺失憑證時需使用其他已授權存取方式或離線重設，沒有密碼取回命令。
 
-目前涉及啟用此功能的來源或目標之 clone，以及已啟用 VM 的 reinstall，
-會在修改 Guest 前拒絕；待各自的生命週期票完成後才支援。
+Clone 使用目標定義的政策。啟用密碼的目標必須指定新的憑證檔：
+
+```bash
+sudo kvm-vm clone source target.yaml --console-password-file /root/vm-credentials/target.json
+```
+
+每個啟用密碼的 clone 都會取得獨立憑證。開機前會離線鎖定複製磁碟內的目標管理
+帳號，以及已知啟用 Console 密碼的來源管理帳號；之後僅為啟用功能的目標帳號
+套用新憑證並解鎖。未啟用的目標保持鎖定，來源 VM 不變。交付失敗不修改 Guest
+資源；較晚的失敗保留目標資源與已交付憑證。舊密碼實際被拒絕仍需實機映像驗收。
+
+目前已啟用此功能之 VM 的 reinstall 會在修改 Guest 前拒絕，待專屬生命週期票
+完成後才支援。
 
 [English](README.md) | 繁體中文

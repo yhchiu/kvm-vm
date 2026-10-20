@@ -26,6 +26,7 @@ def console_machine(reinstall_machine, monkeypatch):
     real_process = subprocess.Popen
 
     def host(cmd, **kwargs):
+        machine.setdefault("commands", []).append(list(cmd))
         if cmd[0] == "openssl":
             with real_process(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                               stderr=subprocess.PIPE, text=True) as proc:
@@ -190,7 +191,7 @@ def test_late_failure_preserves_delivered_credential(console_machine):
     assert console_machine["target_defined"]
 
 
-@pytest.mark.parametrize("operation", ["clone_target", "clone_source", "reinstall"])
+@pytest.mark.parametrize("operation", ["reinstall"])
 def test_unsupported_lifecycle_refuses_before_mutation(console_machine, operation):
     if operation != "clone_target":
         source = kvm_vm.DEF_DIR / "test01.yaml"
@@ -290,6 +291,44 @@ def test_delete_keeps_operator_credential(console_machine):
     assert destination.read_text() == "operator-owned credential"
 
 
+@pytest.mark.skipif(os.name != "posix", reason="Requires POSIX delivery")
+@pytest.mark.parametrize("source_enabled,target_enabled", [(True, True), (True, False), (False, True), (False, False)])
+def test_clone_uses_independent_target_policy(console_machine, source_enabled, target_enabled):
+    source = kvm_vm.DEF_DIR / "test01.yaml"
+    raw = kvm_vm.yaml_load(source)
+    raw["cloud_init"]["console_password"] = source_enabled
+    kvm_vm.yaml_dump(source, raw)
+    target = kvm_vm.Path(console_machine["args"].definition)
+    raw = kvm_vm.yaml_load(target)
+    raw["cloud_init"]["console_password"] = target_enabled
+    kvm_vm.yaml_dump(target, raw)
+    source_cloud = kvm_vm.CLOUD_DIR / "test01" / "user-data"
+    source_cloud.write_text("#cloud-config\nusers:\n- name: admin\n  lock_passwd: false\n  hashed_passwd: source-hash\n")
+    preserved = {path: path.read_bytes() for path in
+                 (source, source_cloud, console_machine["disk"], kvm_vm.STATE_DIR / "test01.json")}
+    args = ["clone", "test01", str(target), "--no-start"]
+    if target_enabled:
+        args += ["--console-password-file", str(console_machine["credential"])]
+    assert invoke(*args) == 0
+    user_data = kvm_vm.yaml_load(kvm_vm.CLOUD_DIR / "clone01" / "user-data")
+    account = user_data["users"][0]
+    assert account["lock_passwd"] is True
+    locking = [cmd for cmd in console_machine["commands"]
+               if cmd[0] == "virt-customize" and "--run-command" in cmd and "usermod -L" in cmd[-1]]
+    assert locking, "Inherited password must be locked offline before the clone can boot"
+    assert all(str(console_machine["disk"]) not in cmd for cmd in locking)
+    if target_enabled:
+        assert account["hashed_passwd"].startswith("$6$")
+        assert account["hashed_passwd"] != "source-hash"
+        assert len(json.loads(console_machine["credential"].read_text())["password"]) == 24
+        assert user_data["runcmd"][-1][-1] == "admin"
+    else:
+        assert "hashed_passwd" not in account
+        assert not console_machine["credential"].exists()
+    for path, original in preserved.items():
+        assert path.read_bytes() == original
+
+
 @pytest.mark.skipif(os.name != "posix", reason="Requires POSIX ownership")
 def test_foreign_private_directory_is_rejected(console_machine):
     if os.geteuid() != 0:
@@ -303,3 +342,50 @@ def test_foreign_private_directory_is_rejected(console_machine):
         assert not (kvm_vm.VM_DIR / "clone01.qcow2").exists()
     finally:
         os.chown(directory, os.geteuid(), -1)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Requires POSIX delivery")
+@pytest.mark.parametrize("case", ["preview", "delivery", "late_failure"])
+def test_clone_failure_and_preview_preserve_source(console_machine, monkeypatch, case):
+    originals = {p: p.read_bytes() for p in console_machine["root"].rglob("*") if p.is_file()}
+    destination = console_machine["credential"]
+    args = ["clone", "test01", console_machine["args"].definition,
+            "--console-password-file", str(destination)]
+    if case == "preview":
+        monkeypatch.setattr(kvm_vm.secrets, "choice", lambda *args: pytest.fail("Preview generated a secret"))
+        assert invoke(*args, "--dry-run") == 0
+        assert not destination.exists()
+    elif case == "delivery":
+        destination.write_text("existing credential")
+        with pytest.raises(kvm_vm.KVMError, match="already exists"):
+            invoke(*args)
+        assert destination.read_text() == "existing credential"
+    else:
+        console_machine["install_succeeds"] = False
+        with pytest.raises(subprocess.CalledProcessError):
+            invoke(*args)
+        password = json.loads(destination.read_text())["password"]
+        assert all(password not in " ".join(cmd) for cmd in console_machine["commands"])
+        for root in (kvm_vm.STATE_DIR, kvm_vm.DEF_DIR, kvm_vm.CLOUD_DIR):
+            for path in root.rglob("*"):
+                if path.is_file():
+                    assert password.encode() not in path.read_bytes()
+    for path, content in originals.items():
+        assert path.read_bytes() == content
+    if case != "late_failure":
+        assert not (kvm_vm.VM_DIR / "clone01.qcow2").exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Requires POSIX delivery")
+def test_clone_locks_previous_management_account_when_user_changes(console_machine):
+    source = kvm_vm.DEF_DIR / "test01.yaml"
+    raw = kvm_vm.yaml_load(source)
+    raw["cloud_init"].update(user="previous", console_password=True)
+    kvm_vm.yaml_dump(source, raw)
+    invoke("clone", "test01", console_machine["args"].definition, "--no-start",
+           "--console-password-file", str(console_machine["credential"]))
+    commands = console_machine["commands"]
+    previous_lock = next(i for i, cmd in enumerate(commands) if "usermod -L previous" in cmd[-1])
+    target_lock = next(i for i, cmd in enumerate(commands) if "usermod -L admin" in cmd[-1])
+    install = next(i for i, cmd in enumerate(commands) if cmd[0] == "virt-install")
+    assert previous_lock < install and target_lock < install

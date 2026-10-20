@@ -945,5 +945,19 @@ the operator owns cleanup. Guest-side password changes make the initial file
 stale. Lost credentials require another authorized access path or an offline
 reset; there is no password retrieval command.
 
-Clone involving an opted-in source or target, and reinstall of an opted-in VM,
-currently refuse before guest mutation pending their dedicated lifecycle tickets.
+Clones use the target definition's policy. An enabled target requires a new file:
+
+```bash
+sudo kvm-vm clone source target.yaml --console-password-file /root/vm-credentials/target.json
+```
+
+Each enabled clone receives an independent credential. Before boot, the cloned
+disk's target management password and any known opted-in source management
+password are locked offline; only the enabled target is subsequently unlocked
+with its new credential. A disabled target remains locked. The source VM is
+unchanged. Delivery failure leaves guest resources untouched; later failures
+retain target resources and delivered credentials. Actual rejection of old
+passwords remains part of real-image acceptance.
+
+Reinstall of an opted-in VM currently refuses before guest mutation pending its
+dedicated lifecycle ticket.
