@@ -17,6 +17,14 @@ import xml.etree.ElementTree as ET
 import yaml
 
 
+def acceptance_status(checks):
+    if "failed" in checks.values():
+        return "failed"
+    if "pending" in checks.values() or False in checks.values():
+        return "partial"
+    return "pass"
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("host", "key", "parent", "address", "peer-address", "gateway", "remote-cli", "report"):
@@ -210,7 +218,7 @@ def main():
             cli("delete", name, "--force", "--yes")
             assert host("virsh", "dominfo", name, check=False).returncode != 0
         report["checks"]["delete"] = "pass"
-        report["status"] = "pass"
+        report["status"] = acceptance_status(report["checks"])
     except Exception as exc:
         report["status"] = "failed"
         report["error"] = str(exc)
@@ -224,7 +232,7 @@ def main():
         report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
         print("Acceptance status: " + report["status"] + "; report: " + str(report_path))
     if report["status"] != "pass":
-        raise RuntimeError("Acceptance checks failed")
+        raise RuntimeError("Acceptance did not fully pass; inspect failed or pending checks")
 
 
 if __name__ == "__main__":
