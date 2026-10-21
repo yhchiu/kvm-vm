@@ -1,0 +1,22 @@
+{
+  "mode": "macvtap",
+  "credential_directory": "/root/e2e-console-56273a17",
+  "cases": [
+    {
+      "distro": "debian13",
+      "name": "e2e-console-56273a17-0",
+      "user": "admin",
+      "status": "failed",
+      "console_enabled": false,
+      "console_policy": "omitted (default)",
+      "cached_image_sha256": "07f9fe05fe7cb1702047034830150baddd66c8be06e233bb226c84aa8a275263"
+    }
+  ],
+  "status": "failed",
+  "runtime_sha256": "04ae400714dfd8727f6cd7d15b14a6918be6b97bd6a04cef6a84c06e87d10cd9",
+  "retained_guests": [
+    "e2e-console-56273a17-0"
+  ],
+  "failure_type": "TimeoutError",
+  "failure_phase": "SSH readiness and cloud-init"
+}

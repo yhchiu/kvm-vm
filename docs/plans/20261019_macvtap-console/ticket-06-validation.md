@@ -1,9 +1,9 @@
 # Ticket 06 validation
 
-Fixed review point: `49e88c5`. CPU-compatible runs completed October 21-22,
-2026, but review identified insufficient SSH rejection evidence. The historical
-pass rows below are provisional for that check until the corrected rerun
-completes. This ticket also remains open for four hardware-limited images.
+Fixed review point: `49e88c5`. CPU-compatible acceptance was refreshed on
+October 22, 2026 after review identified insufficient SSH rejection evidence.
+The matrices below now link to runs using explicit server method-list rejection.
+This ticket remains open for four hardware-limited images.
 Product compatibility fix: `342ec7e`; authentication probe fix: `4610bc8`.
 The operator confirmed that no newer KVM host is available. Rocky Linux 9/10
 and AlmaLinux 9/10 remain pending compatible hardware, as documented in
@@ -61,22 +61,22 @@ runs on Linux. The workflow and prerequisites are documented in
 
 ## Image and password-stack matrix
 
-Historical passing rows include real serial login and sudo, reachable key SSH,
-account/expiry/getty/root checks,
+Refreshed passing rows include real serial login and sudo, reachable key SSH,
+explicit password and keyboard-interactive rejection, account/expiry/getty/root checks,
 private credential permissions, plaintext scans, and a changed-boot-ID reboot
 with repeated current-credential and SSH-policy checks. Exact distro package
 versions are in each JSON report; the table abbreviates PAM/shadow to upstream
-versions. All passwords use SHA-512 crypt. Their SSH negative checks need the
-explicit method-list evidence described under Review gate.
+versions. All passwords use SHA-512 crypt. Each SSH negative check records the
+server's allowed methods in `ssh_rejection_evidence`.
 
 | Image | cloud-init | Python | PAM / shadow | Result and evidence |
 | --- | --- | --- | --- | --- |
-| Debian 12 | 22.4.2 | 3.11.2 | 1.5.2 / 4.13 | [Pass, NAT](console-results/console-debian12-final.json) |
-| Debian 13 | 25.1.4 | 3.13.5 | 1.7.0 / 4.17.4 | [Pass, NAT lifecycle](console-results/console-lifecycle-02.json) |
-| Ubuntu 24.04 | 26.1-0ubuntu1~24.04.1 | 3.12.3 | 1.5.3 / 4.13 | [Pass, bridge and existing user](console-results/console-bridge-preexisting.json) |
-| Ubuntu 26.04 | 26.1-0ubuntu3~26.04.1 | 3.14.4 | 1.7.0 / 4.17.4 | [Pass, Macvtap](console-results/console-macvtap-ubuntu26.json) |
-| Rocky Linux 8 | 23.4-7.el8_10.0.1 | 3.6.8 | 1.3.1 / 4.6 | [Pass, NAT](console-results/console-rhel8-completed.json) |
-| AlmaLinux 8 | 23.4-7.el8_10.11.alma.2 | 3.6.8 | 1.3.1 / 4.6 | [Pass, NAT](console-results/console-rhel8-completed.json) |
+| Debian 12 | 22.4.2 | 3.11.2 | 1.5.2 / 4.13 | [Pass, NAT](console-results/console-refresh-debian12.json) |
+| Debian 13 | 25.1.4 | 3.13.5 | 1.7.0 / 4.17.4 | [Pass, NAT lifecycle](console-results/console-refresh-lifecycle.json) |
+| Ubuntu 24.04 | 26.1-0ubuntu1~24.04.1 | 3.12.3 | 1.5.3 / 4.13 | [Pass, bridge and existing user](console-results/console-refresh-bridge-preexisting.json) |
+| Ubuntu 26.04 | 26.1-0ubuntu3~26.04.1 | 3.14.4 | 1.7.0 / 4.17.4 | [Pass, Macvtap](console-results/console-refresh-macvtap-ubuntu26.json) |
+| Rocky Linux 8 | 23.4-7.el8_10.0.1 | 3.6.8 | 1.3.1 / 4.6 | [Pass, NAT](console-results/console-refresh-rhel8.json) |
+| AlmaLinux 8 | 23.4-7.el8_10.11.alma.2 | 3.6.8 | 1.3.1 / 4.6 | [Pass, NAT](console-results/console-refresh-rhel8.json) |
 | Rocky Linux 9 | Not exercised | Not exercised | Not exercised | Pending x86-64-v2 hardware |
 | Rocky Linux 10 | Not exercised | Not exercised | Not exercised | Pending x86-64-v3 hardware |
 | AlmaLinux 9 | Not exercised | Not exercised | Not exercised | Pending x86-64-v2 hardware |
@@ -92,9 +92,9 @@ not modified. Existing `admin` accounts were also exercised by the clone cases.
 
 | Mode | Explicit console opt-in | Policy omitted: locked default |
 | --- | --- | --- |
-| NAT | Debian, Ubuntu and RHEL-family cases above | [Pass](console-results/console-nat-locked.json) |
-| Bridge | Ubuntu 24.04 existing-user case above | [Pass](console-results/console-bridge-locked.json) |
-| Macvtap | Ubuntu 26.04 case above | [Pass](console-results/console-macvtap-locked.json) |
+| NAT | Debian, Ubuntu and RHEL-family cases above | [Pass](console-results/console-refresh-nat-locked.json) |
+| Bridge | Ubuntu 24.04 existing-user case above | [Pass after test-IP neighbor refresh](console-results/console-refresh-bridge-locked.json) |
+| Macvtap | Ubuntu 26.04 case above | [Pass on retained-VM continuation](console-results/console-refresh-macvtap-locked-resumed.json) |
 
 Both policies were checked again after reboot. Disabled cases reached a real
 login prompt and explicitly rejected the test password while key SSH succeeded.
@@ -103,7 +103,7 @@ reserved `.246`; bridge gateway was `.242`, Macvtap gateway `.241`. NAT used the
 host forwarding channel. Network failures during boot were readiness retries,
 never successful negative-authentication evidence.
 
-The [completed lifecycle report](console-results/console-lifecycle-02.json)
+The [refreshed lifecycle report](console-results/console-refresh-lifecycle.json)
 records these passing cases:
 
 - Enabled source to enabled clone: distinct target credential accepted, source
@@ -121,15 +121,33 @@ records these passing cases:
 - All owned lifecycle guests deleted; all delivered files, including rotated
   credentials, remained available afterward.
 
-The lifecycle run continued from its retained, verified checkpoint; it was not
+The original lifecycle run continued from its retained, verified checkpoint; it was not
 silently relabeled as an uninterrupted pass. Its
 [first partial report](console-results/console-lifecycle-01.json), the
 [initial image run](console-results/console-matrix-02.json), the
 [Rocky compatibility failure](console-results/console-rhel8-01.json), and the
 [Alma cleanup retry precursor](console-results/console-rhel8-02.json) remain
-available alongside the completed evidence.
+available alongside the completed evidence. The refreshed lifecycle run passed
+uninterrupted with the corrected SSH probe.
 
-Final Linux `bash tests/smoke.sh`: **295 passed**, smoke OK. This includes the
+The refreshed Macvtap default-lock run stopped on an SSH readiness timeout;
+its [failed report](console-results/console-refresh-macvtap-locked.json) is
+preserved. Inspection later found direct key SSH, networking, cloud-init and
+the locked account healthy. The retained VM passed all checks and reboot in a
+separate continuation report. The initial timeout's cause was not established.
+
+When the same reserved `.246` moved back to routed bridge, Windows SSH timed
+out while host-forwarded SSH worked. Packet headers on `enp4s0` showed return
+traffic still addressed to the deleted Macvtap MAC `52:54:00:6b:e7:59`, rather
+than host MAC `00:30:48:d5:41:72`. Three unsolicited ARP replies for that test
+IP restored direct SSH and allowed cloud-init to complete. The bridge default
+case then passed, including reboot. This was an operator test-environment
+repair, not product behavior: no host IP, route, bridge or firewall settings
+changed. Diagnostic packages `tcpdump` and `iputils-arping` were installed.
+The standard arping command refused the nonlocal source IP, so a one-off raw
+Ethernet helper sent the replies without assigning the guest IP to the host.
+
+Final Linux `bash tests/smoke.sh`: **307 passed**, smoke OK. This includes the
 real POSIX delivery/ownership, existing/symlink destination, partial provisioning,
 retry, and credential/VM preservation tests from tickets 02-04. The standalone
 acceptance helpers compile. Tests do not claim rollback after destructive disk
@@ -145,10 +163,10 @@ its credential was retained. `vh-mon` was gracefully stopped to reserve `.246`
 and capacity for network-mode tests, then restored after the address was released.
 Its disk and definition were preserved.
 
-The [final cleanup audit](console-results/cleanup.json) shows no owned domains,
+The [refreshed cleanup audit](console-results/console-refresh-cleanup.json) shows no owned domains,
 managed artifacts, fixture disks, or lifecycle lock. Original `vh-control`,
 `vh-processing`, `vh-pb`, and `vh-mon` are running; `acsvm-vm-910001` remains shut
-off. Seventeen credential/reference files remain root-owned mode 0600 under
+off. Twenty-nine credential/reference files remain root-owned mode 0600 under
 root-owned mode-0700 private directories. No password or hash is published.
 
 ## Review gate
@@ -157,10 +175,12 @@ Initial Standards review found no blocking issues. Spec review found that the
 SSH negative-authentication probe accepted generic Paramiko authentication
 exceptions, including timeout and connection loss. Historical reports above
 therefore do not establish explicit SSH method rejection; their console and
-other independent checks remain recorded. Fresh SSH evidence is pending.
+other independent checks remain recorded. The refreshed matrix supersedes
+their SSH evidence with 23 recorded check pairs (46 explicit method rejections).
 
 The corrected probe accepts only a server method-list rejection that excludes
 the attempted method and records that list in each result. Regression tests
 cover both methods with explicit rejection, successful authentication, timeout,
-connection loss, generic failure, and a still-advertised method. Hardware-limited
-acceptance remains explicitly incomplete; ticket 06 is not closed.
+connection loss, generic failure, and a still-advertised method. Focused review
+of the fix and refreshed evidence is pending. Hardware-limited acceptance
+remains explicitly incomplete; ticket 06 is not closed.
