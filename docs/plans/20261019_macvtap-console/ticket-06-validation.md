@@ -181,6 +181,18 @@ their SSH evidence with 23 recorded check pairs (46 explicit method rejections).
 The corrected probe accepts only a server method-list rejection that excludes
 the attempted method and records that list in each result. Regression tests
 cover both methods with explicit rejection, successful authentication, timeout,
-connection loss, generic failure, and a still-advertised method. Focused review
-of the fix and refreshed evidence is pending. Hardware-limited acceptance
-remains explicitly incomplete; ticket 06 is not closed.
+connection loss, generic failure, and a still-advertised method.
+
+Focused follow-up reviewed committed changes `a6d2555...bdc6893`:
+
+- Standards: passed; no new hard violations or actionable smell advisories.
+  Conventional Commit formatting and detailed English bodies comply with the
+  repository instructions.
+- Spec: passed; the original P1 is resolved. The 46 explicit rejections replace
+  ambiguous historical evidence, and failure/continuation boundaries remain
+  honest. No new must-fix findings within the focused scope.
+
+Reviewers inspected verification and real-host evidence rather than rerunning
+the host tests independently. The code-review gate has no unresolved blocking
+finding. Hardware-limited acceptance remains explicitly incomplete; ticket 06
+is not closed.

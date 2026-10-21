@@ -10,7 +10,7 @@ network timeout as an authentication rejection or console success as LAN proof.
 03: Isolate console credentials when cloning VMs;
 04: Preserve console policy and rotate credentials on reinstall.
 
-**Status:** implemented; SSH evidence refreshed; focused review pending;
+**Status:** implemented; SSH evidence refreshed; focused review passed;
 full acceptance pending compatible hardware
 
 The operator confirmed no newer KVM host is available. Retain Rocky Linux 9/10
