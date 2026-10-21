@@ -51,6 +51,20 @@ def test_create_macvtap_persists_direct_attachment(network_machine):
     assert data["users"][0]["lock_passwd"] is True
 
 
+@pytest.mark.parametrize("operation", ["create", "clone"])
+def test_guest_agent_channel_is_explicit_for_generic_variant(network_machine, operation):
+    definition = kvm_vm.Path(network_machine["args"].definition)
+    raw = kvm_vm.yaml_load(definition)
+    raw["vm"]["os_variant"] = "generic"
+    raw["cloud_init"]["qemu_guest_agent"] = True
+    kvm_vm.yaml_dump(definition, raw)
+    args = [operation] + (["test01"] if operation == "clone" else [])
+    assert invoke(*args, str(definition), "--no-start") == 0
+    install = next(cmd for cmd in network_machine["commands"] if cmd[0] == "virt-install")
+    assert "--channel" in install
+    assert install[install.index("--channel") + 1] == "unix,target.type=virtio,target.name=org.qemu.guest_agent.0"
+
+
 @pytest.mark.parametrize("original", ["bridge", "nat", "macvtap"])
 def test_validate_macvtap_override(network_machine, monkeypatch, capsys, original):
     definition = kvm_vm.Path(network_machine["args"].definition)

@@ -1142,6 +1142,8 @@ def define_vm(cfg: Dict[str, Any], disk: Path, seed: Path, default_variant: Opti
         "--console", "pty,target.type=serial",
         "--noautoconsole",
     ]
+    if cfg["cloud_init"].get("qemu_guest_agent"):
+        cmd += ["--channel", "unix,target.type=virtio,target.name=org.qemu.guest_agent.0"]
     if no_start or not vm["start"]:
         cmd.append("--noreboot")
     run(cmd)
