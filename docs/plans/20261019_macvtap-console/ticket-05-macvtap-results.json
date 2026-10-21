@@ -1,0 +1,86 @@
+{
+  "run": "e2e-macvtap-15d6def2",
+  "host": "root@216.244.76.242",
+  "parent": "enp4s0",
+  "distro": "debian13",
+  "addressing": "static",
+  "checks": {
+    "e2e-macvtap-15d6def2-src_agent_channel": true,
+    "create_external_key_login": "pass",
+    "e2e-macvtap-15d6def2-peer_agent_channel": true,
+    "clone_override_and_peer_connectivity": "pass",
+    "host_parent_isolation": "pass",
+    "agent_address_discovery": "pass",
+    "reinstall_saved_network_and_restart": "pass",
+    "controlled_dhcp_external_login_and_lease": "pass",
+    "delete": "pass",
+    "parent_unchanged": "pass"
+  },
+  "guests": [
+    "e2e-macvtap-15d6def2-src",
+    "e2e-macvtap-15d6def2-peer"
+  ],
+  "status": "pass",
+  "parent_before": {
+    "ifname": "enp4s0",
+    "flags": [
+      "BROADCAST",
+      "MULTICAST",
+      "UP",
+      "LOWER_UP"
+    ],
+    "mtu": 1500,
+    "master": null,
+    "address": "00:30:48:d5:41:72",
+    "operstate": "UP",
+    "addr_info": [
+      {
+        "family": "inet",
+        "local": "216.244.76.242",
+        "prefixlen": 29,
+        "broadcast": "216.244.76.247",
+        "scope": "global",
+        "label": "enp4s0"
+      },
+      {
+        "family": "inet6",
+        "local": "fe80::230:48ff:fed5:4172",
+        "prefixlen": 64,
+        "scope": "link",
+        "protocol": "kernel_ll"
+      }
+    ]
+  },
+  "host_versions": "Compiled against library: libvirt 11.3.0\nUsing library: libvirt 11.3.0\nUsing API: QEMU 11.3.0\nRunning hypervisor: QEMU 10.0.13\n\n",
+  "dhcp_topology": "Peer Macvtap guest serves only the source MAC and reserved address; provider DHCP remains unconfirmed",
+  "parent_after": {
+    "ifname": "enp4s0",
+    "flags": [
+      "BROADCAST",
+      "MULTICAST",
+      "UP",
+      "LOWER_UP"
+    ],
+    "mtu": 1500,
+    "master": null,
+    "address": "00:30:48:d5:41:72",
+    "operstate": "UP",
+    "addr_info": [
+      {
+        "family": "inet",
+        "local": "216.244.76.242",
+        "prefixlen": 29,
+        "broadcast": "216.244.76.247",
+        "scope": "global",
+        "label": "enp4s0"
+      },
+      {
+        "family": "inet6",
+        "local": "fe80::230:48ff:fed5:4172",
+        "prefixlen": 64,
+        "scope": "link",
+        "protocol": "kernel_ll"
+      }
+    ]
+  }
+}

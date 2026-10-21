@@ -2,6 +2,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 python3 -m py_compile "$ROOT/kvm-vm"
+python3 -m py_compile "$ROOT/tests/macvtap_acceptance.py"
 "$ROOT/kvm-vm" --help >/dev/null
 "$ROOT/kvm-vm" reinstall --help >/dev/null
 "$ROOT/kvm-vm" --version
