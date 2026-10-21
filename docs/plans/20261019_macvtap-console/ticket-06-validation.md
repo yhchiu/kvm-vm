@@ -1,8 +1,10 @@
 # Ticket 06 validation
 
-Fixed review point: `49e88c5`. CPU-compatible acceptance is complete; this ticket
-remains open for the four hardware-limited images. Runs completed October 21-22,
-2026. Product compatibility fix: `342ec7e`.
+Fixed review point: `49e88c5`. CPU-compatible runs completed October 21-22,
+2026, but review identified insufficient SSH rejection evidence. The historical
+pass rows below are provisional for that check until the corrected rerun
+completes. This ticket also remains open for four hardware-limited images.
+Product compatibility fix: `342ec7e`; authentication probe fix: `4610bc8`.
 The operator confirmed that no newer KVM host is available. Rocky Linux 9/10
 and AlmaLinux 9/10 remain pending compatible hardware, as documented in
 [the earlier image report](../../../tests/REAL_MACHINE_RESULTS.md).
@@ -59,12 +61,13 @@ runs on Linux. The workflow and prerequisites are documented in
 
 ## Image and password-stack matrix
 
-All passing rows include real serial login and sudo, reachable key SSH, explicit
-password and keyboard-interactive rejection, account/expiry/getty/root checks,
+Historical passing rows include real serial login and sudo, reachable key SSH,
+account/expiry/getty/root checks,
 private credential permissions, plaintext scans, and a changed-boot-ID reboot
 with repeated current-credential and SSH-policy checks. Exact distro package
 versions are in each JSON report; the table abbreviates PAM/shadow to upstream
-versions. All passwords use SHA-512 crypt.
+versions. All passwords use SHA-512 crypt. Their SSH negative checks need the
+explicit method-list evidence described under Review gate.
 
 | Image | cloud-init | Python | PAM / shadow | Result and evidence |
 | --- | --- | --- | --- | --- |
