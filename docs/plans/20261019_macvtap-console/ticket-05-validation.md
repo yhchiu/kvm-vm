@@ -1,6 +1,7 @@
 # Ticket 05 validation
 
-Fixed review point: `0a65249`. Status: acceptance passed; review pending.
+Fixed review point: `0a65249`. Implementation/evidence: `10a299f`, `6f23c67`.
+Review refinement: `5615f9c`.
 
 ## Environment
 
@@ -57,3 +58,17 @@ The complete nonsecret final report is retained as
 
 Repeatable invocation and prerequisite handling are documented in
 [the acceptance guide](../../../tests/MACVTAP_ACCEPTANCE.md).
+
+## Standards review
+
+No blocking findings or actionable smell advisories. Commit conventions,
+test boundaries and network ownership match the accepted standards.
+
+## Spec review
+
+No must-fix findings for the recorded run. Addressed the advisory report issue:
+pending agent discovery or a missing channel now produces partial acceptance,
+not a pass. Four aggregation regression cases were added. Linux smoke passed
+with 282 tests after the refinement; the real all-pass report remains valid.
+
+Both axes passed the single focused follow-up review. No unresolved must-fix findings remain; the ticket gate is closed. Original guest running states were rechecked after cleanup.
