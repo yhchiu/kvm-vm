@@ -15,6 +15,20 @@ import paramiko
 import yaml
 
 
+def assert_authentication_disabled(transport, user, password, method):
+    try:
+        if method == "password":
+            transport.auth_password(user, password, fallback=False)
+        else:
+            transport.auth_interactive(user, lambda title, instructions, prompts: [password for _ in prompts])
+    except paramiko.BadAuthenticationType as rejection:
+        if method in rejection.allowed_types:
+            raise RuntimeError("SSH still advertises a password-capable authentication method") from None
+        return {"reason": "method_not_allowed", "allowed_types": list(rejection.allowed_types)}
+    else:
+        raise RuntimeError("SSH accepted a password-capable authentication method")
+
+
 class Acceptance:
     @property
     def phase(self):
@@ -202,6 +216,7 @@ class Acceptance:
                 raise RuntimeError("Credential leaked into provisioning logs")
         finally:
             client.close()
+        rejection_evidence = {}
         for method in ("password", "keyboard-interactive"):
             self.phase = "SSH " + method + " rejection"
             transport = paramiko.Transport(self.connection(address))
@@ -210,15 +225,8 @@ class Acceptance:
                 transport.start_client(timeout=15)
                 if transport.get_remote_server_key() != server_key:
                     raise RuntimeError("SSH server identity changed during authentication checks")
-                try:
-                    if method == "password":
-                        transport.auth_password(self.args.user, delivered["password"], fallback=False)
-                    else:
-                        transport.auth_interactive(self.args.user, lambda title, instructions, prompts: [delivered["password"] for _ in prompts])
-                except paramiko.AuthenticationException:
-                    pass
-                else:
-                    raise RuntimeError("SSH accepted a password-capable authentication method")
+                rejection_evidence[method] = assert_authentication_disabled(
+                    transport, self.args.user, delivered["password"], method)
             finally:
                 transport.close()
         self.phase = "plaintext artifact scan"
@@ -239,6 +247,7 @@ class Acceptance:
                     raise RuntimeError("Credential leaked into managed artifacts")
         return {"serial": "pass", "sudo": "pass" if enabled else "not applicable",
                 "ssh_key": "pass", "ssh_password_rejection": "pass", "ssh_keyboard_interactive_rejection": "pass",
+                "ssh_rejection_evidence": rejection_evidence,
                 "credential_permissions": "pass", "plaintext_scan": "pass", "versions": versions,
                 "provisioning_log_scan": "pass",
                 "serial_hardware_getty": "pass", "root_password_autologin": "pass",

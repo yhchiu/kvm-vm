@@ -150,5 +150,14 @@ root-owned mode-0700 private directories. No password or hash is published.
 
 ## Review gate
 
-Standards and Spec reviews are pending. Hardware-limited acceptance remains
-explicitly incomplete regardless of the review result; ticket 06 is not closed.
+Initial Standards review found no blocking issues. Spec review found that the
+SSH negative-authentication probe accepted generic Paramiko authentication
+exceptions, including timeout and connection loss. Historical reports above
+therefore do not establish explicit SSH method rejection; their console and
+other independent checks remain recorded. Fresh SSH evidence is pending.
+
+The corrected probe accepts only a server method-list rejection that excludes
+the attempted method and records that list in each result. Regression tests
+cover both methods with explicit rejection, successful authentication, timeout,
+connection loss, generic failure, and a still-advertised method. Hardware-limited
+acceptance remains explicitly incomplete; ticket 06 is not closed.

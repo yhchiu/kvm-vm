@@ -7,6 +7,29 @@ pytest.importorskip("paramiko")
 import console_acceptance
 
 
+@pytest.mark.parametrize("method", ["password", "keyboard-interactive"])
+@pytest.mark.parametrize("outcome", ["rejected", "accepted", "timeout", "eof", "generic", "still_allowed"])
+def test_negative_authentication_requires_explicit_method_rejection(method, outcome):
+    def authenticate(*args, **kwargs):
+        if outcome == "rejected":
+            raise console_acceptance.paramiko.BadAuthenticationType("not allowed", ["publickey"])
+        if outcome == "still_allowed":
+            raise console_acceptance.paramiko.BadAuthenticationType("not allowed", [method])
+        if outcome != "accepted":
+            message = {"timeout": "Authentication timeout.",
+                       "eof": "Authentication failed: transport shut down or saw EOF",
+                       "generic": "Authentication failed."}[outcome]
+            raise console_acceptance.paramiko.AuthenticationException(message)
+
+    transport = SimpleNamespace(auth_password=authenticate, auth_interactive=authenticate)
+    if outcome == "rejected":
+        assert console_acceptance.assert_authentication_disabled(transport, "admin", "test-only", method) == {
+            "reason": "method_not_allowed", "allowed_types": ["publickey"]}
+    else:
+        with pytest.raises((RuntimeError, console_acceptance.paramiko.AuthenticationException)):
+            console_acceptance.assert_authentication_disabled(transport, "admin", "test-only", method)
+
+
 @pytest.mark.parametrize("agent_available", [True, False])
 def test_nat_readiness_considers_multiple_leases_and_prefers_live_agent(agent_available):
     session = object.__new__(console_acceptance.Acceptance)
