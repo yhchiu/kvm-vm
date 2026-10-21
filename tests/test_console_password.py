@@ -216,7 +216,7 @@ def test_reinstall_preserves_policy_with_new_credential(console_machine, monkeyp
 
 
 @pytest.mark.skipif(os.name != "posix", reason="Requires POSIX delivery")
-@pytest.mark.parametrize("ssh_valid", [True, False, "actual_parser"])
+@pytest.mark.parametrize("ssh_valid", [True, False, "actual_parser", "python36"])
 def test_generated_guest_script_hardens_conditions_before_unlock(console_machine, monkeypatch, ssh_valid):
     if ssh_valid == "actual_parser" and (os.geteuid() != 0 or not kvm_vm.Path("/usr/sbin/sshd").is_file()):
         pytest.skip("Actual SSH parser verification requires a Linux root host with sshd installed")
@@ -224,7 +224,7 @@ def test_generated_guest_script_hardens_conditions_before_unlock(console_machine
            "--console-password-file", str(console_machine["credential"]))
     data = kvm_vm.yaml_load(kvm_vm.CLOUD_DIR / "clone01" / "user-data")
     assert data["users"][0]["lock_passwd"] is True
-    script = data["runcmd"][-1][2]
+    script = data["runcmd"][-1][-2]
     ssh_dir = console_machine["root"] / "guest-ssh"
     ssh_dir.mkdir()
     (ssh_dir / "sshd_config").write_text(
@@ -236,14 +236,20 @@ def test_generated_guest_script_hardens_conditions_before_unlock(console_machine
     calls = []
 
     def guest_run(cmd, **kwargs):
+        if ssh_valid == "python36":
+            assert "text" not in kwargs and "capture_output" not in kwargs
         calls.append(cmd)
         if cmd == ["/usr/sbin/sshd", "-t"] and not ssh_valid:
             raise subprocess.CalledProcessError(1, cmd)
         return subprocess.CompletedProcess(cmd, 0, "loaded\n", "")
 
     monkeypatch.setattr(subprocess, "run", guest_run)
-    monkeypatch.setattr(subprocess, "check_output",
-                        lambda *args, **kwargs: "passwordauthentication no\nkbdinteractiveauthentication no\n")
+    def guest_output(*args, **kwargs):
+        if ssh_valid == "python36":
+            assert "text" not in kwargs
+        return "passwordauthentication no\nkbdinteractiveauthentication no\n"
+
+    monkeypatch.setattr(subprocess, "check_output", guest_output)
     monkeypatch.setattr(kvm_vm.sys, "argv", ["-c", "admin"])
     script = script.replace("/etc/ssh", str(ssh_dir))
     if ssh_valid:
@@ -267,6 +273,29 @@ def test_generated_guest_script_hardens_conditions_before_unlock(console_machine
             effective = dict(line.split(None, 1) for line in output.splitlines() if " " in line)
             assert effective["passwordauthentication"] == "no"
             assert effective["kbdinteractiveauthentication"] == "no"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Requires POSIX delivery")
+@pytest.mark.parametrize("python3_available", [True, False])
+def test_console_launcher_uses_available_guest_python(console_machine, python3_available):
+    invoke("create", console_machine["args"].definition, "--no-start",
+           "--console-password-file", str(console_machine["credential"]))
+    data = kvm_vm.yaml_load(kvm_vm.CLOUD_DIR / "clone01" / "user-data")
+    command = list(data["runcmd"][-1])
+    assert command[:2] == ["sh", "-c"]
+    binaries = console_machine["root"] / "guest-bin"
+    binaries.mkdir()
+    interpreter = binaries / ("python3" if python3_available else "platform-python")
+    interpreter.write_text("#!/bin/sh\nprintf '%s\\n' selected-interpreter \"$@\"\n")
+    interpreter.chmod(0o700)
+    command[2] = command[2].replace("/usr/libexec/platform-python", str(binaries / "platform-python"))
+    command[-2] = "pass"
+    command[0] = "/bin/sh"
+    with subprocess.Popen(command, env={"PATH": str(binaries)}, stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE, text=True) as process:
+        output, errors = process.communicate()
+    assert process.returncode == 0, errors
+    assert output.splitlines() == ["selected-interpreter", "-c", "pass", "admin"]
 
 
 @pytest.mark.skipif(os.name != "posix", reason="Requires POSIX delivery")
