@@ -1,0 +1,200 @@
+{
+  "domains": " Id    Name              State\n-----------------------------------\n 69    vh-control        running\n 74    vh-processing     running\n 157   vh-pb             running\n 195   vh-mon            running\n -     acsvm-vm-910001   shut off\n\n",
+  "remaining_managed_artifacts": [],
+  "remaining_fixture_images": [],
+  "active_lifecycle_lock": false,
+  "credentials": [
+    {
+      "path": "/root/e2e-console-005215ef/e2e-console-005215ef-0.json",
+      "mode": "0o600",
+      "uid": 0
+    },
+    {
+      "path": "/root/e2e-console-005215ef/e2e-console-0e540db4-from-disabled.json",
+      "mode": "0o600",
+      "uid": 0
+    },
+    {
+      "path": "/root/e2e-console-005215ef/e2e-console-0e540db4-enabled.json",
+      "mode": "0o600",
+      "uid": 0
+    },
+    {
+      "path": "/root/e2e-console-005215ef/e2e-console-0e540db4-enabled-reinstalled.json",
+      "mode": "0o600",
+      "uid": 0
+    },
+    {
+      "path": "/root/e2e-console-1d31d837/e2e-console-1d31d837-0.json",
+      "mode": "0o600",
+      "uid": 0
+    },
+    {
+      "path": "/root/e2e-console-2f3dac4f/e2e-console-2f3dac4f-1.json",
+      "mode": "0o600",
+      "uid": 0
+    },
+    {
+      "path": "/root/e2e-console-2f3dac4f/e2e-console-2f3dac4f-2.json",
+      "mode": "0o600",
+      "uid": 0
+    },
+    {
+      "path": "/root/e2e-console-2f3dac4f/e2e-console-2f3dac4f-3.json",
+      "mode": "0o600",
+      "uid": 0
+    },
+    {
+      "path": "/root/e2e-console-2f3dac4f/e2e-console-2f3dac4f-0.json",
+      "mode": "0o600",
+      "uid": 0
+    },
+    {
+      "path": "/root/e2e-console-349129f1/e2e-console-349129f1-0.json",
+      "mode": "0o600",
+      "uid": 0
+    },
+    {
+      "path": "/root/e2e-console-5c77c7c6/e2e-console-5c77c7c6-0.json",
+      "mode": "0o600",
+      "uid": 0
+    },
+    {
+      "path": "/root/e2e-console-615df747/e2e-console-615df747-0.json",
+      "mode": "0o600",
+      "uid": 0
+    },
+    {
+      "path": "/root/e2e-console-a229a5c7/e2e-console-a229a5c7-0.json",
+      "mode": "0o600",
+      "uid": 0
+    },
+    {
+      "path": "/root/e2e-console-bdce5673/e2e-console-bdce5673-0.json",
+      "mode": "0o600",
+      "uid": 0
+    },
+    {
+      "path": "/root/e2e-console-d2f32dd6/e2e-console-d2f32dd6-0.json",
+      "mode": "0o600",
+      "uid": 0
+    },
+    {
+      "path": "/root/e2e-console-fa62c02e/e2e-console-fa62c02e-0.json",
+      "mode": "0o600",
+      "uid": 0
+    },
+    {
+      "path": "/root/e2e-console-fa62c02e/e2e-console-fa62c02e-1.json",
+      "mode": "0o600",
+      "uid": 0
+    }
+  ],
+  "private_directories": [
+    {
+      "path": "/root/e2e-console-005215ef",
+      "mode": "0o700",
+      "uid": 0
+    },
+    {
+      "path": "/root/e2e-console-0e540db4",
+      "mode": "0o700",
+      "uid": 0
+    },
+    {
+      "path": "/root/e2e-console-1d31d837",
+      "mode": "0o700",
+      "uid": 0
+    },
+    {
+      "path": "/root/e2e-console-22868d68",
+      "mode": "0o700",
+      "uid": 0
+    },
+    {
+      "path": "/root/e2e-console-2f3dac4f",
+      "mode": "0o700",
+      "uid": 0
+    },
+    {
+      "path": "/root/e2e-console-31925709",
+      "mode": "0o700",
+      "uid": 0
+    },
+    {
+      "path": "/root/e2e-console-349129f1",
+      "mode": "0o700",
+      "uid": 0
+    },
+    {
+      "path": "/root/e2e-console-4791f2fe",
+      "mode": "0o700",
+      "uid": 0
+    },
+    {
+      "path": "/root/e2e-console-56f6a7cd",
+      "mode": "0o700",
+      "uid": 0
+    },
+    {
+      "path": "/root/e2e-console-5c77c7c6",
+      "mode": "0o700",
+      "uid": 0
+    },
+    {
+      "path": "/root/e2e-console-615df747",
+      "mode": "0o700",
+      "uid": 0
+    },
+    {
+      "path": "/root/e2e-console-6d7053ac",
+      "mode": "0o700",
+      "uid": 0
+    },
+    {
+      "path": "/root/e2e-console-8c169965",
+      "mode": "0o700",
+      "uid": 0
+    },
+    {
+      "path": "/root/e2e-console-961d997c",
+      "mode": "0o700",
+      "uid": 0
+    },
+    {
+      "path": "/root/e2e-console-a229a5c7",
+      "mode": "0o700",
+      "uid": 0
+    },
+    {
+      "path": "/root/e2e-console-a92228cf",
+      "mode": "0o700",
+      "uid": 0
+    },
+    {
+      "path": "/root/e2e-console-ae9c1859",
+      "mode": "0o700",
+      "uid": 0
+    },
+    {
+      "path": "/root/e2e-console-bdce5673",
+      "mode": "0o700",
+      "uid": 0
+    },
+    {
+      "path": "/root/e2e-console-d2f32dd6",
+      "mode": "0o700",
+      "uid": 0
+    },
+    {
+      "path": "/root/e2e-console-e1eb80ef",
+      "mode": "0o700",
+      "uid": 0
+    },
+    {
+      "path": "/root/e2e-console-fa62c02e",
+      "mode": "0o700",
+      "uid": 0
+    }
+  ]
+}

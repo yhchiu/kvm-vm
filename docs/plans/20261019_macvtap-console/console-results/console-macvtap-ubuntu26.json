@@ -1,0 +1,46 @@
+{
+  "mode": "macvtap",
+  "credential_directory": "/root/e2e-console-a229a5c7",
+  "cases": [
+    {
+      "distro": "ubuntu26.04",
+      "name": "e2e-console-a229a5c7-0",
+      "user": "admin",
+      "status": "pass",
+      "console_enabled": true,
+      "console_policy": "enabled",
+      "cached_image_sha256": "8800651811af9a85465ad1d552add729947bb16488dddb4a9b5305a3d97332b2",
+      "serial": "pass",
+      "sudo": "pass",
+      "ssh_key": "pass",
+      "ssh_password_rejection": "pass",
+      "ssh_keyboard_interactive_rejection": "pass",
+      "credential_permissions": "pass",
+      "plaintext_scan": "pass",
+      "versions": "/usr/bin/cloud-init 26.1-0ubuntu3~26.04.1\nPython 3.14.4\nglibc 2.43\nlibpam0g:amd64\t1.7.0-5ubuntu3.2\nopenssh-server\t1:10.2p1-2ubuntu3.6\npasswd\t1:4.17.4-2ubuntu3",
+      "provisioning_log_scan": "pass",
+      "serial_hardware_getty": "pass",
+      "root_password_autologin": "pass",
+      "expiry_policy": "pass",
+      "after_reboot": {
+        "serial": "pass",
+        "sudo": "pass",
+        "ssh_key": "pass",
+        "ssh_password_rejection": "pass",
+        "ssh_keyboard_interactive_rejection": "pass",
+        "credential_permissions": "pass",
+        "plaintext_scan": "pass",
+        "versions": "/usr/bin/cloud-init 26.1-0ubuntu3~26.04.1\nPython 3.14.4\nglibc 2.43\nlibpam0g:amd64\t1.7.0-5ubuntu3.2\nopenssh-server\t1:10.2p1-2ubuntu3.6\npasswd\t1:4.17.4-2ubuntu3",
+        "provisioning_log_scan": "pass",
+        "serial_hardware_getty": "pass",
+        "root_password_autologin": "pass",
+        "expiry_policy": "pass",
+        "boot_identity_changed": true
+      },
+      "delete_preserves_credential": "pass"
+    }
+  ],
+  "status": "pass",
+  "runtime_sha256": "04ae400714dfd8727f6cd7d15b14a6918be6b97bd6a04cef6a84c06e87d10cd9",
+  "retained_guests": []
+}

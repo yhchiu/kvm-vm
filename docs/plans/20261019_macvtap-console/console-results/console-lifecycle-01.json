@@ -1,0 +1,65 @@
+{
+  "name": "e2e-console-005215ef-0",
+  "distro": "debian13",
+  "mode": "nat",
+  "credential_directory": "/root/e2e-console-005215ef",
+  "status": "failed",
+  "initial": {
+    "serial": "pass",
+    "sudo": "pass",
+    "ssh_key": "pass",
+    "ssh_password_rejection": "pass",
+    "ssh_keyboard_interactive_rejection": "pass",
+    "credential_permissions": "pass",
+    "plaintext_scan": "pass",
+    "versions": "/usr/bin/cloud-init 25.1.4\nPython 3.13.5\nglibc 2.41\nlibpam0g:amd64\t1.7.0-5\nopenssh-server\t1:10.0p1-7+deb13u4\npasswd\t1:4.17.4-2",
+    "provisioning_log_scan": "pass",
+    "serial_hardware_getty": "pass",
+    "root_password_autologin": "pass",
+    "expiry_policy": "pass"
+  },
+  "after_reboot": {
+    "serial": "pass",
+    "sudo": "pass",
+    "ssh_key": "pass",
+    "ssh_password_rejection": "pass",
+    "ssh_keyboard_interactive_rejection": "pass",
+    "credential_permissions": "pass",
+    "plaintext_scan": "pass",
+    "versions": "/usr/bin/cloud-init 25.1.4\nPython 3.13.5\nglibc 2.41\nlibpam0g:amd64\t1.7.0-5\nopenssh-server\t1:10.0p1-7+deb13u4\npasswd\t1:4.17.4-2",
+    "provisioning_log_scan": "pass",
+    "serial_hardware_getty": "pass",
+    "root_password_autologin": "pass",
+    "expiry_policy": "pass",
+    "boot_identity_changed": true
+  },
+  "lifecycle": [
+    {
+      "scenario": "enabled source to enabled",
+      "status": "pass",
+      "source_password_rejected": true,
+      "after_reboot": {
+        "serial": "pass",
+        "sudo": "pass",
+        "ssh_key": "pass",
+        "ssh_password_rejection": "pass",
+        "ssh_keyboard_interactive_rejection": "pass",
+        "credential_permissions": "pass",
+        "plaintext_scan": "pass",
+        "versions": "/usr/bin/cloud-init 25.1.4\nPython 3.13.5\nglibc 2.41\nlibpam0g:amd64\t1.7.0-5\nopenssh-server\t1:10.0p1-7+deb13u4\npasswd\t1:4.17.4-2",
+        "provisioning_log_scan": "pass",
+        "serial_hardware_getty": "pass",
+        "root_password_autologin": "pass",
+        "expiry_policy": "pass",
+        "boot_identity_changed": true
+      }
+    }
+  ],
+  "failure_type": "RuntimeError",
+  "failure_phase": "clone disabled",
+  "retained_guests": [
+    "e2e-console-005215ef-0",
+    "e2e-console-0e540db4-disabled",
+    "e2e-console-0e540db4-enabled"
+  ]
+}

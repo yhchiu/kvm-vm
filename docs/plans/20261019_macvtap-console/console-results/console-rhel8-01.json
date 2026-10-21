@@ -1,0 +1,19 @@
+{
+  "mode": "nat",
+  "credential_directory": "/root/e2e-console-615df747",
+  "cases": [
+    {
+      "distro": "rocky8",
+      "name": "e2e-console-615df747-0",
+      "user": "admin",
+      "status": "failed",
+      "console_enabled": true
+    }
+  ],
+  "status": "failed",
+  "failure_type": "RuntimeError",
+  "failure_phase": "SSH readiness and cloud-init",
+  "retained_guests": [
+    "e2e-console-615df747-0"
+  ]
+}

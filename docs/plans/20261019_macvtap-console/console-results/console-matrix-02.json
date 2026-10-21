@@ -1,0 +1,70 @@
+{
+  "mode": "nat",
+  "credential_directory": "/root/e2e-console-2f3dac4f",
+  "cases": [
+    {
+      "distro": "debian13",
+      "name": "e2e-console-2f3dac4f-0",
+      "user": "admin",
+      "status": "pass",
+      "console_enabled": true,
+      "serial": "pass",
+      "sudo": "pass",
+      "ssh_key": "pass",
+      "ssh_password_rejection": "pass",
+      "ssh_keyboard_interactive_rejection": "pass",
+      "credential_permissions": "pass",
+      "plaintext_scan": "pass",
+      "versions": "/usr/bin/cloud-init 25.1.4\nPython 3.13.5",
+      "expiry_policy": "pass",
+      "delete_preserves_credential": "pass"
+    },
+    {
+      "distro": "debian12",
+      "name": "e2e-console-2f3dac4f-1",
+      "user": "admin",
+      "status": "pass",
+      "console_enabled": true,
+      "serial": "pass",
+      "sudo": "pass",
+      "ssh_key": "pass",
+      "ssh_password_rejection": "pass",
+      "ssh_keyboard_interactive_rejection": "pass",
+      "credential_permissions": "pass",
+      "plaintext_scan": "pass",
+      "versions": "/usr/bin/cloud-init 22.4.2\nPython 3.11.2",
+      "expiry_policy": "pass",
+      "delete_preserves_credential": "pass"
+    },
+    {
+      "distro": "ubuntu24.04",
+      "name": "e2e-console-2f3dac4f-2",
+      "user": "admin",
+      "status": "pass",
+      "console_enabled": true,
+      "serial": "pass",
+      "sudo": "pass",
+      "ssh_key": "pass",
+      "ssh_password_rejection": "pass",
+      "ssh_keyboard_interactive_rejection": "pass",
+      "credential_permissions": "pass",
+      "plaintext_scan": "pass",
+      "versions": "/usr/bin/cloud-init 26.1-0ubuntu1~24.04.1\nPython 3.12.3",
+      "expiry_policy": "pass",
+      "delete_preserves_credential": "pass"
+    },
+    {
+      "distro": "ubuntu26.04",
+      "name": "e2e-console-2f3dac4f-3",
+      "user": "admin",
+      "status": "failed",
+      "console_enabled": true
+    }
+  ],
+  "status": "failed",
+  "failure_type": "RuntimeError",
+  "failure_phase": "serial login",
+  "retained_guests": [
+    "e2e-console-2f3dac4f-3"
+  ]
+}

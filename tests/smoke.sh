@@ -3,12 +3,13 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 python3 -m py_compile "$ROOT/kvm-vm"
 python3 -m py_compile "$ROOT/tests/macvtap_acceptance.py"
+python3 -m py_compile "$ROOT/tests/console_acceptance.py" "$ROOT/tests/serial_auth_probe.py"
 "$ROOT/kvm-vm" --help >/dev/null
 "$ROOT/kvm-vm" reinstall --help >/dev/null
 "$ROOT/kvm-vm" --version
 
 if python3 -m pytest --version >/dev/null 2>&1; then
-  python3 -m pytest "$ROOT/tests/test_unit.py" "$ROOT/tests/test_macvtap.py" "$ROOT/tests/test_console_password.py" "$ROOT/tests/test_macvtap_acceptance.py" -q
+  python3 -m pytest "$ROOT/tests/test_unit.py" "$ROOT/tests/test_macvtap.py" "$ROOT/tests/test_console_password.py" "$ROOT/tests/test_macvtap_acceptance.py" "$ROOT/tests/test_serial_auth_probe.py" "$ROOT/tests/test_console_acceptance.py" -q
 fi
 
 tmp="$(mktemp -d)"

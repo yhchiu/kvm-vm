@@ -1,0 +1,46 @@
+{
+  "mode": "nat",
+  "credential_directory": "/root/e2e-console-bdce5673",
+  "cases": [
+    {
+      "distro": "debian13",
+      "name": "e2e-console-bdce5673-0",
+      "user": "admin",
+      "status": "pass",
+      "console_enabled": false,
+      "console_policy": "omitted (default)",
+      "cached_image_sha256": "07f9fe05fe7cb1702047034830150baddd66c8be06e233bb226c84aa8a275263",
+      "serial": "pass",
+      "sudo": "not applicable",
+      "ssh_key": "pass",
+      "ssh_password_rejection": "pass",
+      "ssh_keyboard_interactive_rejection": "pass",
+      "credential_permissions": "pass",
+      "plaintext_scan": "pass",
+      "versions": "/usr/bin/cloud-init 25.1.4\nPython 3.13.5\nglibc 2.41\nlibpam0g:amd64\t1.7.0-5\nopenssh-server\t1:10.0p1-7+deb13u4\npasswd\t1:4.17.4-2",
+      "provisioning_log_scan": "pass",
+      "serial_hardware_getty": "pass",
+      "root_password_autologin": "pass",
+      "expiry_policy": "not applicable",
+      "after_reboot": {
+        "serial": "pass",
+        "sudo": "not applicable",
+        "ssh_key": "pass",
+        "ssh_password_rejection": "pass",
+        "ssh_keyboard_interactive_rejection": "pass",
+        "credential_permissions": "pass",
+        "plaintext_scan": "pass",
+        "versions": "/usr/bin/cloud-init 25.1.4\nPython 3.13.5\nglibc 2.41\nlibpam0g:amd64\t1.7.0-5\nopenssh-server\t1:10.0p1-7+deb13u4\npasswd\t1:4.17.4-2",
+        "provisioning_log_scan": "pass",
+        "serial_hardware_getty": "pass",
+        "root_password_autologin": "pass",
+        "expiry_policy": "not applicable",
+        "boot_identity_changed": true
+      },
+      "delete_preserves_credential": "pass"
+    }
+  ],
+  "status": "pass",
+  "runtime_sha256": "04ae400714dfd8727f6cd7d15b14a6918be6b97bd6a04cef6a84c06e87d10cd9",
+  "retained_guests": []
+}

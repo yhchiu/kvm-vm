@@ -1,0 +1,37 @@
+{
+  "name": "e2e-console-2f3dac4f-3",
+  "distro": "ubuntu26.04",
+  "mode": "nat",
+  "credential_directory": "/root/e2e-console-2f3dac4f",
+  "status": "pass",
+  "initial": {
+    "serial": "pass",
+    "sudo": "pass",
+    "ssh_key": "pass",
+    "ssh_password_rejection": "pass",
+    "ssh_keyboard_interactive_rejection": "pass",
+    "credential_permissions": "pass",
+    "plaintext_scan": "pass",
+    "versions": "/usr/bin/cloud-init 26.1-0ubuntu3~26.04.1\nPython 3.14.4\nglibc 2.43\nlibpam0g:amd64\t1.7.0-5ubuntu3.2\nopenssh-server\t1:10.2p1-2ubuntu3.8\npasswd\t1:4.17.4-2ubuntu3",
+    "provisioning_log_scan": "pass",
+    "serial_hardware_getty": "pass",
+    "root_password_autologin": "pass",
+    "expiry_policy": "pass"
+  },
+  "after_reboot": {
+    "serial": "pass",
+    "sudo": "pass",
+    "ssh_key": "pass",
+    "ssh_password_rejection": "pass",
+    "ssh_keyboard_interactive_rejection": "pass",
+    "credential_permissions": "pass",
+    "plaintext_scan": "pass",
+    "versions": "/usr/bin/cloud-init 26.1-0ubuntu3~26.04.1\nPython 3.14.4\nglibc 2.43\nlibpam0g:amd64\t1.7.0-5ubuntu3.2\nopenssh-server\t1:10.2p1-2ubuntu3.8\npasswd\t1:4.17.4-2ubuntu3",
+    "provisioning_log_scan": "pass",
+    "serial_hardware_getty": "pass",
+    "root_password_autologin": "pass",
+    "expiry_policy": "pass",
+    "boot_identity_changed": true
+  },
+  "delete_preserves_credential": "pass"
+}
