@@ -57,7 +57,10 @@ and ensure no other VM uses it. The controller must reach that guest directly;
 Macvtap authentication probes do not originate from the KVM parent interface.
 NAT uses a host SSH TCP forwarding channel. Each negative SSH authentication
 attempt verifies the server key observed by successful key login. Connection
-failures, timeouts, or mismatched keys fail the test.
+failures, timeouts, or mismatched keys fail the test. A negative result requires
+an explicit server authentication-method list excluding the attempted method
+(`BadAuthenticationType`); the report records that list in
+`ssh_rejection_evidence`. Generic authentication failures are insufficient.
 
 The serial probe accepts only test-owned consoles. It logs out a shell left by
 an interrupted prior probe before submitting the credential. Terminal buffers

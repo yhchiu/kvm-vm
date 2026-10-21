@@ -10,7 +10,8 @@ network timeout as an authentication rejection or console success as LAN proof.
 03: Isolate console credentials when cloning VMs;
 04: Preserve console policy and rotate credentials on reinstall.
 
-**Status:** implemented; review pending; full acceptance pending compatible hardware
+**Status:** implemented; review fix committed; SSH evidence refresh pending;
+full acceptance pending compatible hardware
 
 The operator confirmed no newer KVM host is available. Retain Rocky Linux 9/10
 and AlmaLinux 9/10 as hardware-limited acceptance cases on the Xeon L5420;
@@ -32,7 +33,7 @@ User Stories 20-48; ADR-0002 and ADR-0003.
   selected. No console autologin or newly enabled root password login is
   introduced. A blank/unavailable console is a failure or pending prerequisite,
   not proof that the password was correctly rejected.
-- [x] From a client known to reach the guest SSH service, prove key login
+- [ ] From a client known to reach the guest SSH service, prove key login
   succeeds while password and password-capable keyboard-interactive login
   fail. Check effective SSH policy where needed, including conditional
   configuration. A network timeout cannot satisfy a negative authentication
