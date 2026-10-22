@@ -71,6 +71,36 @@ paths (including disk conversion temporary files) survive. Existing definition
 files alone do not block creation. The old state remains during dry-run and
 failed attempts and is replaced only after the new domain is created.
 
+## Interrupted reinstall
+
+Before undefining the VM, reinstall saves its persistent domain XML and a
+`RECOVERY.txt` note in `.NAME-reinstall-*/` beside the system disk. Once
+undefinition has been attempted, any failure (including Ctrl-C or SIGTERM)
+keeps that directory and reports its location. A successful reinstall removes
+it. The directory is private to the administrator and may contain a prepared
+replacement disk; do not delete it before inspecting the failure.
+
+1. Confirm the original command and its child tools have stopped. Inspect
+   `virsh -c qemu:///system dominfo NAME`, the entire recovery note (later
+   entries supersede earlier phases), and actual files.
+2. If the note says disk replacement has **not** started, the original disk and
+   cloud-init files have not been replaced. If the domain is absent, inspect
+   `domain.xml`, then use `virsh -c qemu:///system define /path/to/domain.xml`
+   to put its definition back. Verify disk paths before starting it or retrying.
+3. If the note says replacement **may** have started, the XML is a reference,
+   not an automatic recovery recipe. Inspect the disk, seed, effective YAML and
+   state manifest together. Do not start the original XML against a partially
+   reinstalled guest. Reconcile them manually, or Restore from a Backup if the
+   old guest is required; reinstall cannot undo disk replacement.
+4. Only after recovery, remove the retained staging directory and any stale
+   lifecycle lock following the checks above. A later reinstall uses a new
+   directory and does not consume or erase the previous attempt.
+
+SIGKILL and power loss cannot print guidance; inspect these same files and
+the lifecycle lock before continuing. A missing or incomplete recovery note
+must be treated as an unknown phase, not proof that replacement did not start.
+After power loss, verify the actual files regardless of the recorded phase.
+
 ## Validation
 
 Fast regression tests use the actual command handlers and temporary files, with

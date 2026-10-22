@@ -1656,8 +1656,13 @@ def cmd_reinstall(args: argparse.Namespace) -> int:
     # the prepared image; never remove a previous attempt's staging files.
     staging = Path(tempfile.mkdtemp(prefix=f".{name}-reinstall-", dir=disk.parent))
     tmp_disk = staging / f"{disk.name}.reinstall.tmp"
+    undefinition_started = False
     replacement_started = False
     completed = False
+    def terminate_reinstall(signum, frame):
+        raise KeyboardInterrupt("Reinstall terminated")
+
+    previous_term = signal.signal(signal.SIGTERM, terminate_reinstall)
     try:
         make_disk_from_base(base, tmp_disk, int(cfg["storage"]["disk_gib"]))
         restore_selinux([tmp_disk])
@@ -1666,8 +1671,21 @@ def cmd_reinstall(args: argparse.Namespace) -> int:
             check_recovery_metadata(name)
             checked_domain_disk(name, state)
             check_storage_dependents(name, current_disk, state)
+        recovery_xml = staging / "domain.xml"
+        recovery_xml.write_text(output(["virsh", "-c", LIBVIRT_URI, "dumpxml", name, "--inactive"]), encoding="utf-8")
+        recovery_note = staging / "RECOVERY.txt"
+        recovery_note.write_text(
+            f"Reinstall of {name}: domain undefinition may have started; disk replacement has not started.\n"
+            f"Original domain XML: {recovery_xml}\n"
+            f"Original disk path: {disk}\n"
+            "Inspect the domain and storage before defining or starting anything.\n"
+            "See docs/lifecycle-recovery-safety.md: Interrupted reinstall.\n", encoding="utf-8")
+        undefinition_started = True
         undefine_domain(name)
         replacement_started = True
+        with recovery_note.open("a", encoding="utf-8") as note:
+            note.write("Disk replacement may have started. The original XML is reference material only; "
+                       "do not start it until disk, seed and management files have been reconciled.\n")
         tmp_disk.replace(disk)
         restore_selinux([disk])
         cloud_options = {"password_hash": password_hash} if password_hash else {}
@@ -1677,7 +1695,7 @@ def cmd_reinstall(args: argparse.Namespace) -> int:
         orig_def = Path(state["definition_source"]) if state and state.get("definition_source") else def_path
         save_state(cfg, disk, {"type": "base-image", "path": str(base)}, instance_id, orig_def)
         completed = True
-    except Exception:
+    except (Exception, KeyboardInterrupt):
         # Reinstall operates on an existing VM. Its disk and cloud-init files
         # must survive even when undefinition or a later replacement step fails.
         if replacement_started:
@@ -1695,15 +1713,21 @@ def cmd_reinstall(args: argparse.Namespace) -> int:
                 "files were retained. Check the domain state before restarting it; "
                 "--force may already have stopped it."
             )
+        if undefinition_started:
+            log.error(f"Reinstall stopped; manual recovery files retained at {staging}. "
+                      f"Domain XML: {staging / 'domain.xml'}. Read {staging / 'RECOVERY.txt'} "
+                      "and docs/lifecycle-recovery-safety.md before defining or starting the VM.")
         raise
     finally:
-        try:
-            shutil.rmtree(staging)
-        except OSError as exc:
-            message = f"Could not clean reinstall staging {staging}: {exc}. Remove it manually after inspection."
-            if completed:
-                raise KVMError(f"VM replacement completed, but {message}") from exc
-            log.error(message)
+        signal.signal(signal.SIGTERM, previous_term)
+        if completed or not undefinition_started:
+            try:
+                shutil.rmtree(staging)
+            except OSError as exc:
+                message = f"Could not clean reinstall staging {staging}: {exc}. Remove it manually after inspection."
+                if completed:
+                    raise KVMError(f"VM replacement completed, but {message}") from exc
+                log.error(message)
 
     print(f"Reinstalled VM: {name}")
     print(f"Definition:     {DEF_DIR / (name + '.yaml')}")

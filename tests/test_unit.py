@@ -1121,7 +1121,7 @@ def test_reinstall_undefine_failure_preserves_existing_data(reinstall_machine, r
     assert machine["defined"]
     for path, contents in machine["originals"].items():
         assert path.read_bytes() == contents
-    assert set(p for p in machine["root"].rglob("*") if p.is_file()) == set(machine["originals"])
+    assert len(list(machine["disk"].parent.glob(".test01-reinstall-*/domain.xml"))) == 1
 
 
 def test_reinstall_preserves_unowned_staging_files(reinstall_machine):
@@ -1161,7 +1161,10 @@ def test_reinstall_cleanup_failure_keeps_original_error(reinstall_machine, monke
         raise PermissionError("staging cleanup denied")
 
     monkeypatch.setattr(kvm_vm.shutil, "rmtree", denied)
-    with pytest.raises(kvm_vm.KVMError, match="checkpoint refusal"):
+    def conversion_failed(*args):
+        raise kvm_vm.KVMError("conversion failed")
+    monkeypatch.setattr(kvm_vm, "make_disk_from_base", conversion_failed)
+    with pytest.raises(kvm_vm.KVMError, match="conversion failed"):
         kvm_vm.cmd_reinstall(machine["args"])
     for path, contents in machine["originals"].items():
         assert path.read_bytes() == contents
@@ -1183,6 +1186,54 @@ def test_reinstall_success_through_command_boundary(reinstall_machine, capsys):
     assert Path(state["seed"]).read_bytes() == b"replacement seed"
     assert not list(machine["disk"].parent.glob(".test01-reinstall-*"))
     assert "Reinstalled VM: test01" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("interruption", ["keyboard", "terminate"])
+def test_reinstall_interruption_keeps_domain_recovery_files(reinstall_machine, monkeypatch, caplog, interruption):
+    machine = reinstall_machine
+    machine["failure"] = None
+    original = kvm_vm.undefine_domain
+    old_handler = kvm_vm.signal.getsignal(kvm_vm.signal.SIGTERM)
+
+    def interrupted(name):
+        original(name)
+        if interruption == "terminate":
+            handler = kvm_vm.signal.getsignal(kvm_vm.signal.SIGTERM)
+            assert callable(handler), "reinstall must handle SIGTERM"
+            handler(kvm_vm.signal.SIGTERM, None)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(kvm_vm, "undefine_domain", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        kvm_vm.cmd_reinstall(machine["args"])
+    assert not machine["defined"]
+    assert machine["disk"].read_bytes() == b"original guest data"
+    recovery = list(machine["disk"].parent.glob(".test01-reinstall-*"))
+    assert len(recovery) == 1
+    xml = recovery[0] / "domain.xml"
+    root = kvm_vm.ET.parse(xml).getroot()
+    assert root.find("./devices/disk/source").get("file") == str(machine["disk"])
+    assert (recovery[0] / "RECOVERY.txt").is_file()
+    assert "manual recovery" in caplog.text
+    assert str(xml) in caplog.text
+    assert kvm_vm.signal.getsignal(kvm_vm.signal.SIGTERM) == old_handler
+
+
+def test_reinstall_interrupt_after_replacement_warns_against_starting_old_xml(reinstall_machine, monkeypatch, caplog):
+    machine = reinstall_machine
+    machine["failure"] = None
+
+    def interrupted(*args, **kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(kvm_vm, "define_vm", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        kvm_vm.cmd_reinstall(machine["args"])
+    assert machine["disk"].read_bytes() == b"replacement guest data"
+    recovery = next(machine["disk"].parent.glob(".test01-reinstall-*"))
+    assert "Disk replacement may have started" in (recovery / "RECOVERY.txt").read_text()
+    assert (recovery / "domain.xml").is_file()
+    assert "original disk has not been restored" in caplog.text
 
 
 @pytest.mark.parametrize("operation", ["reinstall", "clone", "delete"])
