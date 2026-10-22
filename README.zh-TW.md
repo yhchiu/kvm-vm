@@ -168,6 +168,13 @@ storage:
 
 虛擬機器建立並完成 cloud-init 首次初始化後：
 
+> [!IMPORTANT]
+> **Macvtap 連線方式**：請從另一台能連到 VM LAN 位址的電腦執行 SSH。
+> KVM 宿主機無法經 parent 介面直接連入自己的 Macvtap VM，即使雙方在同一子網也一樣。
+> 若要從宿主機管理，請使用 `sudo kvm-vm console web01`，並在佈建前啟用
+> [Console 密碼登入](#選用-console-密碼登入)；預設密碼仍鎖定。
+> 詳見 [Macvtap 限制](#macvtap-限制)。
+
 1. **查詢獲配的 IP 位址**：
 
 ```bash
@@ -392,14 +399,29 @@ Macvtap 固定使用 bridge 轉送子模式。`KVM_VM_MACVTAP` 同時覆寫模�
 包括原本的 bridge／NAT 定義。空值會報錯；從 YAML 或環境變數選擇 Macvtap 時，
 請移除 `KVM_VM_BRIDGE`，兩者不可並用。
 
+#### Macvtap 限制
+
+- **宿主機無法經 parent 直接連入 VM**：SSH、ping 與其他 IP 服務皆受此限制，
+  即使在同一子網也一樣；Macvtap 的 bridge 轉送子模式不會解除此限制。
+  SSH 需從另一台具備通往 VM 路由的電腦發起。`list --ips` 查到位址，不代表
+  宿主機能連到該位址。
+- **宿主機管理使用 Serial console**：在宿主機執行 `sudo kvm-vm console web01`。
+  若需密碼登入，須在佈建前設定 `cloud_init.console_password: true`，並提供
+  `--console-password-file`。單純連上 Console 不會解鎖帳號，詳見
+  [Console 密碼登入](#選用-console-密碼登入)。
+- **每台 VM 僅一張網卡**：不會另外加入 NAT 或 isolated 管理網卡。同一宿主機上的
+  不同 VM 可以分別使用 bridge、NAT、Macvtap，但 Macvtap parent 不可同時隸屬
+  Linux bridge 或 bond。例如 `eno1` 已加入 `br0` 時，Macvtap 需使用另一張獨立
+  實體介面。不同模式 VM 之間是否互通，取決於路由與防火牆政策。
+
 Parent 必須已啟用、未隸屬 bridge／bond，且能透過 Linux sysfs 與
 `ip -j -d link` 檢查。不存在、不支援或檢查失敗時會停止；首版不支援
 Wi-Fi、bond、VLAN、bridge 或從屬介面。工具不會設定或刪除 parent。
 `validate` 離線驗證定義；`create --dry-run` 另外檢查主機介面。
 
 LAN 必須允許額外的 VM MAC，並提供 DHCP 或適當靜態位址，這些需自行
-確認，不能由本機 preflight 保證。請從另一台 LAN 電腦管理 VM：宿主機
-無法經同一 parent 直接連入 VM，也不會自動新增管理網卡。外部 DHCP
+確認，不能由本機 preflight 保證。交換器或供應商對額外 MAC 的限制，可能使
+通過本機驗證的 VM 仍無法連網。外部 DHCP
 租約不一定出現在 libvirt；透過 guest agent 取得 IP 需 agent 與 channel 正常。
 `cloud_init.qemu_guest_agent: true`（預設）會加入 virtio agent channel，並由
 cloud-init 安裝 guest agent；請等待 Guest 初始化完成後再使用 `list --ips` 查詢。

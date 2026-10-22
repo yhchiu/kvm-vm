@@ -177,6 +177,14 @@ cached base image, so refreshing or deleting a base image cannot break them.
 
 After the VM is created and cloud-init completes its initial provisioning:
 
+> [!IMPORTANT]
+> **Macvtap access**: Run SSH from another computer that can reach the VM's LAN
+> address. The KVM host cannot connect directly to its Macvtap guest through the
+> parent interface, even when both are on the same subnet. For management from
+> the host, use `sudo kvm-vm console web01` and provision
+> [console password login](#optional-console-password-login) beforehand; passwords
+> are locked by default. See [Macvtap limitations](#macvtap-limitations).
+
 1. **Find the assigned IP address**:
 
 ```bash
@@ -436,6 +444,23 @@ and parent, including for bridge/NAT definitions. Empty values are errors.
 Unset `KVM_VM_BRIDGE` when selecting Macvtap through YAML or the environment;
 the two settings conflict.
 
+#### Macvtap limitations
+
+- **No direct host-to-guest connection through the parent.** This applies to SSH,
+  ping and other IP services, even on the same subnet. The Macvtap bridge forwarding
+  mode does not remove this restriction. Use an external computer with a working
+  route to the guest for SSH; `list --ips` showing an address does not imply that
+  the host can connect to it.
+- **Host management uses Serial console.** Run `sudo kvm-vm console web01` on the
+  host. For password login, set `cloud_init.console_password: true` and supply
+  `--console-password-file` when provisioning. Attaching the console alone does
+  not unlock the account. See [console password login](#optional-console-password-login).
+- **One NIC per VM.** No NAT or isolated management NIC is added. Different VMs
+  may use bridge, NAT and Macvtap on the same host, but a Macvtap parent cannot
+  also be a member of a Linux bridge or bond. For example, if `eno1` belongs to
+  `br0`, use another standalone physical interface for Macvtap. Connectivity
+  between VMs using different modes depends on routing and firewall policy.
+
 The parent must already be up, standalone and visible through Linux sysfs and
 `ip -j -d link`. Missing/unsupported parents or failed inspection stop creation;
 Wi-Fi, bonds, VLANs, bridges and enslaved interfaces are outside this initial
@@ -444,8 +469,8 @@ definition offline; `create --dry-run` also inspects the host attachment.
 
 The physical LAN must permit guest MAC addresses and provide DHCP or appropriate
 static addressing. Confirm these with the network administrator; local preflight
-cannot verify them. Manage the guest from another LAN computer: the host cannot
-directly reach the guest through this parent. No second management NIC is added.
+cannot verify them. Switch or provider limits on additional MAC addresses may
+prevent guest connectivity even when local validation succeeds.
 External DHCP leases may not appear in libvirt; guest-agent address discovery
 requires a working guest agent and channel. With `cloud_init.qemu_guest_agent: true`
 (the default), kvm-vm adds the virtio agent channel and cloud-init installs the
