@@ -12,9 +12,9 @@ repeatable VM provisioning much safer than ad-hoc `virt-install` command lines.
 ## Commands
 
 ```text
-kvm-vm create <vm.yaml> [--refresh-image] [--no-start] [--dry-run]
-kvm-vm clone <source-vm> <target.yaml> [--no-start] [--dry-run]
-kvm-vm reinstall <vm> [--os <os>] [--image-url <url>] [--image-path <path>] [--refresh-image] [--no-start] [--dry-run] [--yes] [--force]
+kvm-vm create <vm.yaml> [--console-password-file <path>] [--refresh-image] [--no-start] [--dry-run]
+kvm-vm clone <source-vm> <target.yaml> [--console-password-file <path>] [--no-start] [--dry-run]
+kvm-vm reinstall <vm> [--console-password-file <path>] [--os <os>] [--image-url <url>] [--image-path <path>] [--refresh-image] [--no-start] [--dry-run] [--yes] [--force]
 kvm-vm list [--managed] [--ips]
 kvm-vm status <vm>
 kvm-vm console <vm>
@@ -40,7 +40,7 @@ apt install \
   libvirt-daemon-system libvirt-clients \
   virt-install cloud-image-utils \
   python3 python3-yaml \
-  guestfs-tools libosinfo-bin iproute2 openssh-client
+  guestfs-tools libosinfo-bin iproute2 openssh-client openssl
 ```
 
 *(Note: On Debian 11 or older releases, use `virtinst` instead of `virt-install`, and `libguestfs-tools` instead of `guestfs-tools`)*
@@ -51,7 +51,7 @@ RHEL / Rocky / Alma family:
 dnf install \
   qemu-kvm qemu-img libvirt virt-install \
   xorriso python3 python3-pyyaml \
-  guestfs-tools libosinfo iproute openssh-clients
+  guestfs-tools libosinfo iproute openssh-clients openssl
 
 # Start and enable libvirt daemon (RHEL does not start services automatically)
 sudo systemctl enable --now libvirtd
@@ -63,6 +63,9 @@ For building cloud-init seed images, `kvm-vm` automatically detects and uses any
 
 `virt-sysprep` and `virt-customize` are needed only for `clone`, but installing them on
 a management host is recommended.
+
+OpenSSL is required when enabling console passwords. Credential delivery requires
+POSIX ownership and permissions on the Linux management host.
 
 ### SSH key
 
@@ -198,8 +201,10 @@ ssh -p 2222 admin@<vm-ip> -i ~/.ssh/id_ed25519
 
 > [!NOTE]
 > **SSH key-only security policy**:
-> `kvm-vm` provisions instances with SSH password authentication and direct root login disabled (`lock_passwd: true`, `ssh_pwauth: false`, `disable_root: true`).
-> See [Security policy & out-of-band recovery](#security-policy-and-out-of-band-recovery) for details on root password configuration, console login, and emergency SSH key recovery.
+> SSH remains key-only. The management user's password is locked by default;
+> [optional console password login](#optional-console-password-login) enables a local
+> password without enabling SSH password authentication or setting a root password.
+> See [Security policy and out-of-band recovery](#security-policy-and-out-of-band-recovery) for emergency access.
 
 ## YAML definition
 
@@ -242,6 +247,7 @@ network:
 
 cloud_init:
   user: admin
+  console_password: false
   ssh_port: 22
   ssh_authorized_keys:
     - file:~/.ssh/id_ed25519.pub
@@ -255,7 +261,7 @@ cloud_init:
 ```
 
 `cloud_init.ssh_port` accepts an integer from `1` to `65535` and defaults to `22`.
-With the default, the tool leaves the image's SSH configuration unchanged.
+With the default, the tool leaves the image's SSH port configuration unchanged.
 For example, set `ssh_port: 2222` to listen on TCP port 2222. During first-boot
 provisioning, after your `runcmd` commands, the tool replaces active `Port` directives
 in `/etc/ssh/sshd_config` and `/etc/ssh/sshd_config.d/*.conf`, validates the SSH
@@ -299,7 +305,11 @@ the definition does not depend on whether a distribution originally calls it `en
 
 ## Environment variables
 
-All storage paths, libvirt connection URI, and VM definition values can be overridden with environment variables (taking precedence over YAML files and built-in defaults):
+The variables below override paths, the libvirt URI and selected definition values.
+Definition overrides take precedence over YAML for `validate`, `create` and `clone`.
+`reinstall` preserves saved definition values and ignores these ambient definition
+overrides. Console-password opt-in is a YAML setting; credential delivery uses an
+explicit CLI argument, not an environment variable.
 
 ### Paths & System Configuration
 
@@ -321,14 +331,15 @@ All storage paths, libvirt connection URI, and VM definition values can be overr
 | `KVM_VM_MEMORY` / `KVM_VM_MEMORY_MIB` | `vm.memory_mib` | `4096` | Overrides memory in MiB (>= 256) |
 | `KVM_VM_DISK` / `KVM_VM_DISK_GIB` | `storage.disk_gib` | `50` | Overrides disk size in GiB (>= 1) |
 | `KVM_VM_OS` | `image.distro` / `os_variant` | `rocky9` | Overrides distro alias (see [Distro aliases](#distro-aliases)) and `os_variant` |
-| `KVM_VM_BRIDGE` | `network.bridge` | `br0` | Default or override bridge interface for bridge mode |
+| `KVM_VM_BRIDGE` | `network.mode`, `network.bridge` | `br0` | Selects bridge mode and its bridge; conflicts with Macvtap |
+| `KVM_VM_MACVTAP` | `network.mode`, `network.parent` | `eno1` | Selects Macvtap and its physical parent, including for bridge/NAT YAML; empty values and simultaneous `KVM_VM_BRIDGE` are errors |
 | `KVM_VM_IPV4` | `network.ipv4` | `dhcp`, `192.168.1.50/24` | Sets method (`dhcp`, `disabled`) or static CIDR address |
 | `KVM_VM_GATEWAY` | `network.ipv4.gateway` | `192.168.1.1` | Overrides default IPv4 gateway |
 | `KVM_VM_DNS` | `network.ipv4.dns` | `1.1.1.1,8.8.8.8` | Overrides DNS servers (comma-separated) |
 
 ## Network modes
 
-`kvm-vm` supports two single-NIC attachment modes.
+`kvm-vm` supports three single-NIC attachment modes: bridge, NAT and Macvtap.
 
 ### Bridge mode
 
@@ -392,6 +403,62 @@ choice for a NAT network because libvirt's network DHCP service then owns addres
 allocation. A static guest address is still accepted, but you are responsible for keeping
 it inside the NAT subnet and outside conflicting DHCP allocations/reservations.
 
+### Macvtap mode
+
+Macvtap puts the VM directly on the physical LAN without moving the host's
+interface into a Linux bridge. Merge this network section into your VM definition:
+
+```yaml
+network:
+  mode: macvtap
+  parent: eno1
+  model: virtio
+  mac: auto
+  ipv4:
+    method: dhcp
+  ipv6:
+    method: disabled
+```
+
+Or use an existing definition with deployment-time overrides:
+
+```bash
+sudo KVM_VM_MACVTAP=eno1 KVM_VM_IPV4=dhcp \
+  kvm-vm create examples/ubuntu24-web01.yaml
+```
+
+Replace `eno1` with your existing physical Ethernet interface. For static IPv4,
+use the same `address`, `gateway` and `dns` fields shown in the YAML example above,
+or `KVM_VM_IPV4`, `KVM_VM_GATEWAY` and `KVM_VM_DNS`.
+
+Macvtap forwarding is fixed to bridge mode. `KVM_VM_MACVTAP` selects both mode
+and parent, including for bridge/NAT definitions. Empty values are errors.
+Unset `KVM_VM_BRIDGE` when selecting Macvtap through YAML or the environment;
+the two settings conflict.
+
+The parent must already be up, standalone and visible through Linux sysfs and
+`ip -j -d link`. Missing/unsupported parents or failed inspection stop creation;
+Wi-Fi, bonds, VLANs, bridges and enslaved interfaces are outside this initial
+support. kvm-vm never configures or deletes the parent. `validate` checks the
+definition offline; `create --dry-run` also inspects the host attachment.
+
+The physical LAN must permit guest MAC addresses and provide DHCP or appropriate
+static addressing. Confirm these with the network administrator; local preflight
+cannot verify them. Manage the guest from another LAN computer: the host cannot
+directly reach the guest through this parent. No second management NIC is added.
+External DHCP leases may not appear in libvirt; guest-agent address discovery
+requires a working guest agent and channel. With `cloud_init.qemu_guest_agent: true`
+(the default), kvm-vm adds the virtio agent channel and cloud-init installs the
+guest agent. Wait for guest provisioning before relying on `list --ips`.
+
+Create and clone save the effective attachment. Reinstall retains it and ignores
+`KVM_VM_MACVTAP` and other ambient network overrides. On another host, provide
+a suitable parent before using a restored definition. Serial console attachment
+alone does not unlock the default user's password; see the console policy below.
+Static networking, controlled LAN DHCP, guest-agent discovery and lifecycle behavior
+have passed [real-host network acceptance](docs/plans/20261019_macvtap-console/ticket-05-validation.md).
+Your LAN must still meet the MAC-address and addressing requirements above.
+
 ## List and status
 
 Fast list without IP discovery:
@@ -421,34 +488,6 @@ kvm-vm status web01
 `status` shows libvirt domain information, the kvm-vm state manifest, disks, interfaces,
 and addresses known to libvirt.
 
-## Macvtap attachment
-
-Use `network.mode: macvtap` and `network.parent: eno1` to attach one guest NIC
-directly to an existing physical wired Ethernet interface in Macvtap bridge
-mode. Alternatively, `KVM_VM_MACVTAP=eno1 kvm-vm create vm.yaml` selects both
-mode and parent, including for bridge/NAT definitions. Empty values are errors.
-Do not combine `KVM_VM_BRIDGE` with Macvtap in the definition or environment;
-unset the conflicting variable. Existing IP, gateway and DNS overrides apply.
-
-The parent must already be up, standalone and visible through Linux sysfs and
-`ip -j -d link`. Missing/unsupported parents or failed inspection stop creation;
-Wi-Fi, bonds, VLANs, bridges and enslaved interfaces are outside this initial
-support. kvm-vm never configures or deletes the parent. `validate` checks the
-definition offline; `create --dry-run` also inspects the host attachment.
-
-The physical LAN must permit guest MAC addresses and provide DHCP or appropriate
-static addressing. Confirm these with the network administrator; local preflight
-cannot verify them. Manage the guest from another LAN computer: the host cannot
-directly reach the guest through this parent. No second management NIC is added.
-External DHCP leases may not appear in libvirt; guest-agent address discovery
-requires a working guest agent and channel.
-
-Create and clone save the effective attachment. Reinstall retains it and ignores
-`KVM_VM_MACVTAP` and other ambient network overrides. On another host, provide
-a suitable parent before using a restored definition. Serial console attachment
-alone does not unlock the default user's password; see the console policy below.
-Real-host acceptance remains pending until the documented LAN tests pass.
-
 ## Serial console
 
 ```bash
@@ -457,50 +496,104 @@ kvm-vm console web01
 
 Exit `virsh console` with `Ctrl+]`.
 
-> **Note**: As detailed in [Security policy](#security-policy-and-out-of-band-recovery), user passwords are locked by default (`lock_passwd: true`). If you need to log into the console via keyboard, see [Root password configuration](#root-password-configuration) below.
+Attaching the console does not enable password login. To manage a Macvtap VM from
+its host, opt into the management-user password described below before provisioning.
+This also works with bridge and NAT; no second management NIC is required.
+
+## Optional console password login
+
+Set `cloud_init.console_password: true` to enable a random local password for
+the configured non-root management user. This is independent of bridge, NAT or
+Macvtap networking; the default remains locked. Keep SSH authorized keys configured.
+
+Merge these fields into your existing `cloud_init` section:
+
+```yaml
+cloud_init:
+  user: admin
+  console_password: true
+  ssh_authorized_keys:
+    - file:~/.ssh/id_ed25519.pub
+```
+
+For a definition whose `vm.name` is `web01`:
+
+```bash
+sudo install -d -m 0700 /root/vm-credentials
+sudo kvm-vm create web01.yaml --console-password-file /root/vm-credentials/web01.json
+sudo kvm-vm console web01
+```
+
+The destination must be a new file inside a private directory owned by the
+invoking administrator. Symlinks and existing destinations are rejected.
+The JSON file has mode 0600 and contains `vm`, `user` and `password`, with a new
+24-character random password. Read it locally through an
+authorized administrative session and use its `user` and `password` at the login prompt. Passwords
+are never printed by the CLI or saved in managed definitions/state; only a
+salted hash enters restricted cloud-init artifacts. The host needs OpenSSL.
+`validate` generates no password or credential file. For enabled policies,
+`create`, `clone` and `reinstall` require `--console-password-file`, including
+with `--dry-run`; preview validates the destination but does not create it.
+Supplying the argument when the policy is disabled is an error.
+
+The guest initially keeps the password locked. Final provisioning disables SSH
+password and keyboard-interactive authentication, checks SSH configuration and
+starts the serial getty before unlocking. SSH key login remains available.
+Creation success does not prove provisioning or console login succeeded; check
+cloud-init and test the login. See the [acceptance results below](#macvtap-and-console-acceptance).
+No root password or autologin is enabled: `disable_root` controls SSH access and
+does not by itself establish the local root account's password policy.
+
+The password is not intrinsically limited to the serial device. Its holder gains
+administrator access through the management user's existing passwordless sudo.
+There is no forced expiration or first-login password change. Protect the file,
+and retain it after a later creation failure because surviving resources may use
+it. Retries require a new destination. Deleting a VM does not delete this file;
+the operator owns cleanup. Guest-side password changes make the initial file
+stale. Lost credentials require another authorized access path or an offline
+reset; there is no password retrieval command.
+
+Clones use the target definition's policy. An enabled target requires a new file:
+
+```bash
+sudo kvm-vm clone source target.yaml --console-password-file /root/vm-credentials/target.json
+```
+
+Each enabled clone receives an independent credential. Before boot, the cloned
+disk's target management password and any known opted-in source management
+password are locked offline; only the enabled target is subsequently unlocked
+with its new credential. A disabled target remains locked. The source VM is
+unchanged. Delivery failure leaves guest resources untouched; later failures
+retain target resources and delivered credentials.
+
+Reinstall preserves the saved console policy and network configuration. An
+enabled VM requires a new destination and receives a new password:
+
+```bash
+sudo kvm-vm reinstall vm --yes --console-password-file /root/vm-credentials/vm-reinstalled.json
+```
+
+Credential validation and delivery finish before forced shutdown or disk
+replacement. Existing credential files are never overwritten or removed. A
+disabled or legacy VM remains password-locked and needs no destination.
+`--dry-run` generates no credential. After replacement, the previous password
+does not apply; verify guest provisioning and login with the newly delivered
+credential. Failures after replacement retain surviving resources and cannot
+promise restoration of the original disk.
 
 ## Security policy and out-of-band recovery
 
-By default, `kvm-vm` provisions instances with a strict production-grade security policy via cloud-init:
-- **SSH key-only**: `ssh_pwauth: false` disables password login over SSH.
-- **Locked password**: `lock_passwd: true` locks the default user account password.
-- **Root login disabled**: `disable_root: true` prevents direct root login.
+By default, cloud-init locks the management user's password (`lock_passwd: true`),
+disables SSH password authentication (`ssh_pwauth: false`) and disables direct
+root SSH access (`disable_root: true`). Console opt-in keeps SSH key-only and
+unlocks the non-root management user only after the final SSH policy checks.
+It does not set a root password or enable autologin. Custom images retain their
+own local root-account policy.
 
-Because passwords are locked by default, you **cannot** log into the serial console (`kvm-vm console <vm>`) with a password out-of-the-box. When you need emergency console access or need to recover from lost credentials, use the out-of-band methods below.
-
-### Root password configuration
-
-To configure a root password for local serial console login:
-
-1. **Recommended method (out-of-band via `virt-customize`)**:
-   Shut down the VM, then inject the root password from standard input. This is strongly recommended because it avoids leaking plaintext passwords in definition YAML files, shell history (`~/.bash_history`), or process tables (`ps`):
-
-   ```bash
-   # 1. Shut down the VM first
-   virsh shutdown web01
-
-   # 2. Securely inject root password from stdin
-   virt-customize -d web01 --root-password file:/dev/stdin
-   # (enter your password and press Enter, then Ctrl+D)
-   ```
-
-   Alternatively, pass a secured temporary file or target the disk image directly:
-
-   ```bash
-   virt-customize -a /var/lib/libvirt/images/vm/web01.qcow2 --root-password file:/path/to/file
-   ```
-
-2. **During initial creation (via `runcmd`)**:
-   You can also set a password during creation in the YAML definition (note: the password is stored in plaintext in the YAML file):
-
-   ```yaml
-   cloud_init:
-     user: admin
-     ssh_authorized_keys:
-       - file:~/.ssh/id_ed25519.pub
-     runcmd:
-       - "echo 'root:YourPasswordHere' | chpasswd"
-   ```
+For planned console access, use [console password login](#optional-console-password-login)
+instead of placing passwords in YAML or `runcmd`. If no usable console credential
+or SSH key remains, use the offline SSH-key recovery procedure below. Confirm the
+VM is fully shut off before editing its disk.
 
 ### SSH key recovery
 
@@ -562,7 +655,7 @@ The state/definition is retained in this case to avoid silently orphaning storag
 
 ## Reinstall a VM
 
-Reinstalling an existing managed VM provisions a fresh operating system disk from a base cloud image while preserving all other VM configurations (vCPUs, RAM, disk capacity, assigned MAC address, static/DHCP IP, cloud-init user/SSH keys, network mode/bridge):
+Reinstalling an existing managed VM provisions a fresh operating system disk from a base cloud image while preserving vCPUs, RAM, disk capacity, MAC address, IP configuration, cloud-init user/SSH keys, console policy and network attachment (bridge, NAT network or Macvtap parent). An enabled console password is rotated; it is not preserved.
 
 ```bash
 # Reinstall using the existing OS from the VM definition
@@ -574,6 +667,7 @@ kvm-vm reinstall web01 --os debian13
 
 ### Options
 
+- `--console-password-file <path>`: Required when the saved console policy is enabled; deliver a new credential to a new private file before shutdown or disk replacement. See [console password login](#optional-console-password-login).
 - `--os <distro|url|path>`: Distro alias (see [Distro aliases](#distro-aliases)), custom image URL, or local image path.
 - `--image-url <url>`: Explicitly specify a cloud image URL.
 - `--image-path <path>`: Explicitly specify a local cloud image path.
@@ -727,7 +821,7 @@ kvm-vm clone source-vm target.yaml --dry-run
 kvm-vm reinstall web01 --os debian13 --dry-run
 ```
 
-Runs all pre-flight checks (YAML normalization, domain/state collision checks, bridge/NAT
+Runs all pre-flight checks (YAML normalization, domain/state collision checks, bridge/NAT/Macvtap
 validation, MAC allocation, and SSH key resolution) and prints the normalized YAML without
 downloading images, touching disks, or defining libvirt domains. For `clone`, it also verifies
 `virt-sysprep` compatibility against the source disk using a dry-run check before any disk conversion.
@@ -908,68 +1002,18 @@ sudo KVM_VM_E2E_DISTROS=ubuntu26.04,debian13,rocky8,rocky9,rocky10,almalinux8,al
 See [the real-machine verification report](tests/REAL_MACHINE_RESULTS.md) for
 the tested images, boot fix, and hardware limitations of the verification host.
 
-## Optional console password login
+### Macvtap and console acceptance
 
-Set `cloud_init.console_password: true` to enable a random local password for
-the configured non-root management user. This is independent of bridge, NAT or
-Macvtap networking; the default remains locked. Keep SSH authorized keys configured.
+The [Macvtap workflow](tests/MACVTAP_ACCEPTANCE.md) and
+[console workflow](tests/CONSOLE_ACCEPTANCE.md) describe opt-in real-machine tests.
+They require an authorized KVM host; bridge/Macvtap SSH checks need an independent
+client that can reach the guest. Console tests additionally use Paramiko on the
+controller and pexpect on the Linux host; these are not product dependencies.
 
-```bash
-sudo install -d -m 0700 /root/vm-credentials
-sudo kvm-vm create vm.yaml --console-password-file /root/vm-credentials/vm.json
-sudo kvm-vm console vm
-```
-
-The destination must be a new file inside a private directory owned by the
-invoking administrator. Symlinks and existing destinations are rejected.
-The JSON file contains `vm`, `user`, and a new 24-character password, with mode
-0600. Read it locally through an authorized administrative session. Passwords
-are never printed by the CLI or saved in managed definitions/state; only a
-salted hash enters restricted cloud-init artifacts. The host needs OpenSSL.
-`validate` and `create --dry-run` generate no password or credential file.
-
-The guest initially keeps the password locked. Final provisioning disables SSH
-password and keyboard-interactive authentication, checks SSH configuration and
-starts the serial getty before unlocking. SSH key login remains available.
-Creation success does not prove provisioning or console login succeeded; check
-cloud-init and test the login. Supported-image acceptance is tracked separately.
-No root password or autologin is enabled: `disable_root` controls SSH access and
-does not by itself establish the local root account's password policy.
-
-The password is not intrinsically limited to the serial device. Its holder gains
-administrator access through the management user's existing passwordless sudo.
-There is no forced expiration or first-login password change. Protect the file,
-and retain it after a later creation failure because surviving resources may use
-it. Retries require a new destination. Deleting a VM does not delete this file;
-the operator owns cleanup. Guest-side password changes make the initial file
-stale. Lost credentials require another authorized access path or an offline
-reset; there is no password retrieval command.
-
-Clones use the target definition's policy. An enabled target requires a new file:
-
-```bash
-sudo kvm-vm clone source target.yaml --console-password-file /root/vm-credentials/target.json
-```
-
-Each enabled clone receives an independent credential. Before boot, the cloned
-disk's target management password and any known opted-in source management
-password are locked offline; only the enabled target is subsequently unlocked
-with its new credential. A disabled target remains locked. The source VM is
-unchanged. Delivery failure leaves guest resources untouched; later failures
-retain target resources and delivered credentials. Actual rejection of old
-passwords remains part of real-image acceptance.
-
-Reinstall preserves the saved console policy and network configuration. An
-enabled VM requires a new destination and receives a new password:
-
-```bash
-sudo kvm-vm reinstall vm --yes --console-password-file /root/vm-credentials/vm-reinstalled.json
-```
-
-Credential validation and delivery finish before forced shutdown or disk
-replacement. Existing credential files are never overwritten or removed. A
-disabled or legacy VM remains password-locked and needs no destination.
-`--dry-run` generates no credential. After replacement, the previous password
-does not apply; verify guest provisioning and login with the newly delivered
-credential. Failures after replacement retain surviving resources and cannot
-promise restoration of the original disk.
+Console login, sudo, key-only SSH and reboot checks passed on Debian 12/13,
+Ubuntu 24.04/26.04, Rocky Linux 8 and AlmaLinux 8. The matrix also covers locked
+defaults across all three modes, clone credential isolation and reinstall rotation.
+Rocky/AlmaLinux 9/10 console acceptance remains pending compatible hardware; the
+complete image matrix is not yet accepted. See the
+[console validation report](docs/plans/20261019_macvtap-console/ticket-06-validation.md)
+for exact coverage, retained failures and successful continuations.

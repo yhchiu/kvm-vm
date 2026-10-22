@@ -8,9 +8,9 @@
 ## 指令
 
 ```text
-kvm-vm create <vm.yaml> [--refresh-image] [--no-start] [--dry-run]
-kvm-vm clone <source-vm> <target.yaml> [--no-start] [--dry-run]
-kvm-vm reinstall <vm> [--os <os>] [--image-url <url>] [--image-path <path>] [--refresh-image] [--no-start] [--dry-run] [--yes] [--force]
+kvm-vm create <vm.yaml> [--console-password-file <path>] [--refresh-image] [--no-start] [--dry-run]
+kvm-vm clone <source-vm> <target.yaml> [--console-password-file <path>] [--no-start] [--dry-run]
+kvm-vm reinstall <vm> [--console-password-file <path>] [--os <os>] [--image-url <url>] [--image-path <path>] [--refresh-image] [--no-start] [--dry-run] [--yes] [--force]
 kvm-vm list [--managed] [--ips]
 kvm-vm status <vm>
 kvm-vm console <vm>
@@ -36,7 +36,7 @@ apt install \
   libvirt-daemon-system libvirt-clients \
   virt-install cloud-image-utils \
   python3 python3-yaml \
-  guestfs-tools libosinfo-bin iproute2 openssh-client
+  guestfs-tools libosinfo-bin iproute2 openssh-client openssl
 ```
 
 *(附註：在 Debian 11 或較舊的發行版上，請使用 `virtinst` 代替 `virt-install`，並使用 `libguestfs-tools` 代替 `guestfs-tools`)*
@@ -47,7 +47,7 @@ RHEL / Rocky / Alma 系列：
 dnf install \
   qemu-kvm qemu-img libvirt virt-install \
   xorriso python3 python3-pyyaml \
-  guestfs-tools libosinfo iproute openssh-clients
+  guestfs-tools libosinfo iproute openssh-clients openssl
 
 # 啟動並設定開機自啟 libvirt 服務（RHEL 系列安裝後預設不會自動啟動服務）
 sudo systemctl enable --now libvirtd
@@ -58,6 +58,9 @@ sudo systemctl enable --now libvirtd
 建立 cloud-init seed 映像檔時，`kvm-vm` 會自動偵測並優先使用宿主機上可用的工具：`cloud-localds`（來自 `cloud-image-utils` 或 `cloud-utils`）、`genisoimage`、`mkisofs` 或 `xorriso`。
 
 `virt-sysprep` 與 `virt-customize` 僅在執行 `clone` 時需要，但仍建議在管理主機上安裝。
+
+啟用 Console 密碼時需要 OpenSSL，憑證交付需在具備 POSIX 擁有權與權限機制的
+Linux 管理主機上執行。
 
 ### SSH 金鑰
 
@@ -189,8 +192,9 @@ ssh -p 2222 admin@<vm-ip> -i ~/.ssh/id_ed25519
 
 > [!NOTE]
 > **僅限 SSH 金鑰登入安全策略**：
-> `kvm-vm` 建立的虛擬機器預設禁用 SSH 密碼認證與 root 直接登入（`lock_passwd: true`, `ssh_pwauth: false`, `disable_root: true`）。
-> 詳細的 root 密碼設定、主控台登入方式以及緊急 SSH 金鑰救援，請參閱[安全策略與帶外救援維護](#安全策略與帶外救援維護)。
+> SSH 維持僅金鑰登入。管理帳號密碼預設鎖定；[選用 Console 密碼登入](#選用-console-密碼登入)
+> 可啟用本機密碼，但不開啟 SSH 密碼認證或設定 root 密碼。緊急存取請見
+> [安全策略與帶外救援維護](#安全策略與帶外救援維護)。
 
 ## YAML 定義範例
 
@@ -233,6 +237,7 @@ network:
 
 cloud_init:
   user: admin
+  console_password: false
   ssh_port: 22
   ssh_authorized_keys:
     - file:~/.ssh/id_ed25519.pub
@@ -245,7 +250,7 @@ cloud_init:
   runcmd: []
 ```
 
-`cloud_init.ssh_port` 接受 `1–65535` 的整數，預設為 `22`。使用預設值時，工具不會改動映像檔原本的 SSH 設定。例如，設定 `ssh_port: 2222` 即使用 TCP port 2222。首次初始化時，工具會在使用者的 `runcmd` 執行後，替換 `/etc/ssh/sshd_config` 和 `/etc/ssh/sshd_config.d/*.conf` 中啟用的 `Port` 設定，驗證 SSH 設定並重啟監聽服務。若 SSH 由 `ssh.socket` 啟動（例如 Ubuntu），工具還會寫入 `/etc/systemd/system/ssh.socket.d/zz-kvm-vm-port.conf`；socket 的 port 由這個檔案決定，之後若要手動改 port，請一併修改或刪除它。Clone 使用目標 YAML 的 port（省略時為 22）；若 clone 使用 22，工具會移除來源 VM 留下的 `Port` 設定與 socket 設定檔，讓 SSH 回到映像檔預設值。Reinstall 保留已儲存的 port。單純修改定義檔不會更新正在運行的 VM。
+`cloud_init.ssh_port` 接受 `1–65535` 的整數，預設為 `22`。使用預設值時，工具不會改動映像檔原本的 SSH 連接埠設定。例如，設定 `ssh_port: 2222` 即使用 TCP port 2222。首次初始化時，工具會在使用者的 `runcmd` 執行後，替換 `/etc/ssh/sshd_config` 和 `/etc/ssh/sshd_config.d/*.conf` 中啟用的 `Port` 設定，驗證 SSH 設定並重啟監聽服務。若 SSH 由 `ssh.socket` 啟動（例如 Ubuntu），工具還會寫入 `/etc/systemd/system/ssh.socket.d/zz-kvm-vm-port.conf`；socket 的 port 由這個檔案決定，之後若要手動改 port，請一併修改或刪除它。Clone 使用目標 YAML 的 port（省略時為 22）；若 clone 使用 22，工具會移除來源 VM 留下的 `Port` 設定與 socket 設定檔，讓 SSH 回到映像檔預設值。Reinstall 保留已儲存的 port。單純修改定義檔不會更新正在運行的 VM。
 
 請讓 VM 內及上游防火牆允許所選的 port。Rocky/Alma 等啟用 SELinux 的 VM，還需在 SSH 重啟前授權自訂 port。例如，若該 port 尚未在 SELinux policy 中指定用途：
 
@@ -268,7 +273,9 @@ SSH 金鑰可以是純文字 OpenSSH 公鑰字串，或是 `file:/path/to/key.pu
 
 ## 環境變數
 
-所有儲存路徑、libvirt 連線 URI 以及虛擬機器設定值皆可透過環境變數進行覆寫（優先權高於 YAML 定義與內建預設值）：
+下列變數可覆寫路徑、libvirt URI 與部分定義欄位。定義覆寫在 `validate`、`create`、
+`clone` 生效，優先權高於 YAML；`reinstall` 保留已儲存的定義值，忽略這些環境覆寫。
+Console 密碼由 YAML 明確啟用，交付路徑使用 CLI 參數，不提供環境變數覆寫。
 
 ### 路徑與系統配置
 
@@ -290,18 +297,19 @@ SSH 金鑰可以是純文字 OpenSSH 公鑰字串，或是 `file:/path/to/key.pu
 | `KVM_VM_MEMORY` / `KVM_VM_MEMORY_MIB` | `vm.memory_mib` | `4096` | 覆寫記憶體容量（MiB，>= 256） |
 | `KVM_VM_DISK` / `KVM_VM_DISK_GIB` | `storage.disk_gib` | `50` | 覆寫磁碟大小（GiB，>= 1） |
 | `KVM_VM_OS` | `image.distro` / `os_variant` | `rocky9` | 覆寫發行版別名（詳見[發行版別名](#發行版別名)）與 `os_variant` |
-| `KVM_VM_BRIDGE` | `network.bridge` | `br0` | 橋接模式下預設或覆寫使用的 Bridge 名稱 |
+| `KVM_VM_BRIDGE` | `network.mode`, `network.bridge` | `br0` | 同時選擇 bridge 模式與橋接介面；與 Macvtap 衝突 |
+| `KVM_VM_MACVTAP` | `network.mode`, `network.parent` | `eno1` | 同時選擇 Macvtap 與實體 parent，可切換原有 bridge／NAT YAML；空值或同時設定 `KVM_VM_BRIDGE` 會報錯 |
 | `KVM_VM_IPV4` | `network.ipv4` | `dhcp`, `192.168.1.50/24` | 設定 IP 取得方式（`dhcp`, `disabled`）或靜態 CIDR 位址 |
 | `KVM_VM_GATEWAY` | `network.ipv4.gateway` | `192.168.1.1` | 覆寫預設 IPv4 閘道 |
 | `KVM_VM_DNS` | `network.ipv4.dns` | `1.1.1.1,8.8.8.8` | 覆寫 DNS 伺服器列表（以逗號分隔） |
 
 ## 網路模式
 
-`kvm-vm` 支援兩種單網卡（single-NIC）連接模式。
+`kvm-vm` 支援三種單網卡連接模式：bridge、NAT 與 Macvtap。
 
 ### 橋接模式（Bridge mode）
 
-橋接模式為預設模式。如果省略 `network.mode` 與 `network.bridge`，虛擬機器將連接至 `br0`（或由 `KVM_VM_DEFAULT_BRIDGE` 指定的橋接介面）：
+橋接模式為預設模式。如果省略 `network.mode` 與 `network.bridge`，虛擬機器將連接至 `br0`（或由 `KVM_VM_BRIDGE` 指定的橋接介面）：
 
 ```yaml
 network:
@@ -352,6 +360,57 @@ virsh -c qemu:///system net-autostart default
 
 `examples/ubuntu24-nat.yaml` 提供了完整的 NAT 範例。對於 NAT 網路而言，DHCP 通常是最簡單的選擇，因為 IP 位址分配會由 libvirt 網路的 DHCP 服務負責管理。雖然系統也允許設定客體（Guest）靜態 IP，但您必須自行確保該位址位於 NAT 子網路內，且不會與 DHCP 分配或保留範圍發生衝突。
 
+### Macvtap 模式
+
+Macvtap 讓 VM 直接接入實體 LAN，無須將宿主機網卡改接 Linux bridge。
+將以下網路區段合併至 VM 定義：
+
+```yaml
+network:
+  mode: macvtap
+  parent: eno1
+  model: virtio
+  mac: auto
+  ipv4:
+    method: dhcp
+  ipv6:
+    method: disabled
+```
+
+也可以直接覆寫現有定義：
+
+```bash
+sudo KVM_VM_MACVTAP=eno1 KVM_VM_IPV4=dhcp \
+  kvm-vm create examples/ubuntu24-web01.yaml
+```
+
+請將 `eno1` 換成既有實體 Ethernet 介面。靜態 IPv4 沿用前述 YAML 的
+`address`、`gateway`、`dns` 欄位，或使用 `KVM_VM_IPV4`、`KVM_VM_GATEWAY`
+與 `KVM_VM_DNS` 覆寫。
+
+Macvtap 固定使用 bridge 轉送子模式。`KVM_VM_MACVTAP` 同時覆寫模式與 parent，
+包括原本的 bridge／NAT 定義。空值會報錯；從 YAML 或環境變數選擇 Macvtap 時，
+請移除 `KVM_VM_BRIDGE`，兩者不可並用。
+
+Parent 必須已啟用、未隸屬 bridge／bond，且能透過 Linux sysfs 與
+`ip -j -d link` 檢查。不存在、不支援或檢查失敗時會停止；首版不支援
+Wi-Fi、bond、VLAN、bridge 或從屬介面。工具不會設定或刪除 parent。
+`validate` 離線驗證定義；`create --dry-run` 另外檢查主機介面。
+
+LAN 必須允許額外的 VM MAC，並提供 DHCP 或適當靜態位址，這些需自行
+確認，不能由本機 preflight 保證。請從另一台 LAN 電腦管理 VM：宿主機
+無法經同一 parent 直接連入 VM，也不會自動新增管理網卡。外部 DHCP
+租約不一定出現在 libvirt；透過 guest agent 取得 IP 需 agent 與 channel 正常。
+`cloud_init.qemu_guest_agent: true`（預設）會加入 virtio agent channel，並由
+cloud-init 安裝 guest agent；請等待 Guest 初始化完成後再使用 `list --ips` 查詢。
+
+Create／clone 保存實際網路設定；reinstall 保留該設定並忽略
+`KVM_VM_MACVTAP` 等環境覆寫。跨主機還原時需提供相容的 parent。
+連上 serial console 不代表能密碼登入，預設使用者密碼仍鎖定，請參閱下方政策。
+靜態網路、受控 LAN DHCP、guest-agent 位址探索與生命週期行為已通過
+[實機網路驗收](docs/plans/20261019_macvtap-console/ticket-05-validation.md)。
+部署的 LAN 仍須符合前述 MAC 與位址配置需求。
+
 ## 列出與檢視狀態
 
 快速列出虛擬機器（不偵測 IP）：
@@ -380,29 +439,6 @@ kvm-vm status web01
 
 `status` 會顯示 libvirt 網域資訊、kvm-vm 狀態清單、磁碟、網路介面以及 libvirt 已知的 IP 位址。
 
-## Macvtap 網路
-
-設定 `network.mode: macvtap` 與 `network.parent: eno1`，即可用 Macvtap
-bridge 子模式將單張 VM 網卡接到既有實體有線介面。也可使用
-`KVM_VM_MACVTAP=eno1 kvm-vm create vm.yaml` 同時覆寫模式與 parent，
-包括原本的 bridge／NAT 定義。空值會報錯；Macvtap 不可與
-`KVM_VM_BRIDGE` 並用，請移除衝突的變數。IP、gateway、DNS 沿用既有覆寫。
-
-Parent 必須已啟用、未隸屬 bridge／bond，且能透過 Linux sysfs 與
-`ip -j -d link` 檢查。不存在、不支援或檢查失敗時會停止；首版不支援
-Wi-Fi、bond、VLAN、bridge 或從屬介面。工具不會設定或刪除 parent。
-`validate` 離線驗證定義；`create --dry-run` 另外檢查主機介面。
-
-LAN 必須允許額外的 VM MAC，並提供 DHCP 或適當靜態位址，這些需自行
-確認，不能由本機 preflight 保證。請從另一台 LAN 電腦管理 VM：宿主機
-無法經同一 parent 直接連入 VM，也不會自動新增管理網卡。外部 DHCP
-租約不一定出現在 libvirt；透過 guest agent 取得 IP 需 agent 與 channel 正常。
-
-Create／clone 保存實際網路設定；reinstall 保留該設定並忽略
-`KVM_VM_MACVTAP` 等環境覆寫。跨主機還原時需提供相容的 parent。
-連上 serial console 不代表能密碼登入，預設使用者密碼仍鎖定，請參閱下方政策。
-實機支援仍需通過 LAN 驗收，不能以產生設定成功代替。
-
 ## 序列主控台（Serial console）
 
 ```bash
@@ -411,50 +447,87 @@ kvm-vm console web01
 
 使用 `Ctrl+]` 退出 `virsh console`。
 
-> **附註**：如[安全策略](#安全策略與帶外救援維護)所述，使用者與 root 密碼預設為鎖定狀態（`lock_passwd: true`）。若需從主控台鍵盤登入，請參閱下方的 [Root 密碼設定](#root-密碼設定root-password-configuration)。
+連上 Console 不會自動啟用密碼登入。若要從宿主機管理 Macvtap VM，請在佈建前
+啟用下方的管理帳號密碼功能。此功能也適用於 bridge 與 NAT，無須新增第二張管理網卡。
+
+## 選用 Console 密碼登入
+
+設定 `cloud_init.console_password: true`，可為指定的非 root 管理帳號產生隨機
+本機密碼。此設定與 bridge、NAT、Macvtap 網路無關，預設仍鎖定密碼。
+SSH 公鑰設定仍為必要項目。
+
+將以下欄位合併至既有的 `cloud_init` 區段：
+
+```yaml
+cloud_init:
+  user: admin
+  console_password: true
+  ssh_authorized_keys:
+    - file:~/.ssh/id_ed25519.pub
+```
+
+若定義中的 `vm.name` 為 `web01`：
+
+```bash
+sudo install -d -m 0700 /root/vm-credentials
+sudo kvm-vm create web01.yaml --console-password-file /root/vm-credentials/web01.json
+sudo kvm-vm console web01
+```
+
+目的檔案必須尚不存在，並放在執行管理員擁有的私有目錄內；既有檔案與符號連結
+會被拒絕。JSON 欄位為 `vm`、`user`、`password`，密碼為隨機 24 字元，檔案權限為 0600。
+請透過已授權的管理連線在本機讀取，並在登入提示使用其中的 `user` 與 `password`。
+CLI 不輸出密碼，受管理的定義與 state
+不儲存密碼；cloud-init 的受限檔案僅包含加鹽雜湊。宿主機需要 OpenSSL。
+`validate` 不產生密碼或憑證檔。政策啟用時，`create`、`clone`、`reinstall`
+都必須指定 `--console-password-file`，包括 `--dry-run`；預覽只驗證目的路徑，
+不建立憑證檔。政策停用時提供此參數則會報錯。
+
+Guest 起初保持帳號密碼鎖定；最後的佈建步驟關閉 SSH password 與
+keyboard-interactive 驗證、檢查 SSH 設定並啟動 serial getty，成功後才解鎖。
+SSH 公鑰登入保留。建立成功不代表佈建或 Console 登入成功，應檢查 cloud-init
+並實際登入；驗收範圍請見[下方結果](#macvtap-與-console-驗收)。不設定 root 密碼或自動登入：
+`disable_root` 控制 SSH 存取，本身不決定本機 root 帳號的密碼政策。
+
+本機密碼並非只限於 Serial console 使用。持有人可透過管理帳號既有的免密碼 sudo
+取得管理權限。預設不強制到期或首次登入更換。後續建立失敗時應保留憑證檔，
+因為殘留資源可能已使用該密碼；重試必須選用新目的檔案。
+刪除 VM 不會刪除此檔案，清理責任屬於管理員。在 Guest 內更換密碼後，初始檔案
+即失效；遺失憑證時需使用其他已授權存取方式或離線重設，沒有密碼取回命令。
+
+Clone 使用目標定義的政策。啟用密碼的目標必須指定新的憑證檔：
+
+```bash
+sudo kvm-vm clone source target.yaml --console-password-file /root/vm-credentials/target.json
+```
+
+每個啟用密碼的 clone 都會取得獨立憑證。開機前會離線鎖定複製磁碟內的目標管理
+帳號，以及已知啟用 Console 密碼的來源管理帳號；之後僅為啟用功能的目標帳號
+套用新憑證並解鎖。未啟用的目標保持鎖定，來源 VM 不變。交付失敗不修改 Guest
+資源；較晚的失敗保留目標資源與已交付憑證。
+
+Reinstall 保留已儲存的 Console 政策與網路設定。啟用密碼的 VM 必須指定新的
+目的檔案，並取得新密碼：
+
+```bash
+sudo kvm-vm reinstall vm --yes --console-password-file /root/vm-credentials/vm-reinstalled.json
+```
+
+憑證檢查與交付會在強制關機或替換磁碟前完成。既有憑證檔不會被覆寫或刪除。
+未啟用此功能或舊版定義的 VM 保持密碼鎖定，不需指定目的檔案。
+`--dry-run` 不產生憑證。替換後舊密碼不再適用，應使用新交付的憑證驗證 Guest
+佈建與登入。替換後失敗會保留殘存資源，但不保證能還原原始磁碟。
 
 ## 安全策略與帶外救援維護
 
-`kvm-vm` 預設透過 cloud-init 套用嚴格的生產級安全策略：
-- **僅限 SSH 金鑰**：`ssh_pwauth: false` 禁用 SSH 密碼認證。
-- **使用者密碼鎖定**：`lock_passwd: true` 鎖定預設使用者的密碼。
-- **禁用 root 登入**：`disable_root: true` 防止直接以 root 身分登入。
+預設由 cloud-init 鎖定管理帳號密碼（`lock_passwd: true`）、停用 SSH 密碼認證
+（`ssh_pwauth: false`），並停用 root 直接 SSH 存取（`disable_root: true`）。
+啟用 Console 密碼仍維持 SSH 僅金鑰登入，完成最後的 SSH 政策檢查後才解鎖非 root
+管理帳號；不設定 root 密碼或啟用自動登入。自訂映像本身的本機 root 帳號政策仍須自行確認。
 
-由於密碼預設鎖定，剛建立的虛擬機器**無法直接透過序列主控台（`kvm-vm console <vm>`）進行密碼登入**。當遇到無網路環境需本機登入或私鑰遺失時，請透過以下帶外（out-of-band）方式處理：
-
-### Root 密碼設定（Root password configuration）
-
-若需要設定 root 密碼以供本機序列主控台登入：
-
-1. **推薦方式（停機透過 `virt-customize` 帶外注入）**：
-   將虛擬機器關機後，透過標準輸入（stdin）安全寫入 root 密碼。強烈推薦此方式，因為它能**避免明文密碼外洩於 YAML 定義檔、Shell 歷史紀錄（`~/.bash_history`）或系統行程列表（`ps`）**：
-
-   ```bash
-   # 1. 先將虛擬機器正常關機
-   virsh shutdown web01
-
-   # 2. 透過 stdin 安全設定 root 密碼
-   virt-customize -d web01 --root-password file:/dev/stdin
-   # （輸入密碼後按 Enter，再按 Ctrl+D 結束）
-   ```
-
-   亦可直接指定虛擬磁碟路徑或從具備權限保護的臨時檔案讀取：
-
-   ```bash
-   virt-customize -a /var/lib/libvirt/images/vm/web01.qcow2 --root-password file:/path/to/file
-   ```
-
-2. **建立時設定（透過 `runcmd`）**：
-   在建立 VM 前，亦可直接於 YAML 定義檔中透過 cloud-init 設定（注意：密碼將以明文留存於 YAML 檔案中）：
-
-   ```yaml
-   cloud_init:
-     user: admin
-     ssh_authorized_keys:
-       - file:~/.ssh/id_ed25519.pub
-     runcmd:
-       - "echo 'root:YourPasswordHere' | chpasswd"
-   ```
+預先規劃 Console 存取時，請使用 [Console 密碼登入](#選用-console-密碼登入)，
+不要將密碼放入 YAML 或 `runcmd`。若已無可用的 Console 憑證或 SSH 金鑰，
+可使用以下離線 SSH 金鑰救援流程；修改磁碟前，先確認 VM 已完全關機。
 
 ### SSH 金鑰遺失救援（SSH key recovery）
 
@@ -515,7 +588,9 @@ kvm-vm delete web01 --keep-storage
 
 ## 重灌虛擬機器（Reinstall）
 
-重灌現有的受控虛擬機器，會從雲端基礎映像檔（base cloud image）重新佈署一份全新的乾淨作業系統磁碟，**同時保留該虛擬機器原本的所有其他配置**（vCPU 核心數、記憶體、磁碟容量大小、已分配的 MAC 位址、靜態/DHCP IP、cloud-init 使用者與 SSH 金鑰、網路模式與 Bridge 等）：
+重灌受管理的 VM 會從基底映像建立新的系統磁碟，保留 vCPU、記憶體、磁碟容量、
+MAC、IP 設定、cloud-init 使用者與 SSH 金鑰、Console 政策及網路連接設定
+（bridge、NAT 網路或 Macvtap parent）。已啟用的 Console 密碼會輪替，不會沿用。
 
 ```bash
 # 使用現有定義中的作業系統進行重灌
@@ -527,6 +602,7 @@ kvm-vm reinstall web01 --os debian13
 
 ### 選項參數
 
+- `--console-password-file <path>`：已儲存的 Console 政策為啟用時必填；在關機或替換磁碟前，將新憑證交付至新的私有檔案。詳見 [Console 密碼登入](#選用-console-密碼登入)。
 - `--os <distro|url|path>`：發行版別名（詳見[發行版別名](#發行版別名)）、自訂映像檔 URL 或本機映像檔路徑。
 - `--image-url <url>`：明確指定雲端映像檔下載 URL。
 - `--image-path <path>`：明確指定本機雲端映像檔路徑。
@@ -671,7 +747,7 @@ kvm-vm clone source-vm target.yaml --dry-run
 kvm-vm reinstall web01 --os debian13 --dry-run
 ```
 
-執行所有事前檢查（YAML 正規化、網域/狀態衝突檢查、橋接/NAT 驗證、MAC 位址分配以及 SSH 金鑰解析），並輸出正規化後的 YAML，過程中不會下載映像檔、不會異動磁碟，也不會定義 libvirt 網域。對於 `clone`，它還會在進行任何磁碟轉換前，使用 dry-run 檢查驗證來源磁碟與 `virt-sysprep` 的相容性。
+執行所有事前檢查（YAML 正規化、網域/狀態衝突檢查、bridge／NAT／Macvtap 驗證、MAC 位址分配以及 SSH 金鑰解析），並輸出正規化後的 YAML，過程中不會下載映像檔、不會異動磁碟，也不會定義 libvirt 網域。對於 `clone`，它還會在進行任何磁碟轉換前，使用 dry-run 檢查驗證來源磁碟與 `virt-sysprep` 的相容性。
 
 ## 建議的維運工作流程
 
@@ -839,57 +915,17 @@ sudo KVM_VM_E2E_DISTROS=ubuntu26.04,debian13,rocky8,rocky9,rocky10,almalinux8,al
 
 實測映像、開機修正及測試主機的硬體限制，請見
 [實機驗證報告](tests/REAL_MACHINE_RESULTS.md)。
-## 選用 Console 密碼登入
+### Macvtap 與 Console 驗收
 
-設定 `cloud_init.console_password: true`，可為指定的非 root 管理帳號產生隨機
-本機密碼。此設定與 bridge、NAT、Macvtap 網路無關，預設仍鎖定密碼。
-SSH 公鑰設定仍為必要項目。
+[Macvtap 流程](tests/MACVTAP_ACCEPTANCE.md)與
+[Console 流程](tests/CONSOLE_ACCEPTANCE.md)提供需明確啟用的實機測試。
+需使用已授權的 KVM 主機；bridge／Macvtap 的 SSH 檢查需另一台能連到 VM 的電腦。
+Console 測試另需控制端的 Paramiko 與 Linux 主機的 pexpect，兩者不是產品相依套件。
 
-```bash
-sudo install -d -m 0700 /root/vm-credentials
-sudo kvm-vm create vm.yaml --console-password-file /root/vm-credentials/vm.json
-sudo kvm-vm console vm
-```
-
-目的檔案必須尚不存在，並放在執行管理員擁有的私有目錄內；既有檔案與符號連結
-會被拒絕。JSON 包含 `vm`、`user` 與新的 24 字元密碼，權限為 0600。
-請透過已授權的管理連線在本機讀取。CLI 不輸出密碼，受管理的定義與 state
-不儲存密碼；cloud-init 的受限檔案僅包含加鹽雜湊。宿主機需要 OpenSSL。
-`validate` 與 `create --dry-run` 不產生密碼或憑證檔。
-
-Guest 起初保持帳號密碼鎖定；最後的佈建步驟關閉 SSH password 與
-keyboard-interactive 驗證、檢查 SSH 設定並啟動 serial getty，成功後才解鎖。
-SSH 公鑰登入保留。建立成功不代表佈建或 Console 登入成功，應檢查 cloud-init
-並實際登入；支援映像的驗收另行追蹤。不設定 root 密碼或自動登入：
-`disable_root` 控制 SSH 存取，本身不決定本機 root 帳號的密碼政策。
-
-本機密碼並非只限於 Serial console 使用。持有人可透過管理帳號既有的免密碼 sudo
-取得管理權限。預設不強制到期或首次登入更換。後續建立失敗時應保留憑證檔，
-因為殘留資源可能已使用該密碼；重試必須選用新目的檔案。
-刪除 VM 不會刪除此檔案，清理責任屬於管理員。在 Guest 內更換密碼後，初始檔案
-即失效；遺失憑證時需使用其他已授權存取方式或離線重設，沒有密碼取回命令。
-
-Clone 使用目標定義的政策。啟用密碼的目標必須指定新的憑證檔：
-
-```bash
-sudo kvm-vm clone source target.yaml --console-password-file /root/vm-credentials/target.json
-```
-
-每個啟用密碼的 clone 都會取得獨立憑證。開機前會離線鎖定複製磁碟內的目標管理
-帳號，以及已知啟用 Console 密碼的來源管理帳號；之後僅為啟用功能的目標帳號
-套用新憑證並解鎖。未啟用的目標保持鎖定，來源 VM 不變。交付失敗不修改 Guest
-資源；較晚的失敗保留目標資源與已交付憑證。舊密碼實際被拒絕仍需實機映像驗收。
-
-Reinstall 保留已儲存的 Console 政策與網路設定。啟用密碼的 VM 必須指定新的
-目的檔案，並取得新密碼：
-
-```bash
-sudo kvm-vm reinstall vm --yes --console-password-file /root/vm-credentials/vm-reinstalled.json
-```
-
-憑證檢查與交付會在強制關機或替換磁碟前完成。既有憑證檔不會被覆寫或刪除。
-未啟用此功能或舊版定義的 VM 保持密碼鎖定，不需指定目的檔案。
-`--dry-run` 不產生憑證。替換後舊密碼不再適用，應使用新交付的憑證驗證 Guest
-佈建與登入。替換後失敗會保留殘存資源，但不保證能還原原始磁碟。
+Debian 12／13、Ubuntu 24.04／26.04、Rocky Linux 8、AlmaLinux 8 已通過
+Console 登入、sudo、SSH 僅金鑰登入與重開機檢查。矩陣亦涵蓋三種網路模式的預設鎖定、
+clone 憑證隔離與 reinstall 密碼輪替。Rocky／AlmaLinux 9、10 的 Console 驗收仍等待
+相容硬體，完整映像矩陣尚未驗收完成。實際範圍、保留的失敗紀錄與成功續跑，請見
+[Console 驗收報告](docs/plans/20261019_macvtap-console/ticket-06-validation.md)。
 
 [English](README.md) | 繁體中文
