@@ -1,8 +1,13 @@
 # Full Backup and replacement-host Restore
 
-Status: procedure under validation. Ticket 03 remains open until the
-[two-host exercise](full-backup-acceptance.md) passes. Do not treat the current
-source-host checks as a tested disaster-recovery guarantee.
+Status: validated on 2026-10-19 by the [two-host exercise](full-backup-acceptance.md)
+(Debian 13 source, AlmaLinux 9.8 destination, one Debian 12 guest with a synced
+marker workload): a full Backup in the
+[ticket 03 record](plans/20261018_vm-recovery/ticket-03-validation.md), and a
+full plus incremental history, chosen recovery points and the next Backup
+history in the [ticket 04 record](plans/20261018_vm-recovery/ticket-04-validation.md).
+That is one tested path, not a guarantee for other guests, applications,
+firmware modes or host combinations.
 
 A Snapshot is a short-lived local rollback point. A Backup recovery set must
 survive loss of the original host and storage. This procedure uses
@@ -19,8 +24,10 @@ The source candidate is Debian 13, libvirt 11.3.0, QEMU 10.0.13 and Debian's
 virtnbdbackup 2.28-1. Record actual versions on both hosts before testing;
 compatibility is not established by matching version strings alone.
 
-Install the distribution's virtnbdbackup package on both hosts, including its
-libvirt/libnbd Python dependencies. Existing kvm-vm operations do not require
+The tested destination is AlmaLinux 9.8 with libvirt 11.10.0, QEMU 10.1.0 and
+virtnbdbackup 2.47 from EPEL; it restored a set written by version 2.28.
+Install the distribution's (or EPEL's) virtnbdbackup package on both hosts,
+including its libvirt/libnbd Python dependencies. Existing kvm-vm operations do not require
 these optional tools. The destination also needs kvm-vm and its normal runtime
 dependencies. Do not install the unrelated PyPI package named `nbd`.
 
@@ -158,9 +165,16 @@ SET=/mnt/recovery/example-vm-full-20261019
 RESTORED=/var/lib/libvirt/images/recovered-example-vm
 test ! -e "$RESTORED"
 (cd "$SET" && sha256sum -c SHA256SUMS)
+kvm-vm backup check "$SET/backup"
 virtnbdrestore -i "$SET/backup" -o verify
 virtnbdrestore -i "$SET/backup" -o "$RESTORED"
 ```
+
+`kvm-vm backup check` (a kvm-vm release that includes it, see
+[ADR 0002](adr/0002-pre-restore-backup-check.md)) refuses a Backup directory
+that `virtnbdrestore` would restore incompletely or in the wrong order while
+still exiting 0; see [restore a chosen point](#restore-a-chosen-point). It reads
+the directory only and needs no root or backup tools.
 
 Do not pass `-c` or `-D`: keep control of identity and definition. Inspect the
 actual output disk filename and `qemu-img info`/`qemu-img check` while offline.
@@ -170,6 +184,7 @@ copies of the saved persistent XML and JSON, leaving the sealed set untouched.
 | Destination item | Required reconciliation |
 | --- | --- |
 | Domain XML | Set the writable disk's `source file` to the reconstructed disk and the CD-ROM source to the restored seed; retain name, UUID, MAC and device configuration |
+| Domain XML `<emulator>` and machine type | Set both to values the destination offers (`virsh capabilities`). RHEL-family hosts use `/usr/libexec/qemu-kvm` and `pc-q35-rhel9.x.0`, not the upstream `/usr/bin/qemu-system-x86_64` and `pc-q35-10.0` saved from a Debian host. Review the resulting `diff` against the saved XML; a changed machine type may move device addresses |
 | JSON `disk` | Exact same reconstructed disk path as XML |
 | JSON `definition` | Installed effective YAML path |
 | JSON `cloud_dir`, `seed` | Restored cloud directory and seed path, consistent with XML |
@@ -193,15 +208,143 @@ Check SELinux/AppArmor path policy where enabled. Define the reviewed XML with
 only after identity isolation and successful verification.
 
 Do not import old checkpoint XML as a usable incremental baseline. Restored
-disks establish a new history; retain the old set and begin a new full backup
-in a new directory before subsequent incremental backups. Until a new baseline
-is intentionally retired, lifecycle operations may safely refuse its metadata.
+disks establish a new history; see
+[start the next Backup history](#start-the-next-backup-history).
 
 Verify guest SSH, application/data recovery, UUID/MAC, machine ID, SSH host keys
 and cloud-init instance ID against captured expectations. Run kvm-vm `status`,
 `list --managed` and `validate` against the installed YAML. For a disposable
 drill, follow the management exercise linked above. Checksums and a successful
 restore process do not establish a bootable, managed recovery.
+
+## Incremental Backup history
+
+### Checkpoints are tracking, not recoverable data
+
+A libvirt checkpoint is a name, libvirt metadata on the source host and a
+persistent dirty bitmap inside the qcow2 disk. It only tells the next
+`virtnbdbackup -l inc` which blocks changed. It holds no guest data and is lost
+with the host. The recoverable data is the Backup directory itself:
+
+| File | Meaning |
+| --- | --- |
+| `NAME.cpt` | JSON list of the history, `virtnbdbackup.0` (the full Backup) to `virtnbdbackup.N` |
+| `vda.full.data`, `vda.inc.virtnbdbackup.N.data` | Disk data; point N needs the full file and every increment 1 to N |
+| `*.data.chksum` | Stream checksums used by `virtnbdrestore -o verify` |
+| `checkpoints/virtnbdbackup.N.xml` | Checkpoint descriptions with parent links |
+| `vmconfig.virtnbdbackup.N.xml` | The *live* domain XML at Backup time, not the persistent definition |
+
+Losing checkpoint metadata or bitmaps does not lose data that is already in the
+set. It only stops that history from continuing.
+
+### Capture each recovery point
+
+Keep one Backup directory per history inside the recovery set. The full Backup
+creates point 0 and each incremental Backup adds the next point. Before every
+Backup, capture the management artifacts into `points/N/`, exactly as in
+[capture one coherent recovery point](#capture-one-coherent-recovery-point),
+and record the guest expectations for that point:
+
+```bash
+set -euo pipefail
+export LC_ALL=C
+VM=example-vm
+SET=/mnt/independent-backups/example-vm-history-20261019
+N=1            # 0 with LEVEL=full for a new history
+LEVEL=inc
+P="$SET/points/$N"
+test ! -e "$P"
+umask 077
+mkdir -p "$P/management/cloud"
+virsh -c qemu:///system dumpxml "$VM" --inactive > "$P/management/domain.xml"
+virsh -c qemu:///system dumpxml "$VM" > "$P/management/live.xml"
+cp -a "/var/lib/kvm-vm/state/$VM.json" "$P/management/state.json"
+cp -a "/etc/kvm-vm/definitions/$VM.yaml" "$P/management/effective.yaml"
+cp -a "/var/lib/libvirt/images/cloud-init/$VM/." "$P/management/cloud/"
+virtnbdbackup -d "$VM" -l "$LEVEL" -o "$SET/backup"
+python3 -c 'import json, sys; assert json.load(open(sys.argv[1]))[-1] == sys.argv[2]' \
+    "$SET/backup/$VM.cpt" "virtnbdbackup.$N"
+virsh -c qemu:///system dumpxml "$VM" --inactive | cmp - "$P/management/domain.xml"
+virtnbdrestore -i "$SET/backup" -o verify
+```
+
+Then reseal the whole set as in the full procedure and copy it to the retained
+storage. Pair each disk point with its own `points/N/management/` when you
+restore. Do not use the latest management files with an earlier point, and do
+not use `vmconfig.virtnbdbackup.N.xml` for configuration: in the validation run
+the persistent definition changed from 1 vCPU/1024 MiB to 2 vCPU/1536 MiB before
+point 2, yet all three `vmconfig` files still showed the live 1 vCPU/1024 MiB.
+
+Copy the set with a method that keeps file modification times, such as `tar`,
+`cp -a` or `rsync -a`. `virtnbdrestore` 2.28 and 2.47 sort the data and
+`vmconfig` files by modification time, not by checkpoint name, so a copy that
+renews one file's time changes which data is restored.
+
+### Restore a chosen point
+
+```bash
+set -euo pipefail
+SET=/mnt/recovery/example-vm-history-20261019
+N=1
+RESTORED=/var/lib/libvirt/images/recovered-example-vm
+test ! -e "$RESTORED"
+(cd "$SET" && sha256sum -c SHA256SUMS)
+kvm-vm backup check "$SET/backup" --until "virtnbdbackup.$N"
+virtnbdrestore -i "$SET/backup" -o verify
+virtnbdrestore -i "$SET/backup" -o "$RESTORED" --until "virtnbdbackup.$N"
+```
+
+Continue with the replacement-host reconciliation above using
+`points/N/management/`, and verify the guest against `points/N` expectations.
+All three checks before the restore are required, because the tool alone reports
+success for several broken sets:
+
+| Broken set | `virtnbdrestore` 2.28 | `virtnbdrestore` 2.47 | Refused by |
+| --- | --- | --- | --- |
+| Increment before the chosen point missing | `verify` 0, restore 0 | `verify` 0, restore 1 with a Python traceback | SHA256SUMS, `kvm-vm backup check` |
+| Chosen point not in the history | restore 0 | restore 1 with a Python traceback | `kvm-vm backup check` |
+| `NAME.cpt` missing | `verify` 0, restore 0 | `verify` 0, restore 0 | SHA256SUMS, `kvm-vm backup check` |
+| Increment corrupted | `verify` 1, restore 0 | `verify` 1, restore 0 | SHA256SUMS, `verify` |
+| Increment newer than a later increment (timestamp only) | Same sort by time in its code; not run | `verify` 0, restore 0, wrong disk | `kvm-vm backup check` only |
+
+In the last case the bytes and SHA256SUMS are intact. With `--until
+virtnbdbackup.2`, version 2.47 applied the full Backup and increment 2, then
+stopped without applying increment 1. The guest booted with a corrupted
+`point-1.bin`. `kvm-vm backup check` refuses the set and names the order. To repair
+it, copy the set again with times preserved. Or, on a working copy whose
+SHA256SUMS still pass, set the times in checkpoint order with `touch -d`; that
+copy restored a disk identical to the original set's.
+
+### Start the next Backup history
+
+A restored disk has no bitmaps and the restored domain has no checkpoints, so
+the old history cannot continue. An incremental Backup from the restored guest
+into a copy of the old directory failed with `checkpoint inconsistent: missing
+or broken bitmap` (exit 1). It wrote no data and left no checkpoint. Do not edit
+`NAME.cpt` or define old checkpoint XML to force it. Keep the old set as
+historical recovery points and start a new history in a new directory with
+`-l full`, capturing point 0 as above. Later incremental Backups then work, and
+a restore of the new history returned the changes made after the restore.
+
+On the original host, the same rules apply:
+
+- A guest restart keeps the bitmaps; an incremental Backup after a restart
+  continued the history.
+- A new `-l full` into a new directory retires the old libvirt checkpoints and
+  leaves only `virtnbdbackup.0`. An incremental into the old directory is then
+  refused (exit 1) without writing data.
+- Deleting only checkpoint metadata (`checkpoint-delete --metadata`) leaves the
+  bitmap. The next incremental then fails with `Bitmap already exists`. Retire a
+  history while the guest runs with
+  `virsh checkpoint-delete VM virtnbdbackup.0 --children`, which removes the
+  checkpoints and their bitmaps. libvirt 11.10 refuses this for a shut-off
+  domain (`cannot delete checkpoint for inactive domain`).
+- kvm-vm `clone`, `reinstall` and `delete` refuse a VM with checkpoints until
+  the history is retired.
+- kvm-vm Snapshots are never combined with checkpoints: retire the tracking
+  before `kvm-vm snapshot create`, and start a new full Backup after deleting
+  or rolling back the Snapshot. See
+  [Snapshots and Backups](snapshots.md#snapshots-and-backups).
 
 ## References
 

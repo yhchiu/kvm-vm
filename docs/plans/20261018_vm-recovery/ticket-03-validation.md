@@ -1,6 +1,7 @@
 # Ticket 03 validation
 
-Status: in progress; cross-host acceptance has not passed.
+Status: cross-host acceptance passed on 2026-10-19 (Debian 13 to AlmaLinux 9.8,
+synced-marker workload); review gate closed.
 
 Implementation/review fixed point: `4a4b189e278db9a9bccd139830e7e8fccfaa76df`.
 
@@ -83,6 +84,122 @@ Retained source paths (do not remove before destination testing):
 - Cloud-init instance ID: `iid-7630c4c7e414d3ca5a00aa51`
 
 The source-only preparation is committed separately so it can be resumed.
-Independent retention, destination mapping/boot, identity and management
-acceptance remain unverified. Ticket 03 stays open; its committed-code Standards
-and Spec review gate will run when the full ticket is ready for closure.
+The destination run below completed the remaining acceptance. The committed-code
+Standards and Spec review gate runs before closing the ticket.
+
+## Destination restore, 2026-10-19
+
+Host: AlmaLinux 9.8, Intel Xeon E5-2650 (Sandy Bridge-EP, x86-64-v2, EPT and
+unrestricted guest present), libvirt 11.10.0, qemu-kvm 10.1.0 (RHEL build),
+virtnbdbackup/virtnbdrestore 2.47 (EPEL) and Python 3.9.25. kvm-vm was installed
+from commit `0afdabf` with `install.sh`; the default storage roots were used. The
+source set was made by virtnbdbackup 2.28 on the Debian host, so this run also
+covers a newer restore tool reading an older stream. The unit suite passed on
+this host (199 passed, Python 3.9). The destination had no existing VM, so no
+name, UUID or MAC conflict was possible. The source domain stayed shut off with
+autostart disabled for the whole run.
+
+### Transfer and isolation
+
+- The 22-file set (1,620,848,640-byte tar, SHA-256
+  `49b63287d859c91418115314e092b8fb46b1199b30f9cfdb3005cf893db70202`) was
+  transferred to the destination. The tar hash matched the hash computed from the
+  source stream, and `sha256sum -c SHA256SUMS` passed for all 22 files there.
+- Uploading through the operator workstation was too slow and was abandoned.
+  The source could not open a connection to the destination SSH port (timeout),
+  while the reverse direction worked. The destination therefore pulled the tar
+  from the source using a temporary key generated on the destination. The key was
+  locked on the source to a forced `tar -cf - recovery-set` command with
+  `restrict`. It was removed from the source `authorized_keys` and deleted on the
+  destination, and the destination `known_hosts` entry for the source was removed,
+  before any restore step. An earlier temporary push key was also removed from
+  both hosts.
+- The restore, define, boot and guest checks ran from the destination with no
+  agent forwarding, no source credential and no source mount. The dedicated guest
+  key was supplied separately from the set.
+
+### Restore
+
+`virtnbdrestore -o verify` reported checksum **1463103784**, equal to the stored
+stream checksum and to the source result. `virtnbdrestore -i SET/backup -o DIR`
+wrote the disk in about 8 seconds. `qemu-img info` showed one standalone qcow2
+(10 GiB virtual, 1.51 GiB used, no backing file) and `qemu-img check` found no
+errors. The disk was moved to `/var/lib/libvirt/images/vm/NAME.qcow2` and the
+cloud files copied with `cp -a` to `/var/lib/libvirt/images/cloud-init/NAME/`;
+the restored `seed.img` is byte-identical to the set copy. The effective YAML
+and the JSON manifest were installed under the default definition and state
+directories with only the path fields changed (`definition`, `disk`, `cloud_dir`,
+`seed`). Name, `instance_id`, `managed_by`, version, provenance and creation time
+were preserved. No create, clone, reinstall or cloud-init clean ran.
+
+### Host mapping that the procedure needs
+
+Reusing the saved domain XML unchanged fails on a RHEL-family destination:
+
+- `virsh define` refused the saved `<emulator>/usr/bin/qemu-system-x86_64`;
+  the destination binary is `/usr/libexec/qemu-kvm`.
+- The saved machine type `pc-q35-10.0` is an upstream name. The RHEL build offers
+  only `pc-q35-rhel9.x.0` types, so the XML used `pc-q35-rhel9.8.0`.
+
+Besides those two edits and the two file paths, the defined XML equals the saved
+one (UUID, MAC, PCI addresses, devices, CPU `host-passthrough`). The change set
+was reviewed with `diff` before `virsh define`. The procedure now lists the
+emulator and machine type as host mapping items. Same-family hosts would not need
+them, and a helper cannot choose a compatible machine type, so no kvm-vm helper
+was added: the manual reconciliation worked without a demonstrated correctness
+gap.
+
+The guest moved from a Xeon L5420 to a newer E5-2650 with `host-passthrough`.
+This direction exposes more CPU features; the reverse direction is not covered.
+
+### Destination assertions
+
+| Check | Result |
+| --- | --- |
+| Define, inspect `dumpxml --inactive`, start | Passed |
+| DHCP lease on the destination `default` NAT network, same MAC | Passed (192.168.122.144) |
+| SSH with the dedicated guest key, `cloud-init status --wait` | Passed (`done`) |
+| Marker SHA-256, machine-id, cloud-init instance-id, hostname | Identical to `guest-expected.txt` |
+| All four SSH host public-key hashes | Identical |
+| cloud-init did not start a new instance | Per-instance modules logged "already ran"; semaphores and the Ed25519 host key keep 2026-10-18 timestamps |
+| `kvm-vm status`, `list --managed`, `validate` on the installed YAML | Managed, paths exist, validate exit 0 |
+| Shut down, start, repeat identity checks | Passed; SSH reachable 14 seconds after start |
+| SELinux Enforcing (temporary `setenforce 1`, then restored) | Passed: guest booted and identity matched, `svirt_t` process, no AVC records |
+| QEMU guest agent | `guest-ping` returned success |
+| `kvm-vm delete NAME --keep-storage --yes` | Domain undefined; disk, cloud files, YAML and JSON byte-identical (SHA-256 before and after) |
+| Redefine the saved XML, `kvm-vm list --managed` | Managed again; XML identical to the pre-delete dump |
+
+The main run was done with the host in permissive mode. The Enforcing check
+repeated boot and identity verification only. The host's configuration file says
+`SELINUX=disabled`; the runtime mode was returned to permissive afterward.
+AppArmor was not exercised on the destination. Application consistency is not
+claimed: the workload is a synced marker file and the source backup was
+crash-consistent with logged freeze and thaw.
+
+Timings: source full backup 79.87 s; destination verify about 1 s; disk restore
+about 8 s; first boot to SSH within the 60-second wait; warm restart to SSH 14 s.
+
+### Retained resources
+
+With the operator's agreement, these were removed during ticket 04: on the
+destination, domain `e2e-full-f0f8bec754a9` (deleted with `kvm-vm delete`), its
+disk, cloud files, `/root/drill` and `/root/evidence`; on the source, both
+`e2e-full-*` domains (undefined with their checkpoint metadata) and their roots
+and sets.
+
+### Outcome
+
+The cross-host checks above passed; no mocked or same-host result was used. The
+sealed set was held on a host other than the source. The committed-code review gate is recorded below.
+
+## Review gate
+
+Review of `0afdabf...44cdb5a` (documentation and evidence only; no runtime code
+changed). Standards: Conventional Commit with a detailed body and no co-author
+trailer, relative links resolve, terminology follows the glossary. Spec: each
+ticket 03 criterion maps to evidence above. The procedure, inventory, concurrency
+sequencing and consistency wording come from the earlier commits. The
+cross-host restore, identity, management and delete/redefine checks are in the
+destination tables. The helper question is answered with a recorded reason (no
+demonstrated correctness gap). No must-fix findings. This gate used one inline
+review pass instead of separate review agents because the change set has no code.

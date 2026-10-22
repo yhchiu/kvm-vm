@@ -15,6 +15,11 @@ kvm-vm list [--managed] [--ips]
 kvm-vm status <vm>
 kvm-vm console <vm>
 kvm-vm delete <vm> [--yes] [--force] [--keep-storage]
+kvm-vm snapshot create <vm> [--no-quiesce] [--dry-run]
+kvm-vm snapshot status <vm>
+kvm-vm snapshot delete <vm> [--yes]
+kvm-vm snapshot rollback <vm> [--yes] [--force] [--no-start]
+kvm-vm backup check <backup-dir> [--until <checkpoint>]
 kvm-vm validate <vm.yaml> [--clone]
 ```
 
@@ -732,6 +737,17 @@ kvm-vm create newvm.yaml --refresh-image
 - **不影響既有 VM**：此參數只會更新本地快取的基底映像檔。由於每個 VM 在建立時都會分配獨立的 qcow2 系統磁碟，因此重新下載或更新基底映像檔完全不會影響已建立運行的虛擬機器。
 - **無條件重新下載**：經程式碼確認，`--refresh-image` 執行時不會比對 HTTP `ETag` 或 `Last-Modified` 標頭；只要帶入此參數，系統就會無條件重新下載完整映像檔並覆蓋本地快取。因此即使本地快取的映像檔已經是最新版，依然會重新下載。
 
+## 快照（Snapshots）
+
+`kvm-vm snapshot create NAME` 可在更新前建立一個短期的回復點，不需停止 VM；
+會透過 QEMU guest agent 短暫凍結 guest 檔案系統。`kvm-vm snapshot status NAME`
+可查看狀態，`kvm-vm snapshot delete NAME --yes` 會刪除快照並保留目前資料。
+若更新出問題，`kvm-vm snapshot rollback NAME --yes --force` 會回到快照當時的磁碟、
+VM 設定與 kvm-vm 檔案，並重新啟動 VM，身分保持不變。快照不是備份，也不會與增量備份
+追蹤（checkpoint）並用：建立快照前先解除追蹤，快照刪除或回復後再重新做一次完整備份，
+詳見 [Snapshots and Backups](docs/snapshots.md#snapshots-and-backups)。支援的設定、
+暫停時間、失敗後的處理與 AppArmor 行為請見 [docs/snapshots.md](docs/snapshots.md)。
+
 ## 復原狀態安全檢查
 
 Clone、reinstall 與 delete 會拒絕 checkpoint、snapshot、backing chain、
@@ -743,10 +759,15 @@ Create／clone 失敗會保留現存資源供檢查，重試不會覆寫既有�
 依賴檢查、keep-storage、操作鎖與外部工具的執行順序，請見
 [lifecycle 復原安全說明](docs/lifecycle-recovery-safety.md)。
 
-完整備份與跨主機復原仍在驗證中，尚未通過驗收。請參閱
+完整備份，以及「完整＋增量」備份歷史中指定還原點的跨主機復原，已通過一次實機驗收
+（Debian 13 還原到 AlmaLinux 9.8，單一 guest、同步標記檔工作負載）。備份與還原直接使用
+virtnbdbackup 與 virtnbdrestore；其他 guest、應用程式與主機組合尚未驗證。還原前務必執行
+`kvm-vm backup check DIR [--until virtnbdbackup.N]`：`virtnbdrestore` 在備份歷史不完整或
+檔案順序錯亂時仍可能回傳 0（見 [ADR 0002](docs/adr/0002-pre-restore-backup-check.md)）。請參閱
 [操作流程](docs/full-backup-restore.md)、
-[雙主機驗收步驟](docs/full-backup-acceptance.md)與
-[ticket 03 驗證紀錄](docs/plans/20261018_vm-recovery/ticket-03-validation.md)。
+[雙主機驗收步驟](docs/full-backup-acceptance.md)、
+[ticket 03 驗證紀錄](docs/plans/20261018_vm-recovery/ticket-03-validation.md)與
+[ticket 04 驗證紀錄](docs/plans/20261018_vm-recovery/ticket-04-validation.md)。
 
 ## `--no-start`
 
@@ -844,7 +865,8 @@ DISTROS = {
 
 - 即時遷移（live migration）
 - Ceph/RBD 儲存系統
-- 快照 / 備份（snapshots/backups）
+- 多個或長期保存的快照，或備份（本工具只保留一個短期
+  [快照](docs/snapshots.md)；備份請使用外部工具的[操作流程](docs/full-backup-restore.md)）
 - 多張網路卡（multiple NICs）
 - 多個受管理的資料磁碟
 - VLAN 標籤（VLAN tagging）

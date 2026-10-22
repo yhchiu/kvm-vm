@@ -19,6 +19,11 @@ kvm-vm list [--managed] [--ips]
 kvm-vm status <vm>
 kvm-vm console <vm>
 kvm-vm delete <vm> [--yes] [--force] [--keep-storage]
+kvm-vm snapshot create <vm> [--no-quiesce] [--dry-run]
+kvm-vm snapshot status <vm>
+kvm-vm snapshot delete <vm> [--yes]
+kvm-vm snapshot rollback <vm> [--yes] [--force] [--no-start]
+kvm-vm backup check <backup-dir> [--until <checkpoint>]
 kvm-vm validate <vm.yaml> [--clone]
 ```
 
@@ -806,6 +811,21 @@ kvm-vm create newvm.yaml --refresh-image
 - **Existing VMs remain unaffected**: This flag only updates the cached base image in the local storage pool. Because each VM runs on its own independent qcow2 disk, re-downloading or updating the base image will never affect already created VMs.
 - **Unconditional re-download**: As confirmed from the source code, `--refresh-image` does not perform HTTP conditional checks (such as `ETag` or `Last-Modified`); whenever this flag is passed, the tool unconditionally re-downloads the complete image and overwrites the local cache, even if the cached image is already the latest version.
 
+## Snapshots
+
+`kvm-vm snapshot create NAME` keeps one short-lived rollback point before an
+update, without stopping the VM; the guest filesystems are frozen briefly
+through the QEMU guest agent. `kvm-vm snapshot status NAME` shows it, and
+`kvm-vm snapshot delete NAME --yes` removes it while keeping the current data.
+If the update went wrong, `kvm-vm snapshot rollback NAME --yes --force` returns
+to the captured disk, VM configuration and kvm-vm files and starts the VM again,
+keeping its identity. A Snapshot is not a Backup, and it is never combined with
+incremental Backup tracking: retire the tracking before the Snapshot and start
+a new full Backup after it, as described in
+[Snapshots and Backups](docs/snapshots.md#snapshots-and-backups). Supported
+configurations, pauses, failure recovery and AppArmor behavior are in
+[docs/snapshots.md](docs/snapshots.md).
+
 ## Recovery state safety
 
 Clone, reinstall and delete refuse checkpoints, snapshots, backing chains,
@@ -819,10 +839,17 @@ Existing data still blocks creation; the error identifies the path to inspect.
 See [lifecycle recovery safety](docs/lifecycle-recovery-safety.md) for dependency
 checks, keep-storage behavior, operation locking and external-tool sequencing.
 
-The [full Backup/Restore procedure](docs/full-backup-restore.md) and
-[two-host acceptance workflow](docs/full-backup-acceptance.md) are under
-validation. Cross-host recovery is not yet an accepted capability; see the
-[ticket 03 evidence](docs/plans/20261018_vm-recovery/ticket-03-validation.md).
+The [Backup/Restore procedure](docs/full-backup-restore.md) and
+[two-host acceptance workflow](docs/full-backup-acceptance.md) passed one
+cross-host exercise (Debian 13 to AlmaLinux 9.8, one guest, synced-marker
+workload) for a full Backup and for chosen points of a full plus incremental
+history. Backup and Restore use virtnbdbackup and virtnbdrestore directly, and
+other guests, applications and host combinations are untested. Before any
+restore, run `kvm-vm backup check DIR [--until virtnbdbackup.N]`:
+`virtnbdrestore` can exit 0 while restoring an incomplete or reordered history
+(see [ADR 0002](docs/adr/0002-pre-restore-backup-check.md)). See the
+[ticket 03](docs/plans/20261018_vm-recovery/ticket-03-validation.md) and
+[ticket 04](docs/plans/20261018_vm-recovery/ticket-04-validation.md) evidence.
 
 ## `--no-start`
 
@@ -926,7 +953,9 @@ It is not a replacement for a cluster manager. It does not currently manage:
 
 - live migration
 - Ceph/RBD storage
-- snapshots/backups
+- multiple or long-term snapshots, or backups (it keeps one short-lived
+  [Snapshot](docs/snapshots.md); Backups use the external
+  [procedure](docs/full-backup-restore.md))
 - multiple NICs
 - multiple managed data disks
 - VLAN tagging

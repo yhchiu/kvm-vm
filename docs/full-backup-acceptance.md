@@ -71,7 +71,11 @@ the directory must already exist and permit that guest's socket creation.
 2. Transfer only the sealed recovery set to authorized independent storage or
    the destination, then verify SHA-256 and external-tool integrity there.
    Supply the dedicated guest test key separately through the operator's secure
-   channel; never transfer the source host's administrative private key.
+   channel; never transfer the source host's administrative private key. If a
+   direct host-to-host path is one-way or the operator link is slow, let the
+   destination pull with a temporary key that the source restricts to a forced
+   read-only `tar -cf - recovery-set` command, and remove that key and the
+   `known_hosts` entry before the destination phase.
 3. Run the destination phase from its own SSH session with no agent forwarding,
    source credentials or source filesystem mounts. Record this isolation and
    the different host identity. All recovery commands must use only the set,
@@ -102,6 +106,61 @@ the directory must already exist and permit that guest's socket creation.
 5. Record elapsed backup/restore/boot times and the full assertion results in
    `docs/plans/20261018_vm-recovery/ticket-03-validation.md`. A source-only or
    same-host success remains partial. Do not advance to ticket 04 yet.
+
+## Incremental history exercise
+
+Run this only after the full Backup exercise passed. It uses the same isolation,
+transfer and destination rules.
+
+1. On the source, `sudo python3 tests/prepare_incremental_backup.py
+   --invalid-state-drill` (add `--socket-template` as above on AppArmor hosts)
+   creates a unique `e2e-inc-*` guest and three recovery points. Each point
+   writes `/var/tmp/point-N` and `point-N.bin`, captures `points/N/` with the
+   management files, guest expectations and vCPU/memory, then takes the Backup
+   (full for point 0, incremental after). Before point 2 it changes the
+   persistent definition to 2 vCPU/1536 MiB, so a restore that pairs the wrong
+   management files is detected. It verifies and seals the set and fences the
+   guest.
+2. The drill then works on copies. It checks that an incremental continues
+   after a guest restart, that a forgotten checkpoint and an incremental into a
+   retired history are refused, and that a new full Backup starts a new history.
+   It also records the tool's exit codes for damaged histories against the chain
+   check and the sealed checksums. Results go to `ROOT/drill-results.json`.
+3. Transfer the sealed set as before, keeping file times, and supply the guest
+   key separately.
+4. On the destination, from the kvm-vm source tree, run
+   `sudo python3 tests/restore_recovery_point.py --set SET --key KEY --name NAME
+   --point N` for an earlier point and for the last point, removing the
+   restored guest in between. The script verifies the seal and the chain,
+   restores with `--until`, maps the emulator and machine type, defines and
+   boots the guest, and compares data, identity and vCPU/memory with `points/N`.
+   It then checks kvm-vm `status`, `list --managed` and `validate`.
+5. Check the refusals: a copy with a missing increment, a copy resealed without
+   it, and a copy where one increment has a newer modification time. Each must
+   stop before any disk, file or domain is created on the destination.
+6. On the restored guest, try an incremental into a copy of the old directory
+   (it must be refused). Start a new history: capture point 0 with `-l full`
+   into a new set, change guest data, capture point 1 with `-l inc`, verify and
+   seal. Retire the checkpoints, remove the guest and restore point 1 of the new
+   set with the same script. The guest must show the new data.
+7. Record the results in
+   `docs/plans/20261018_vm-recovery/ticket-04-validation.md`.
+
+## Snapshot and Backup exercise
+
+Run this after the incremental history exercise. On the source,
+`sudo python3 tests/prepare_snapshot_backup_interop.py` (add
+`--socket-template` on AppArmor hosts) creates a unique `e2e-sbi-*` guest and
+runs the sequence in [Snapshots and Backups](snapshots.md#snapshots-and-backups).
+It covers an old history with checkpoints, the refusals, retiring the tracking,
+a Backup running and a Backup killed during Snapshot work, rollback of an
+unwanted data and configuration change, a kept change, and a new full plus
+incremental history. Its assertions stop on the first unexpected result, and
+it writes `ROOT/interop-results.json`. Transfer `ROOT/recovery-set` as before
+and restore `--point 1` with `tests/restore_recovery_point.py` on the
+destination. The guest must hold `point-0`, `point-1`, `point-3` and `point-4`,
+and not the rolled-back `point-2`. Record the results in
+`docs/plans/20261018_vm-recovery/ticket-07-validation.md`.
 
 ## Cleanup
 
