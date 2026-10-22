@@ -2,8 +2,17 @@
 
 Status: scope and implementation order accepted in
 [ADR 0001](adr/0001-snapshot-and-backup-ownership.md). This document records the
-agreed requirements, decision and findings. Feature implementation and
-hypervisor recovery validation remain future work.
+requirements, decision and findings as agreed on 2026-10-17, before any
+implementation; the findings and open questions below describe that point in
+time. All seven tickets of the implementation plan are now complete, including
+cross-host Restore and Snapshot validation on real KVM hosts. Each
+[ticket validation record](plans/20261018_vm-recovery/) states where it was
+tested. For current behavior see [Snapshots](snapshots.md) and the
+[Backup and Restore procedure](full-backup-restore.md); later decisions are in
+[ADR 0002](adr/0002-pre-restore-backup-check.md) and
+[ADR 0003](adr/0003-snapshot-failures-stop-for-the-operator.md). The
+[External snapshot tools](#external-snapshot-tools) section was added on
+2026-10-20.
 
 The [implementation specification](plans/20261018_vm-recovery/spec.md) captures the user
 stories, behavioral contracts and acceptance tests for this accepted scope.
@@ -126,8 +135,9 @@ and finishing each task's checks before moving to the next:
 - [Current libvirt QEMU snapshot implementation](https://github.com/libvirt/libvirt/blob/master/src/qemu/qemu_snapshot.c).
 - [QEMU guest filesystem freeze](https://www.qemu.org/docs/master/interop/qemu-ga-ref.html#command-guest-fsfreeze-freeze).
 
-Upstream references were inspected on 2026-10-17. Actual host versions and
-workloads have not been established; no cross-host recovery has been run.
+Upstream references were inspected on 2026-10-17. At that time, actual host
+versions and workloads had not been established and no cross-host recovery had
+been run; the ticket validation records cover both since.
 
 ## External snapshot tools
 
