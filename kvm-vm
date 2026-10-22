@@ -1487,46 +1487,56 @@ def check_domain_job(name: str) -> None:
             raise KVMError(f"Conflicting recovery operation on {name}; wait for its domain job to finish")
 
 
-def checked_domain_disk(name: str, state: Optional[Dict[str, Any]]) -> Path:
-    """Fail closed unless live and persistent XML describe one independent disk."""
-    paths = []
+def checked_domain_disk(name: str, state: Optional[Dict[str, Any]], *, keep_storage: bool = False) -> Path:
+    """Inspect every disk for recovery conflicts; select only the system disk for mutation."""
+    layouts = []
+    running = is_running_state(domain_state(name))
     for flags in ([], ["--inactive"]):
         try:
             root = ET.fromstring(output(["virsh", "-c", LIBVIRT_URI, "dumpxml", name] + flags))
         except ET.ParseError as exc:
             raise KVMError(f"Cannot inspect disk topology for {name}: invalid domain XML") from exc
         disks = root.findall("./devices/disk[@device='disk']")
-        if len(disks) != 1:
+        if not disks:
             raise KVMError(f"Unsupported disk topology for {name}; inspect its disks before retrying")
-        item = disks[0]
-        source = item.find("source")
-        if item.get("type") != "file" or source is None or not source.get("file"):
-            raise KVMError(f"Unsupported disk topology for {name}; a regular file disk is required")
-        if (item.find("./backingStore/source") is not None or item.find("mirror") is not None
-                or item.find("shareable") is not None or item.find("readonly") is not None):
-            raise KVMError(f"Unsupported disk recovery data for {name}; preserve dependencies and resolve the topology first")
-        if not flags and is_running_state(domain_state(name)):
+        layout = []
+        for item in disks:
+            source = item.find("source")
+            kind = item.get("type")
+            attribute = {"file": "file", "block": "dev"}.get(kind)
+            if not attribute or source is None or not source.get(attribute):
+                raise KVMError(f"Unsupported disk topology for {name}; a file or block disk is required")
+            if item.find("./backingStore/source") is not None or item.find("mirror") is not None:
+                raise KVMError(f"Unsupported disk recovery data for {name}; preserve dependencies and resolve the topology first")
             target = item.find("target")
-            if target is None or not target.get("dev"):
+            if running and (target is None or not target.get("dev")):
                 raise KVMError(f"Cannot inspect disk jobs for {name}: missing target")
-            job = output(["virsh", "-c", LIBVIRT_URI, "blockjob", name, target.get("dev"), "--info", "--raw"])
-            if job:
-                raise KVMError(f"Conflicting recovery operation on {name}; wait for its disk job to finish")
-        paths.append(Path(source.get("file")).resolve())
-    if paths[0] != paths[1] or (state and state.get("disk") and Path(state["disk"]).resolve() != paths[0]):
+            if not flags and running:
+                job = output(["virsh", "-c", LIBVIRT_URI, "blockjob", name, target.get("dev"), "--info", "--raw"])
+                if job:
+                    raise KVMError(f"Conflicting recovery operation on {name}; wait for its disk job to finish")
+            layout.append((Path(source.get(attribute)).resolve(), kind,
+                           target.get("dev") if target is not None else None,
+                           item.find("shareable") is not None or item.find("readonly") is not None))
+        layouts.append(layout)
+    system = Path(state["disk"]).resolve() if state and state.get("disk") else layouts[0][0][0]
+    if layouts[0] != layouts[1] or system not in [item[0] for item in layouts[0]]:
         raise KVMError(f"Inconsistent disk path for {name}; reconcile domain XML and managed state before retrying")
-    if not paths[0].is_file():
-        raise KVMError(f"Disk is not a regular file: {paths[0]}")
-    info = qemu_img_info(paths[0], shared=is_running_state(domain_state(name)))
-    if (info.get("format") != "qcow2" or info.get("backing-filename") or info.get("snapshots")
-            or dig(info, "format-specific", "data", "bitmaps")
-            or dig(info, "format-specific", "data", "data-file")):
-        raise KVMError(
-            f"Unsupported disk format or recovery data on {paths[0]}. Preserve the image and its "
-            "dependencies; resolve snapshots/backing chains with their owning tool. Retiring "
-            "backup bitmaps requires a new full Backup baseline before future incremental backups."
-        )
-    return paths[0]
+    for path, kind, _, protected in layouts[0]:
+        if path == system and not keep_storage and (kind != "file" or protected):
+            raise KVMError(f"System disk must be an unshared writable regular file: {path}")
+        if kind == "file" and not path.is_file():
+            raise KVMError(f"Disk is not a regular file: {path}")
+        info = qemu_img_info(path, shared=running)
+        if (info.get("format") not in ("qcow2", "raw") or info.get("backing-filename") or info.get("snapshots")
+                or dig(info, "format-specific", "data", "bitmaps")
+                or dig(info, "format-specific", "data", "data-file")):
+            raise KVMError(
+                f"Unsupported disk format or recovery data on {path}. Preserve the image and its "
+                "dependencies; resolve snapshots/backing chains with their owning tool. Retiring "
+                "backup bitmaps requires a new full Backup baseline before future incremental backups."
+            )
+    return system
 
 
 def check_storage_dependents(name: str, disk: Path, state: Optional[Dict[str, Any]]) -> None:
@@ -1673,6 +1683,8 @@ def cmd_reinstall(args: argparse.Namespace) -> int:
             check_storage_dependents(name, current_disk, state)
         recovery_xml = staging / "domain.xml"
         recovery_xml.write_text(output(["virsh", "-c", LIBVIRT_URI, "dumpxml", name, "--inactive"]), encoding="utf-8")
+        extra_disks = [item for item in ET.parse(recovery_xml).getroot().findall("./devices/disk[@device='disk']")
+                       if not same_path(item.find("source").get("file"), str(disk))]
         recovery_note = staging / "RECOVERY.txt"
         recovery_note.write_text(
             f"Reinstall of {name}: domain undefinition may have started; disk replacement has not started.\n"
@@ -1691,7 +1703,17 @@ def cmd_reinstall(args: argparse.Namespace) -> int:
         cloud_options = {"password_hash": password_hash} if password_hash else {}
         _, _, _, instance_id = make_cloud_files(cfg, source_dir, **cloud_options)
         seed = CLOUD_DIR / name / "seed.img"
-        define_vm(cfg, disk, seed, default_variant, no_start=args.no_start)
+        define_vm(cfg, disk, seed, default_variant, no_start=args.no_start or bool(extra_disks))
+        for index, item in enumerate(extra_disks):
+            # Let libvirt allocate addresses in the newly generated domain.
+            for child in list(item):
+                if child.tag in ("address", "alias"):
+                    item.remove(child)
+            device_xml = staging / f"data-disk-{index}.xml"
+            device_xml.write_text(ET.tostring(item, encoding="unicode"), encoding="utf-8")
+            run(["virsh", "-c", LIBVIRT_URI, "attach-device", name, str(device_xml), "--config"])
+        if extra_disks and not args.no_start and cfg["vm"]["start"]:
+            run(["virsh", "-c", LIBVIRT_URI, "start", name])
         orig_def = Path(state["definition_source"]) if state and state.get("definition_source") else def_path
         save_state(cfg, disk, {"type": "base-image", "path": str(base)}, instance_id, orig_def)
         completed = True
@@ -1866,7 +1888,7 @@ def cmd_delete(args: argparse.Namespace) -> int:
     if not state and not args.keep_storage:
         raise KVMError("This VM is not managed by kvm-vm. Refusing to delete storage; use --keep-storage to undefine the domain only.")
     check_recovery_metadata(name)
-    current_disk = checked_domain_disk(name, state)
+    current_disk = checked_domain_disk(name, state, keep_storage=args.keep_storage)
     if not args.keep_storage:
         check_storage_dependents(name, current_disk, state)
     confirm_delete(name, args.yes)
@@ -1877,7 +1899,7 @@ def cmd_delete(args: argparse.Namespace) -> int:
             raise KVMError(f"VM is running ({st}). Shut it down first, or use --force to destroy it before delete.")
         run(["virsh", "-c", LIBVIRT_URI, "destroy", name])
         check_recovery_metadata(name)
-        checked_domain_disk(name, state)
+        checked_domain_disk(name, state, keep_storage=args.keep_storage)
         if not args.keep_storage:
             check_storage_dependents(name, current_disk, state)
 
@@ -2202,6 +2224,8 @@ def snapshot_devices(name: str) -> Tuple[str, List[str], str, str]:
     """Return the system disk target, other excluded CD-ROM targets, UUID and persistent XML."""
     xml = output(["virsh", "-c", LIBVIRT_URI, "dumpxml", name, "--inactive"])
     root = ET.fromstring(xml)
+    if len(root.findall("./devices/disk[@device='disk']")) != 1:
+        raise KVMError(f"Unsupported disk topology for {name}; Snapshots require exactly one system disk")
     for path, what in (("./os/loader", "UEFI firmware"), ("./os/nvram", "NVRAM"), ("./devices/tpm", "TPM")):
         if root.find(path) is not None:
             raise KVMError(f"Snapshots do not capture {what} state; {name} is outside the supported BIOS-only profile")
@@ -2261,6 +2285,8 @@ def cmd_snapshot_create(args: argparse.Namespace) -> int:
     check_recovery_metadata(name)
     disk = checked_domain_disk(name, state)
     system, cdroms, uuid, xml = snapshot_devices(name)
+    if qemu_img_info(disk, shared=power == "running").get("format") != "qcow2":
+        raise KVMError(f"Snapshots require a qcow2 system disk: {disk}")
     snapshot = "kvm-vm-" + dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     overlay = disk.with_name(f"{name}.{snapshot}.qcow2")
     if overlay.exists() or overlay.is_symlink():

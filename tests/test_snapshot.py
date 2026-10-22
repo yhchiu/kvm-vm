@@ -382,6 +382,9 @@ def lock_held(host):
     (lambda h: setattr(h, "checkpoints", "virtnbdbackup.0"), "Backup checkpoints"),
     (lambda h: h.snapshots.append("made-with-virsh"), "already has a Snapshot"),
     (lambda h: h.disk_info.update({"backing-filename": "/images/template.qcow2"}), "recovery data"),
+    (lambda h: h.disk_info.update({"format": "raw"}), "Snapshots require a qcow2"),
+    (lambda h: setattr(h, "extra_devices", f'<disk type="file" device="disk"><source file="{h.base}"/>'
+                      '<target dev="vdb"/></disk>'), "Snapshots require exactly one"),
     (lambda h: h.disk_info.update({"format-specific": {"data": {"bitmaps": [{"name": "b"}]}}}), "recovery data"),
     (lambda h: setattr(h, "os_extra", "<loader>/usr/share/OVMF/OVMF_CODE.fd</loader>"), "UEFI"),
     (lambda h: setattr(h, "extra_devices", '<disk type="file" device="floppy"><target dev="fda"/></disk>'),

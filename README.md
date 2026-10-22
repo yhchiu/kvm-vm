@@ -756,8 +756,9 @@ Current clone limitations are intentional:
 
 - Linux guests only (`virt-sysprep` limitation).
 - Source VM must be shut off.
-- The source must have one independent regular file-backed qcow2 system disk.
-- Additional data disks and recovery chains are refused before cloning.
+- The source system disk must be an independent regular qcow2 or raw file.
+- Additional data disks are left untouched and are not copied to the clone.
+  Recovery chains and active recovery work are refused before cloning.
 - A smaller target virtual disk is refused. A larger target is allowed; cloud images or
   guest tooling are still responsible for expanding partitions/filesystems as appropriate.
 
@@ -829,8 +830,10 @@ configurations, pauses, failure recovery and AppArmor behavior are in
 ## Recovery state safety
 
 Clone, reinstall and delete refuse checkpoints, snapshots, backing chains,
-inconsistent disk paths and active recovery jobs. They support a single
-independent qcow2 system disk. Failed create/clone operations retain surviving
+inconsistent disk paths and active recovery jobs. They support an independent
+qcow2 or raw system file and additional file/block data disks. Reinstall keeps
+data disk attachments; clone copies only the system disk. `delete --keep-storage`
+also permits a block-backed system disk. Failed create/clone operations retain surviving
 resources for inspection; retrying does not overwrite existing artifacts.
 If a VM is absent and only its managed state/definition remain, `create` can
 reuse the name. It checks both current and recorded disk/cloud-init paths,

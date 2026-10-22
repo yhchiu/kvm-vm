@@ -115,3 +115,34 @@ def test_unattached_dependency_without_qcow2_suffix(recovery_domain, filename):
         assert result.returncode != 0 and "dependent disk" in result.stderr, result.stderr
         assert E2EHelper.virsh("dumpxml", name, "--inactive").stdout == xml_before
         assert {p: digest(p) for p in root.rglob("*") if p.is_file()} == before
+
+
+@pytest.mark.parametrize("operation", ["reinstall", "delete", "keep-storage"])
+@pytest.mark.parametrize("data_format", ["raw", "qcow2"])
+def test_lifecycle_with_data_disk(recovery_domain, operation, data_format):
+    name, root, disk, _, cli = recovery_domain
+    data = root / "data.img"
+    subprocess.run(["qemu-img", "create", "-f", data_format, str(data), "16M"], check=True)
+    subprocess.run(["qemu-io", "-f", data_format, "-c", "write -P 0x7b 0 4096", str(data)], check=True)
+    device = ET.Element("disk", type="file", device="disk")
+    ET.SubElement(device, "driver", name="qemu", type=data_format)
+    ET.SubElement(device, "source", file=str(data))
+    ET.SubElement(device, "target", dev="vdb", bus="virtio")
+    xml = root / "data.xml"
+    xml.write_text(ET.tostring(device, encoding="unicode"))
+    E2EHelper.virsh("attach-device", name, str(xml), "--config")
+    data_before, system_before = digest(data), digest(disk)
+    if operation == "reinstall":
+        cli("reinstall", name, "--yes", "--no-start")
+        domain = ET.fromstring(E2EHelper.virsh("dumpxml", name, "--inactive").stdout)
+        disks = domain.findall("./devices/disk[@device='disk']")
+        assert len(disks) == 2
+        assert any(d.find("source").get("file") == str(data) and d.find("target").get("dev") == "vdb" for d in disks)
+    else:
+        cli("delete", name, "--yes", *(["--keep-storage"] if operation == "keep-storage" else []))
+        assert not E2EHelper.domain_exists(name)
+        if operation == "keep-storage":
+            assert digest(disk) == system_before
+        else:
+            assert not disk.exists()
+    assert digest(data) == data_before

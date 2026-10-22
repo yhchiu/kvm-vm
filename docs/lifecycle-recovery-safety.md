@@ -1,7 +1,11 @@
 # Lifecycle operations around recovery state
 
-`clone`, `reinstall` and `delete` support a single regular qcow2 system disk
-whose live XML, persistent XML and managed disk path agree. They refuse
+`clone`, `reinstall` and `delete` support an independent regular qcow2 or raw
+system disk, plus administrator-attached file or block data disks. The live
+and persistent disk layouts and managed system disk path must agree. Clone
+copies only the system disk; reinstall replaces it with qcow2 and reattaches
+the data disks before starting the VM. Delete removes only tracked managed
+files and leaves data disks untouched. These commands refuse
 checkpoints, snapshots, backing chains, persistent backup bitmaps, external data
 files and unsupported disk layouts. Refusal retains the existing domain and
 files; it does not consolidate chains or retire recovery metadata for you.
@@ -21,8 +25,10 @@ their owning tool before retrying; do not delete a backing image to silence a
 refusal.
 
 `delete --keep-storage` keeps managed disk, cloud-init, definition and state
-artifacts, and requests NVRAM preservation from libvirt. It still refuses
-unsupported topology and recovery metadata. Keeping files is not a complete
+artifacts, and requests NVRAM preservation from libvirt. It also permits a
+block-backed system disk because it does not mutate storage. It still checks
+all disks for recovery metadata and active jobs; network-backed disks remain
+unsupported. Keeping files is not a complete
 Backup: capture domain configuration and any additional firmware/device state
 required for independent Restore.
 

@@ -1059,12 +1059,18 @@ def reinstall_machine(tmp_path, monkeypatch):
             elif action == "dumpxml":
                 root = kvm_vm.ET.Element("domain")
                 devices = kvm_vm.ET.SubElement(root, "devices")
-                item = kvm_vm.ET.SubElement(devices, "disk", type="file", device="disk")
+                item = kvm_vm.ET.SubElement(devices, "disk", type=machine.get("system_type", "file"), device="disk")
                 kvm_vm.ET.SubElement(item, "driver", type="qcow2")
                 source_disk = machine["other_domain_disk"] if cmd[4] == "other" else machine.get("active_disk", disk)
-                kvm_vm.ET.SubElement(item, "source", file=str(source_disk))
+                kvm_vm.ET.SubElement(item, "source", **{("dev" if machine.get("system_type") == "block" else "file"): str(source_disk)})
                 kvm_vm.ET.SubElement(item, "target", dev="vda")
+                for extra in machine.get("extra_disks", []):
+                    devices.append(kvm_vm.ET.fromstring(extra))
                 stdout = kvm_vm.ET.tostring(root, encoding="unicode")
+            elif action == "attach-device":
+                machine.setdefault("attached", []).append(Path(cmd[5]).read_text())
+            elif action == "start":
+                machine["power"] = "running"
             elif action == "undefine":
                 if machine["failure"]:
                     code, stderr = 1, machine["failure"]
@@ -1094,6 +1100,7 @@ def reinstall_machine(tmp_path, monkeypatch):
         elif cmd[0] == "cloud-localds":
             Path(cmd[-3]).write_bytes(b"replacement seed")
         elif cmd[0] == "virt-install":
+            machine["install_command"] = cmd
             if cmd[cmd.index("--name") + 1] == "test01":
                 machine["defined"] = True
             else:
@@ -1329,6 +1336,128 @@ def test_keep_storage_preserves_nvram_and_managed_files(reinstall_machine):
     assert kvm_vm.cmd_delete(machine["args"]) == 0
     assert not machine["defined"]
     assert nvram.read_bytes() == b"firmware state"
+    for path, contents in machine["originals"].items():
+        assert path.read_bytes() == contents
+
+
+@pytest.mark.parametrize("operation", ["clone", "reinstall", "delete", "keep-storage"])
+@pytest.mark.parametrize("data_kind", ["qcow2", "raw", "block"])
+def test_lifecycle_allows_additional_data_disks(reinstall_machine, operation, data_kind):
+    machine = reinstall_machine
+    data = machine["root"] / "data.img"
+    data.write_bytes(b"user data must survive")
+    disk_type, attribute = ("block", "dev") if data_kind == "block" else ("file", "file")
+    item = kvm_vm.ET.Element("disk", type=disk_type, device="disk")
+    kvm_vm.ET.SubElement(item, "driver", name="qemu", type="raw" if data_kind == "block" else data_kind)
+    kvm_vm.ET.SubElement(item, "source", **{attribute: str(data)})
+    kvm_vm.ET.SubElement(item, "target", dev="vdb", bus="virtio")
+    extra_xml = kvm_vm.ET.tostring(item, encoding="unicode")
+    machine.update(failure=None, install_succeeds=True, extra_disks=[extra_xml],
+                   other_images={str(data): {"format": "raw" if data_kind == "block" else data_kind}})
+    machine["args"].keep_storage = operation == "keep-storage"
+    command = "delete" if operation == "keep-storage" else operation
+    assert getattr(kvm_vm, "cmd_" + command)(machine["args"]) == 0
+    assert data.read_bytes() == b"user data must survive"
+    if operation == "reinstall":
+        assert machine["attached"] == [extra_xml]
+        assert "--noreboot" in machine["install_command"]
+    if operation == "clone":
+        assert not machine.get("attached")
+    if operation == "keep-storage":
+        for path, contents in machine["originals"].items():
+            assert path.read_bytes() == contents
+
+
+@pytest.mark.parametrize("operation", ["clone", "reinstall", "delete", "keep-storage"])
+def test_lifecycle_allows_raw_system_file(reinstall_machine, operation):
+    machine = reinstall_machine
+    machine.update(failure=None, install_succeeds=True, disk_info={"format": "raw"})
+    machine["args"].keep_storage = operation == "keep-storage"
+    command = "delete" if operation == "keep-storage" else operation
+    assert getattr(kvm_vm, "cmd_" + command)(machine["args"]) == 0
+
+
+def test_keep_storage_allows_block_system_disk(reinstall_machine):
+    machine = reinstall_machine
+    machine.update(failure=None, system_type="block", disk_info={"format": "raw"})
+    machine["args"].keep_storage = True
+    assert kvm_vm.cmd_delete(machine["args"]) == 0
+    assert not machine["defined"]
+    for path, contents in machine["originals"].items():
+        assert path.read_bytes() == contents
+
+
+@pytest.mark.parametrize("attach_fails", [False, True])
+def test_reinstall_starts_only_after_data_disks_are_attached(reinstall_machine, monkeypatch, attach_fails):
+    machine = reinstall_machine
+    data = machine["root"] / "data.img"
+    data.write_bytes(b"user data")
+    machine.update(failure=None, install_succeeds=True,
+                   extra_disks=[f'<disk type="file" device="disk"><source file="{data}"/><target dev="vdb"/></disk>'])
+    machine["args"].no_start = False
+    original = kvm_vm.subprocess.run
+    actions = []
+
+    def external(cmd, **kwargs):
+        if cmd[0] == "virsh":
+            actions.append(cmd[3])
+            if cmd[3] == "attach-device" and attach_fails:
+                raise subprocess.CalledProcessError(1, cmd, stderr="attachment failed")
+        return original(cmd, **kwargs)
+
+    monkeypatch.setattr(kvm_vm.subprocess, "run", external)
+    if attach_fails:
+        with pytest.raises(subprocess.CalledProcessError):
+            kvm_vm.cmd_reinstall(machine["args"])
+        assert "start" not in actions
+        assert list(machine["disk"].parent.glob(".test01-reinstall-*/domain.xml"))
+    else:
+        assert kvm_vm.cmd_reinstall(machine["args"]) == 0
+        assert actions.index("attach-device") < actions.index("start")
+    assert "--noreboot" in machine["install_command"]
+    assert data.read_bytes() == b"user data"
+
+
+@pytest.mark.parametrize("operation", ["clone", "reinstall", "delete", "keep-storage"])
+@pytest.mark.parametrize("conflict", ["backing", "bitmap", "job", "mismatch"])
+def test_data_disk_recovery_conflicts_still_refuse_before_mutation(reinstall_machine, monkeypatch, operation, conflict):
+    machine = reinstall_machine
+    data = machine["root"] / "data.qcow2"
+    data.write_bytes(b"data disk")
+    item = kvm_vm.ET.Element("disk", type="file", device="disk")
+    kvm_vm.ET.SubElement(item, "source", file=str(data))
+    kvm_vm.ET.SubElement(item, "target", dev="vdb")
+    machine.update(failure=None, install_succeeds=True, power="running",
+                   extra_disks=[kvm_vm.ET.tostring(item, encoding="unicode")])
+    # clone requires shutoff; test active jobs through the mutating commands.
+    if operation == "clone":
+        machine["power"] = "shut off"
+        if conflict == "job":
+            machine["power"] = "running"
+    if conflict == "backing":
+        machine["other_images"] = {str(data): {"backing-filename": "baseline.qcow2"}}
+    if conflict == "bitmap":
+        machine["other_images"] = {str(data): {"format-specific": {"data": {"bitmaps": [{"name": "backup"}]}}}}
+    original = kvm_vm.subprocess.run
+
+    def external(cmd, **kwargs):
+        result = original(cmd, **kwargs)
+        if conflict == "job" and cmd[0] == "virsh" and cmd[3] == "blockjob" and cmd[5] == "vdb":
+            result.stdout = "active commit"
+        if conflict == "mismatch" and cmd[0] == "virsh" and cmd[3] == "dumpxml" and "--inactive" in cmd:
+            root = kvm_vm.ET.fromstring(result.stdout)
+            root.findall("./devices/disk/source")[-1].set("file", str(data.with_suffix(".other")))
+            result.stdout = kvm_vm.ET.tostring(root, encoding="unicode")
+        return result
+
+    monkeypatch.setattr(kvm_vm.subprocess, "run", external)
+    machine["args"].keep_storage = operation == "keep-storage"
+    machine["args"].force = True
+    command = "delete" if operation == "keep-storage" else operation
+    with pytest.raises(kvm_vm.KVMError):
+        getattr(kvm_vm, "cmd_" + command)(machine["args"])
+    assert machine["defined"]
+    assert data.read_bytes() == b"data disk"
     for path, contents in machine["originals"].items():
         assert path.read_bytes() == contents
 

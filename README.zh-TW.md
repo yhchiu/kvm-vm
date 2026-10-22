@@ -685,8 +685,8 @@ sudo kvm-vm clone web01 web02.yaml
 
 - 僅支援 Linux 客體系統（`virt-sysprep` 的限制）。
 - 來源虛擬機器必須處於關機狀態。
-- 來源必須只有一個獨立、一般檔案形式（file-backed）的 qcow2 系統磁碟。
-- 若有額外資料磁碟或復原用磁碟鏈，會在複製前拒絕操作。
+- 來源系統磁碟必須是獨立的一般 qcow2 或 raw 檔案。
+- 額外資料磁碟保持不動，不會複製到新 VM；復原用磁碟鏈與進行中的復原工作仍會阻擋複製。
 - 拒絕將目標虛擬磁碟縮小。允許設定較大的容量；擴充磁碟分割區與檔案系統仍由雲端映像檔或客體系統工具負責處理。
 
 ### 驗證 virt-sysprep 相容性
@@ -751,7 +751,8 @@ VM 設定與 kvm-vm 檔案，並重新啟動 VM，身分保持不變。快照不
 ## 復原狀態安全檢查
 
 Clone、reinstall 與 delete 會拒絕 checkpoint、snapshot、backing chain、
-不一致的磁碟路徑與進行中的復原工作；目前支援單一獨立的 qcow2 系統磁碟。
+不一致的磁碟路徑與進行中的復原工作；支援獨立的 qcow2／raw 系統磁碟檔案，以及額外的檔案或區塊裝置資料碟。
+Reinstall 保留資料碟連接設定，clone 只複製系統碟；`delete --keep-storage` 也允許系統碟使用區塊裝置。
 Create／clone 失敗會保留現存資源供檢查，重試不會覆寫既有檔案。
 若 VM 已不存在且僅剩管理 state／定義檔，`create` 可重新使用同一名稱。
 它會檢查目前與 state 記錄的磁碟、cloud-init 路徑及磁碟轉換暫存檔，
