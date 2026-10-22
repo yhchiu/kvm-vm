@@ -128,3 +128,84 @@ and finishing each task's checks before moving to the next:
 
 Upstream references were inspected on 2026-10-17. Actual host versions and
 workloads have not been established; no cross-host recovery has been run.
+
+## External snapshot tools
+
+Checked on 2026-10-20: is there a Snapshot tool that kvm-vm could call, the way
+it leaves disk Backups to virtnbdbackup and virtnbdrestore, so that it does not
+manage the details itself?
+
+No maintained command-line tool was found at that level. The closest tool is
+libvirt itself, and kvm-vm already uses it where it works.
+
+| Option | Usable by kvm-vm | Reason |
+| --- | --- | --- |
+| libvirt / virsh: external snapshot deletion since 9.0, revert since 9.9 | Already used | Creation and live deletion use libvirt. Offline deletion is not used because of the AppArmor rule on Debian 13 (libvirt issue #806). Revert keeps the snapshot, puts the VM on another new overlay, always restarts the VM process (since libvirt 7.10) and does not restore kvm-vm's own files. |
+| Internal snapshots, stored inside the qcow2 file | No | libvirt handles creation, revert and deletion, and the disk stays one file. But libvirt's QEMU driver rejects disk-only internal snapshots of a running VM, so they include memory and pause the guest CPUs while saving (finding 4). RHEL 10 documentation calls internal snapshots deprecated. |
+| virt-manager, Cockpit Machines | No | Graphical tools that a command cannot call. Cockpit Machines 306 uses external snapshots with libvirt 9.9 or newer, which is libvirt's own support. |
+| Proxmox VE (`qm snapshot`), oVirt | No | Complete platforms. They would replace kvm-vm rather than be called by it. |
+| Scripts found on GitHub | No | Mostly backup tools or tutorials, for example virt-backup, a Ruby backup and restore tool. No maintained Snapshot manager. |
+
+### Why Snapshots have no virtnbdbackup-like tool
+
+- A Backup reads the disk and writes files elsewhere, and a Restore produces
+  new files. Neither changes the running VM, so a separate tool can own them.
+  A Snapshot changes the disk chain that the running VM uses, so the point of
+  integration is the domain itself.
+- What kvm-vm manages is unknown to any outside tool: capturing and restoring
+  the effective definition, state manifest and cloud-init files; one Snapshot
+  per VM; refusing Backup checkpoints; the lifecycle lock; and the refusals in
+  clone, reinstall and delete. These stay in kvm-vm whichever tool does the
+  disk work.
+
+### Using `virsh snapshot-revert` for rollback
+
+It saves little. After a revert, the Snapshot remains and the VM runs on a new
+overlay. To keep "rollback uses up the Snapshot", kvm-vm would still delete it
+afterwards. On Debian 13 that delete hits libvirt issue #806, because QEMU was
+started with the Snapshot in place, so the offline `qemu-img commit` is still
+needed. kvm-vm's own files still have to be restored too. Ticket 06 chose to
+implement rollback without libvirt's revert (see
+[Roll back](snapshots.md#roll-back)), and that choice still holds.
+
+### Storage snapshots
+
+The only way to hand the disk details to another tool is a storage-level
+snapshot, for example one ZFS dataset per VM. It has no overlay, no merge and
+no AppArmor issue. The costs:
+
+- The project would require a host storage layout. ZFS is not part of a
+  default AlmaLinux or Debian install.
+- Raw LVM volumes would lose incremental Backups, because libvirt supports
+  checkpoints only for qcow2 disks at the active layer.
+- A storage rollback also rolls back the bitmaps inside the qcow2 file, while
+  libvirt's checkpoint metadata stays as it was, so the checkpoint rules
+  remain. This follows from where each is stored; it was not tested.
+
+Not adopted, unless the project decides to require a host storage layout.
+
+### Conclusion
+
+Keep libvirt as the base, and kvm-vm as a thin layer for its rules and its own
+management files. Simplification belongs in kvm-vm's recovery logic
+([ADR 0003](adr/0003-snapshot-failures-stop-for-the-operator.md)), not in a
+change of tools.
+
+### Sources
+
+- [libvirt release notes](https://libvirt.org/news.html): 9.0.0 adds external
+  snapshot deletion, 9.9.0 adds external snapshot revert.
+- [virsh manual: snapshot-revert](https://libvirt.org/manpages/virsh.html#snapshot-revert):
+  the VM process is always restarted since 7.10.0.
+- [libvirt patch: reverting to an external snapshot creates new overlay files](https://lists.libvirt.org/archives/list/devel@lists.libvirt.org/thread/BDTDAD3JARDQ65TTXYABHQBMYUSN2AMK/).
+- [libvirt checkpoint XML format](https://libvirt.org/formatcheckpoint.html):
+  incremental Backups need qcow2 disks at the active layer.
+- [libvirt issue #806](https://gitlab.com/libvirt/libvirt/-/issues/806).
+- [RHEL 10: saving and restoring VM state by using snapshots](https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/10/html/configuring_and_managing_windows_virtual_machines/saving-and-restoring-virtual-machine-state-by-using-snapshots):
+  internal snapshots are deprecated.
+- [Cockpit 310 release notes](https://cockpit-project.org/blog/cockpit-310.html):
+  Cockpit Machines 306 uses external snapshots with libvirt 9.9.0 or later.
+- [virt-backup](https://github.com/eslam-gomaa/virt-backup): the closest
+  script found, a backup and restore tool.
+- [Snapshots](snapshots.md) and the
+  [ticket 06 validation](plans/20261018_vm-recovery/ticket-06-validation.md).
