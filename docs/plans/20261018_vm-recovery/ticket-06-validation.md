@@ -6,7 +6,7 @@ on 2026-10-19 on two hosts; review gate closed.
 Implementation/review fixed point: `035d169ef0f3d0e768baec41ba65819de71e0464`.
 
 Later change (2026-10-20): failed or interrupted Snapshot operations are no longer continued
-automatically; see [ADR 0003](../../adr/0003-snapshot-failures-stop-for-the-operator.md) and the
+automatically; see [ADR 0005](../../adr/0005-snapshot-failures-stop-for-the-operator.md) and the
 [simplification record](snapshot-simplification-validation.md). The retry behavior described
 below is historical.
 

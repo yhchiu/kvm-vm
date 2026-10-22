@@ -130,7 +130,7 @@ guest still needs its normal boot time before it is usable.
 ## Failures and interruptions
 
 kvm-vm never continues a failed or interrupted Snapshot operation by itself
-([ADR 0003](adr/0003-snapshot-failures-stop-for-the-operator.md)). It keeps
+([ADR 0005](adr/0005-snapshot-failures-stop-for-the-operator.md)). It keeps
 the record, marks the Snapshot as needing attention and says what to do next.
 Only a ready Snapshot can be rolled back.
 

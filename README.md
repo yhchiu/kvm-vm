@@ -850,7 +850,7 @@ history. Backup and Restore use virtnbdbackup and virtnbdrestore directly, and
 other guests, applications and host combinations are untested. Before any
 restore, run `kvm-vm backup check DIR [--until virtnbdbackup.N]`:
 `virtnbdrestore` can exit 0 while restoring an incomplete or reordered history
-(see [ADR 0002](docs/adr/0002-pre-restore-backup-check.md)). See the
+(see [ADR 0004](docs/adr/0004-pre-restore-backup-check.md)). See the
 [ticket 03](docs/plans/20261018_vm-recovery/ticket-03-validation.md) and
 [ticket 04](docs/plans/20261018_vm-recovery/ticket-04-validation.md) evidence.
 

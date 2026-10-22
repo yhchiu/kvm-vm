@@ -9,8 +9,8 @@ cross-host Restore and Snapshot validation on real KVM hosts. Each
 [ticket validation record](plans/20261018_vm-recovery/) states where it was
 tested. For current behavior see [Snapshots](snapshots.md) and the
 [Backup and Restore procedure](full-backup-restore.md); later decisions are in
-[ADR 0002](adr/0002-pre-restore-backup-check.md) and
-[ADR 0003](adr/0003-snapshot-failures-stop-for-the-operator.md). The
+[ADR 0004](adr/0004-pre-restore-backup-check.md) and
+[ADR 0005](adr/0005-snapshot-failures-stop-for-the-operator.md). The
 [External snapshot tools](#external-snapshot-tools) section was added on
 2026-10-20.
 
@@ -198,7 +198,7 @@ Not adopted, unless the project decides to require a host storage layout.
 
 Keep libvirt as the base, and kvm-vm as a thin layer for its rules and its own
 management files. Simplification belongs in kvm-vm's recovery logic
-([ADR 0003](adr/0003-snapshot-failures-stop-for-the-operator.md)), not in a
+([ADR 0005](adr/0005-snapshot-failures-stop-for-the-operator.md)), not in a
 change of tools.
 
 ### Sources

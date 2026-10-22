@@ -91,7 +91,7 @@ The line this ADR draws:
 The Backup side has nothing comparable to cut. kvm-vm does not run Backups.
 `kvm-vm backup check` reads files only and keeps no state. It exists because
 virtnbdrestore exits 0 on an incomplete or reordered history
-([ADR 0002](0002-pre-restore-backup-check.md)): when the tool does not report
+([ADR 0004](0004-pre-restore-backup-check.md)): when the tool does not report
 the error, leaving errors to the operator does not work. Each checkpoint
 refusal is a single `virsh checkpoint-list`. The order "retire the checkpoints,
 take the Snapshot, start a new full Backup" comes from libvirt, and refusing
@@ -133,5 +133,5 @@ No such tool exists; libvirt stays the base. See
   and [AppArmor hosts](../snapshots.md#apparmor-hosts).
 - [Implementation specification](../plans/20261018_vm-recovery/spec.md).
 - [Ticket 02: guard lifecycle commands](../plans/20261018_vm-recovery/issues/02-guard-lifecycle-recovery-state.md).
-- [ADR 0002: check a Backup directory before Restore](0002-pre-restore-backup-check.md).
+- [ADR 0004: check a Backup directory before Restore](0004-pre-restore-backup-check.md).
 - [libvirt issue #806](https://gitlab.com/libvirt/libvirt/-/issues/806).

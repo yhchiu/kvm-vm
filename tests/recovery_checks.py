@@ -1,7 +1,7 @@
 """Import the pre-restore Backup check from kvm-vm for the real-machine harnesses.
 
 Operators run `kvm-vm backup check DIR [--until virtnbdbackup.N]` (see
-docs/adr/0002-pre-restore-backup-check.md); this module only lets the scripts
+docs/adr/0004-pre-restore-backup-check.md); this module only lets the scripts
 in tests/ call the same code without duplicating it.
 """
 

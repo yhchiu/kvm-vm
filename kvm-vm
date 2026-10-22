@@ -1934,7 +1934,7 @@ def cmd_delete(args: argparse.Namespace) -> int:
     return 0
 
 
-# --- Backup check: refuse a virtnbdbackup directory before Restore (ADR 0002) ---
+# --- Backup check: refuse a virtnbdbackup directory before Restore (ADR 0004) ---
 #
 # virtnbdrestore exits 0 for a missing increment, an unknown --until (2.28) or a
 # missing checkpoint list, and it applies data and saved configuration files in
@@ -2032,7 +2032,7 @@ def cmd_backup_check(args: argparse.Namespace) -> int:
 # for a running VM, commits the overlay back on delete; a shut off VM is
 # committed with qemu-img. kvm-vm owns the one-Snapshot limit, the filesystem
 # freeze, the captured configuration and a record in STATE_DIR/snapshots/NAME.
-# A failed or interrupted operation is never continued automatically (ADR 0003):
+# A failed or interrupted operation is never continued automatically (ADR 0005):
 # the record keeps it, and the status says what the operator does next.
 
 SNAPSHOT_MIN_LIBVIRT = (9, 9, 0)  # mature external snapshot support; tested with 11.3 and 11.10

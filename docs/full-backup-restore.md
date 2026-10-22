@@ -171,7 +171,7 @@ virtnbdrestore -i "$SET/backup" -o "$RESTORED"
 ```
 
 `kvm-vm backup check` (a kvm-vm release that includes it, see
-[ADR 0002](adr/0002-pre-restore-backup-check.md)) refuses a Backup directory
+[ADR 0004](adr/0004-pre-restore-backup-check.md)) refuses a Backup directory
 that `virtnbdrestore` would restore incompletely or in the wrong order while
 still exiting 0; see [restore a chosen point](#restore-a-chosen-point). It reads
 the directory only and needs no root or backup tools.

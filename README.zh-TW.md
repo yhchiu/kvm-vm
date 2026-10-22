@@ -764,7 +764,7 @@ Create／clone 失敗會保留現存資源供檢查，重試不會覆寫既有�
 （Debian 13 還原到 AlmaLinux 9.8，單一 guest、同步標記檔工作負載）。備份與還原直接使用
 virtnbdbackup 與 virtnbdrestore；其他 guest、應用程式與主機組合尚未驗證。還原前務必執行
 `kvm-vm backup check DIR [--until virtnbdbackup.N]`：`virtnbdrestore` 在備份歷史不完整或
-檔案順序錯亂時仍可能回傳 0（見 [ADR 0002](docs/adr/0002-pre-restore-backup-check.md)）。請參閱
+檔案順序錯亂時仍可能回傳 0（見 [ADR 0004](docs/adr/0004-pre-restore-backup-check.md)）。請參閱
 [操作流程](docs/full-backup-restore.md)、
 [雙主機驗收步驟](docs/full-backup-acceptance.md)、
 [ticket 03 驗證紀錄](docs/plans/20261018_vm-recovery/ticket-03-validation.md)與

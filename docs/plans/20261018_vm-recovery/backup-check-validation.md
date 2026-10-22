@@ -6,7 +6,7 @@ Implementation/review fixed point: `79bc474`.
 
 The operator decided to turn the pre-restore chain check from ticket 04 into a
 supported command. The decision and its scope are recorded in
-[ADR 0002](../../adr/0002-pre-restore-backup-check.md).
+[ADR 0004](../../adr/0004-pre-restore-backup-check.md).
 
 ## Change
 
@@ -63,7 +63,7 @@ Review of `cb82fcf...79bc474`.
   subcommand group like `snapshot`); it is read-only, so it takes no lifecycle
   lock. The harness import keeps one implementation. Links, the procedure's
   shell blocks (`bash -n`) and `git diff --check` pass.
-- Spec (ADR 0002): only the virtnbdbackup layout tested with 2.28 and 2.47 is
+- Spec (ADR 0004): only the virtnbdbackup layout tested with 2.28 and 2.47 is
   accepted, and other layouts are refused (for example a `-l copy` set without
   a checkpoint list). The command changes nothing and runs without external
   commands (unit test) or root (real run). Its output keeps checksums and

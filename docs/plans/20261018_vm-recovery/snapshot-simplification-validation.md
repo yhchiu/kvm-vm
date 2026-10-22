@@ -6,7 +6,7 @@ Implementation/review fixed point: `a736b62`.
 
 The operator chose to simplify the Snapshot lifecycle after a code review of
 the whole batch (`ec1845f...e3843df`). The decision is recorded in
-[ADR 0003](../../adr/0003-snapshot-failures-stop-for-the-operator.md):
+[ADR 0005](../../adr/0005-snapshot-failures-stop-for-the-operator.md):
 kvm-vm no longer continues a failed or interrupted Snapshot operation by itself.
 
 ## Review findings this change addresses
@@ -61,13 +61,13 @@ committed code is in the review gate.
 
 ## Review gate
 
-Review of `e3843df...a736b62` against ADR 0003 and the review findings.
+Review of `e3843df...a736b62` against ADR 0005 and the review findings.
 
 - Standards: Conventional Commit with a detailed body and no co-author
   trailer. The rollback wording follows the glossary. The shared helpers
   replace the repeated topology and snapshot-list checks. Links, anchors and
   `git diff --check` pass.
-- Spec (ADR 0003): no branch continues a stopped operation. Rollback accepts
+- Spec (ADR 0005): no branch continues a stopped operation. Rollback accepts
   only a ready Snapshot. A merge starts only from a verified overlay-on-base
   state. A failed delete disables rollback. Only an empty Snapshot lets its
   record go. The freeze section cannot be interrupted, and the record is
@@ -80,7 +80,7 @@ Review of `e3843df...a736b62` against ADR 0003 and the review findings.
     checking that nothing changed.
   - Every error path puts the signal handlers back.
 - No must-fix findings. Advisory: an interrupted rollback now needs the manual
-  steps in docs/snapshots.md, which is the accepted cost of ADR 0003.
+  steps in docs/snapshots.md, which is the accepted cost of ADR 0005.
 
 Confirmation with the committed code (`kvm-vm` SHA-256 `78f425b9…`, checked on
 each host):
