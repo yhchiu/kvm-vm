@@ -9,6 +9,7 @@ import importlib.util
 import io
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -1510,6 +1511,40 @@ def test_creation_seed_failure_cleans_owned_files_and_allows_retry(reinstall_mac
     monkeypatch.setattr(kvm_vm.subprocess, "run", original)
     machine["install_succeeds"] = True
     assert getattr(kvm_vm, "cmd_" + operation)(machine["args"]) == 0
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX permission semantics")
+@pytest.mark.parametrize("operation", ["create", "clone", "reinstall"])
+def test_cloud_directory_traversable_with_private_umask(reinstall_machine, operation):
+    machine = reinstall_machine
+    machine.update(failure=None, install_succeeds=True)
+    previous = os.umask(0o077)
+    try:
+        assert getattr(kvm_vm, "cmd_" + operation)(machine["args"]) == 0
+    finally:
+        os.umask(previous)
+    name = "test01" if operation == "reinstall" else "clone01"
+    cloud = kvm_vm.CLOUD_DIR / name
+    assert cloud.stat().st_mode & 0o777 == 0o755
+    assert (cloud / "user-data").stat().st_mode & 0o077 == 0
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX permission semantics")
+def test_storage_directories_override_umask_only_for_new_directories(tmp_path, monkeypatch):
+    existing = tmp_path / "existing"
+    existing.mkdir(mode=0o700)
+    for key in ("BASE_DIR", "VM_DIR", "CLOUD_DIR", "STATE_DIR", "DEF_DIR"):
+        monkeypatch.setattr(kvm_vm, key, existing / key / "nested")
+    previous = os.umask(0o077)
+    try:
+        kvm_vm.ensure_dirs()
+    finally:
+        os.umask(previous)
+    for directory in (kvm_vm.BASE_DIR, kvm_vm.VM_DIR, kvm_vm.CLOUD_DIR):
+        assert directory.stat().st_mode & 0o777 == 0o755
+        assert directory.parent.stat().st_mode & 0o777 == 0o755
+    assert existing.stat().st_mode & 0o777 == 0o700
+    assert kvm_vm.STATE_DIR.stat().st_mode & 0o777 == 0o700
 
 
 def test_clone_can_replace_stale_target_state(reinstall_machine):

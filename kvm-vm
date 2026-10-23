@@ -160,8 +160,28 @@ def require_cloud_seed_generator() -> str:
     return tool
 
 
+def make_storage_directory(path: Path) -> None:
+    """Give newly owned storage directories traversal rights independent of umask.
+
+    Existing directories (including administrator-owned ancestors) retain their
+    permissions. Private state and file permissions are handled separately.
+    """
+    if path.is_dir():
+        return
+    make_storage_directory(path.parent)
+    try:
+        path.mkdir(mode=0o755)
+    except FileExistsError:
+        if not path.is_dir():
+            raise
+    else:
+        path.chmod(0o755)
+
+
 def ensure_dirs() -> None:
-    for p in (BASE_DIR, VM_DIR, STATE_DIR, CLOUD_DIR, DEF_DIR):
+    for p in (BASE_DIR, VM_DIR, CLOUD_DIR):
+        make_storage_directory(p)
+    for p in (STATE_DIR, DEF_DIR):
         p.mkdir(parents=True, exist_ok=True)
 
 
@@ -966,6 +986,9 @@ def make_cloud_files(cfg: Dict[str, Any], source_def_dir: Path, *, reset_ssh_por
     elif cdir.exists():
         shutil.rmtree(cdir)
     cdir.mkdir(parents=True, exist_ok=True)
+    # This directory was reserved by this attempt or recreated above. mkdir's
+    # mode alone is insufficient when the caller uses umask 077.
+    cdir.chmod(0o755)
 
     if cfg["network"]["mac"] == "auto":
         cfg["network"]["mac"] = generate_mac()
