@@ -144,8 +144,10 @@ agents.
 
 ## Review follow-up: lifecycle success coverage (2026-10-23)
 
-Status: acceptance cases added; real-host execution pending. The historical
-results above do not cover these new cases.
+Status: real-host acceptance passed on Debian 13 / AppArmor at `2505a37`.
+See [P2 real-host validation](p2-real-host-validation.md) for the initial
+permission failure, its fix, all results and cleanup. The historical results
+above do not cover these new cases.
 
 `tests/test_snapshot_e2e.py::test_lifecycle_after_snapshot_recovery` now runs
 the lifecycle sequence after each of:
@@ -171,7 +173,8 @@ not a replacement for the partial-write/disk-full evidence in the Snapshot
 simplification validation record.
 
 Local attempt on Debian WSL as root collected all five Snapshot E2E cases and
-skipped them because `virsh` is unavailable. No real-host success is claimed.
+skipped them because `virsh` is unavailable. The subsequent real-host run
+passed all five cases after fixing cloud-init directory traversal permissions.
 Run on a disposable-capacity Linux/KVM host with the usual guest image and
 libguestfs dependencies:
 
@@ -179,5 +182,5 @@ libguestfs dependencies:
 sudo python3 -m pytest tests/test_snapshot_e2e.py -v -s -p no:cacheprovider
 ```
 
-Record the revision, libvirt/QEMU versions, host security mode, guest image and
-the three `SNAPSHOT_LIFECYCLE_PASSED` lines before closing real-host acceptance.
+The linked validation record contains the revision, libvirt/QEMU versions,
+host security mode, guest image and three `SNAPSHOT_LIFECYCLE_PASSED` lines.

@@ -54,7 +54,7 @@ not evidence that every later revision has been rerun on those hosts.
 | Host | libvirt | QEMU | Host security mode | Evidence and limits |
 | --- | --- | --- | --- | --- |
 | AlmaLinux 9.8 | 11.10.0 | 10.1.0 | SELinux permissive | [Snapshot failure validation](plans/20261018_vm-recovery/snapshot-simplification-validation.md); enforcing mode was not tested |
-| Debian 13 | 11.3.0 | 10.0.13 | AppArmor | [Snapshot failure validation](plans/20261018_vm-recovery/snapshot-simplification-validation.md); live deletion after reboot can be refused, requiring offline deletion |
+| Debian 13 | 11.3.0 | 10.0.13 | AppArmor | [Lifecycle acceptance at 2505a37](plans/20261018_vm-recovery/p2-real-host-validation.md) and [Snapshot failure validation](plans/20261018_vm-recovery/snapshot-simplification-validation.md); live deletion after reboot can be refused, requiring offline deletion |
 
 Guest coverage includes Debian 12 and AlmaLinux 9; see the
 [Snapshot/Backup interoperability record](plans/20261018_vm-recovery/ticket-07-validation.md)
