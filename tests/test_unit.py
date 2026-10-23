@@ -9,6 +9,7 @@ import importlib.util
 import io
 import argparse
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -1069,6 +1070,10 @@ def reinstall_machine(tmp_path, monkeypatch):
                 kvm_vm.ET.SubElement(item, "target", dev="vda")
                 for extra in machine.get("extra_disks", []):
                     devices.append(kvm_vm.ET.fromstring(extra))
+                if machine.get("os_metadata"):
+                    ns = "{http://libosinfo.org/xmlns/libvirt/domain/1.0}"
+                    osinfo = kvm_vm.ET.SubElement(kvm_vm.ET.SubElement(root, "metadata"), ns + "libosinfo")
+                    kvm_vm.ET.SubElement(osinfo, ns + "os", id=machine["os_metadata"])
                 stdout = kvm_vm.ET.tostring(root, encoding="unicode")
             elif action == "attach-device":
                 machine.setdefault("attached", []).append(Path(cmd[5]).read_text())
@@ -1100,6 +1105,8 @@ def reinstall_machine(tmp_path, monkeypatch):
                 stdout = "machine-id\nssh-hostkeys"
         elif cmd[0] == "virt-customize":
             pass
+        elif cmd[0] == "osinfo-query":
+            stdout = machine.get("osinfo", "")
         elif cmd[0] == "cloud-localds":
             Path(cmd[-3]).write_bytes(b"replacement seed")
         elif cmd[0] == "virt-install":
@@ -1558,6 +1565,76 @@ def test_clone_can_replace_stale_target_state(reinstall_machine):
     machine["install_succeeds"] = True
     assert kvm_vm.cmd_clone(machine["args"]) == 0
     assert kvm_vm.load_state("clone01")["instance_id"] != "stale"
+
+
+def osinfo_rows(*short_ids):
+    rows = [f" {short:<12} | Some OS | 1 | http://example.org/{short}" for short in short_ids]
+    return "\n".join([" Short ID | Name | Version | ID", "----+----+----+----"] + rows)
+
+
+def clone_with(machine, *, source=None, target=None):
+    """Clone test01 to clone01 after changing the source's effective and target definitions."""
+    for path, changes in ((kvm_vm.DEF_DIR / "test01.yaml", source), (Path(machine["args"].definition), target)):
+        raw = kvm_vm.yaml_load(path)
+        for section, values in (changes or {}).items():
+            raw[section].update(values)
+        kvm_vm.yaml_dump(path, raw)
+    machine["install_succeeds"] = True
+    assert kvm_vm.cmd_clone(machine["args"]) == 0
+    install = machine["install_command"]
+    saved = kvm_vm.yaml_load(kvm_vm.DEF_DIR / "clone01.yaml")["vm"]["os_variant"]
+    return install[install.index("--os-variant") + 1], saved
+
+
+@pytest.mark.parametrize("source, expected", [
+    ({"vm": {"os_variant": "debian12"}}, "debian12"),
+    ({"storage": {"image": {"distro": "rocky10", "path": None}}}, "rocky10"),
+])
+def test_clone_inherits_the_source_os_variant(reinstall_machine, caplog, source, expected):
+    caplog.set_level(logging.INFO)
+    reinstall_machine["osinfo"] = osinfo_rows("debian12", "rocky10", "rocky9")
+    assert clone_with(reinstall_machine, source=source) == (expected, expected)
+    assert f"OS variant {expected} inherited from source VM test01" in caplog.text
+
+
+def test_clone_dry_run_shows_the_inherited_variant(reinstall_machine, capsys):
+    source_def = kvm_vm.DEF_DIR / "test01.yaml"
+    raw = kvm_vm.yaml_load(source_def)
+    raw["vm"]["os_variant"] = "debian12"
+    kvm_vm.yaml_dump(source_def, raw)
+    reinstall_machine["args"].dry_run = True
+    assert kvm_vm.cmd_clone(reinstall_machine["args"]) == 0
+    preview = kvm_vm.yaml.safe_load(capsys.readouterr().out.split("passed\n", 1)[1])
+    assert preview["vm"]["os_variant"] == "debian12"
+    assert "install_command" not in reinstall_machine
+
+
+def test_inherited_alias_falls_back_like_create(reinstall_machine):
+    reinstall_machine["osinfo"] = osinfo_rows("rocky9")
+    source = {"storage": {"image": {"distro": "rocky10", "path": None}}}
+    assert clone_with(reinstall_machine, source=source) == ("rocky9", "rocky10")
+
+
+@pytest.mark.parametrize("explicit", ["target yaml", "KVM_VM_OS"])
+def test_clone_target_variant_wins_over_the_source(reinstall_machine, monkeypatch, explicit):
+    reinstall_machine["osinfo"] = osinfo_rows("debian12", "rocky10")
+    source = {"storage": {"image": {"distro": "rocky10", "path": None}}}
+    target = {"vm": {"os_variant": "debian12"}} if explicit == "target yaml" else None
+    if explicit == "KVM_VM_OS":
+        monkeypatch.setenv("KVM_VM_OS", "debian12")
+    assert clone_with(reinstall_machine, source=source, target=target) == ("debian12", "debian12")
+
+
+@pytest.mark.parametrize("known, expected", [(("rocky9",), ("rocky9", "rocky9")), ((), ("generic", None))])
+def test_clone_without_a_source_record_uses_the_domain_metadata(reinstall_machine, known, expected):
+    reinstall_machine.update(osinfo=osinfo_rows(*known), os_metadata="http://example.org/rocky9")
+    assert clone_with(reinstall_machine) == expected
+
+
+def test_clone_without_any_record_uses_generic(reinstall_machine, caplog):
+    caplog.set_level(logging.INFO)
+    assert clone_with(reinstall_machine) == ("generic", None)
+    assert "inherited from source" not in caplog.text
 
 
 @pytest.mark.parametrize("unsafe", ["inventory", "referenced", "replaced", "cleanup"])

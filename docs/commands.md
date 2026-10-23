@@ -201,6 +201,13 @@ source system disk
 kvm-vm does not run `virt-sysprep`'s default operation set, so user accounts and
 application data in the guest are kept. The source VM is not changed.
 
+The clone keeps the source's OS variant, so `virt-install` gives it the same
+virtual hardware defaults. To choose another variant, for example after an
+in-place upgrade of the source guest, set `vm.os_variant` in the target
+definition. See [os_variant](configuration.md#os_variant). `clone --dry-run`
+shows the inherited value; `validate --clone` cannot, because it does not know
+the source.
+
 Limits:
 
 - Linux guests only (a `virt-sysprep` limit).

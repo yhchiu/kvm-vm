@@ -9,6 +9,7 @@ vm:
   cpu: host-passthrough
   autostart: true
   start: true
+  # os_variant is optional: the clone uses the source VM's variant by default.
 
 storage:
   # Optional for clone. Omit to preserve the source virtual disk size.

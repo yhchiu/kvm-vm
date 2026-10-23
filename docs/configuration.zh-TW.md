@@ -233,6 +233,8 @@ sudo kvm-vm create newvm.yaml --refresh-image
 
 `image.distro`、`KVM_VM_OS` 與 `reinstall --os` 都依相同步驟，因此在同一台宿主機上，同一個別名一定得到相同的 variant。使用自訂映像檔時，請自行設定 `vm.os_variant`。
 
+`clone` 複製的是來源的磁碟，因此除非目標定義檔設定了 `vm.os_variant`（或設定了 `KVM_VM_OS`），clone 會沿用來源的 OS variant。kvm-vm 先從來源的生效定義檔取得（`vm.os_variant`，其次 `image.distro`），否則改用 `virt-install` 記錄在來源 domain libosinfo 中繼資料裡的 variant，這也涵蓋非 kvm-vm 建立的 VM。沿用的名稱同樣依上述步驟選擇，並存入 clone 的生效定義檔。若來源 guest 曾原地升級（例如從 Ubuntu 24.04 升到 26.04），這些紀錄就已過時，請在目標定義檔設定 `vm.os_variant`。
+
 ### 新增別名
 
 若要使用 `distro: myos1` 這類簡短名稱，請在 `kvm-vm` 腳本的 `DISTROS` 加入項目，再重新執行 `sudo ./install.sh`：
@@ -314,7 +316,7 @@ sudo KVM_VM_OS=debian13 KVM_VM_NAME=web02 KVM_VM_VCPUS=16 KVM_VM_DISK=100 \
 | `KVM_VM_VCPUS` | `vm.vcpus` | `4` | 1 到 1024。 |
 | `KVM_VM_MEMORY` 或 `KVM_VM_MEMORY_MIB` | `vm.memory_mib` | `4096` | 至少 256。 |
 | `KVM_VM_DISK` 或 `KVM_VM_DISK_GIB` | `storage.disk_gib` | `50` | 至少 1。 |
-| `KVM_VM_OS` | `image.distro` 與 `vm.os_variant` | `rocky9` | 必須是[內建別名](#內建別名)，`os_variant` 會設為別名本身，再依 [os_variant](#os_variant) 的步驟選擇。`clone` 時只設定 `os_variant`。 |
+| `KVM_VM_OS` | `image.distro` 與 `vm.os_variant` | `rocky9` | 必須是[內建別名](#內建別名)，`os_variant` 會設為別名本身，再依 [os_variant](#os_variant) 的步驟選擇。`clone` 時只設定 `os_variant`，並取代沿用自來源的值。 |
 | `KVM_VM_BRIDGE` | `network.mode`、`network.bridge` | `br0` | 選用橋接模式，不可與 Macvtap 並用。 |
 | `KVM_VM_MACVTAP` | `network.mode`、`network.parent` | `eno1` | 選用 Macvtap 模式，即使定義檔是橋接或 NAT 也一樣。空值會報錯。 |
 | `KVM_VM_IPV4` | `network.ipv4` | `dhcp` 或 `192.168.1.50/24` | `dhcp`、`disabled`，或含前綴長度的靜態位址。 |

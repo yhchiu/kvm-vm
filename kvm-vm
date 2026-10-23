@@ -1152,6 +1152,43 @@ def choose_os_variant(cfg: Dict[str, Any]) -> str:
     return variant
 
 
+LIBOSINFO_NS = "{http://libosinfo.org/xmlns/libvirt/domain/1.0}"
+
+
+def domain_os_variant(name: str) -> Optional[str]:
+    """Return the libosinfo short ID virt-install recorded for a domain, if this host knows it."""
+    try:
+        root = ET.fromstring(output(["virsh", "-c", LIBVIRT_URI, "dumpxml", name, "--inactive"]))
+    except ET.ParseError:
+        return None
+    entry = root.find(f"./metadata/{LIBOSINFO_NS}libosinfo/{LIBOSINFO_NS}os")
+    full_id = entry.get("id") if entry is not None else None
+    if not full_id or not shutil.which("osinfo-query"):
+        return None
+    p = run(["osinfo-query", "os"], check=False, capture=True)
+    for line in p.stdout.splitlines():
+        columns = [c.strip() for c in line.split("|")]
+        if len(columns) > 1 and columns[-1] == full_id:
+            return columns[0]
+    return None
+
+
+def inherit_os_variant(cfg: Dict[str, Any], source_name: str, source_config: Dict[str, Any]) -> None:
+    """Give a clone its source's OS variant, because the copied disk holds the same OS.
+
+    A variant named by the target (vm.os_variant, KVM_VM_OS or image.distro) wins.
+    Otherwise use the source's effective definition, then the variant virt-install
+    recorded for the source domain, which also covers VMs kvm-vm did not create.
+    """
+    if cfg["vm"].get("os_variant") or cfg["storage"]["image"].get("distro"):
+        return
+    inherited = (dig(source_config, "vm", "os_variant") or dig(source_config, "storage", "image", "distro")
+                 or domain_os_variant(source_name))
+    if inherited:
+        cfg["vm"]["os_variant"] = inherited
+        log.info("OS variant %s inherited from source VM %s", inherited, source_name)
+
+
 def define_vm(cfg: Dict[str, Any], disk: Path, seed: Path, *, no_start: bool = False) -> None:
     vm = cfg["vm"]
     st = cfg["storage"]
@@ -1413,6 +1450,7 @@ def cmd_clone(args: argparse.Namespace) -> int:
     cfg = normalize_definition(yaml_load(p), for_clone=True)
     source_definition = Path(source_state.get("definition") or DEF_DIR / f"{source_name}.yaml") if source_state else DEF_DIR / f"{source_name}.yaml"
     source_config = yaml_load(source_definition) if source_definition.exists() else {}
+    inherit_os_variant(cfg, source_name, source_config)
     destination = vars(args).get("console_password_file")
     deliver_console_credential(cfg, destination, preview=True)
     name = cfg["vm"]["name"]

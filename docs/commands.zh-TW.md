@@ -164,6 +164,8 @@ sudo kvm-vm clone web01 web02.yaml
 
 kvm-vm 不會執行 `virt-sysprep` 的預設操作集，因此 guest 內的使用者帳號與應用程式資料都會保留。來源 VM 不會被修改。
 
+Clone 會沿用來源的 OS variant，讓 `virt-install` 給它相同的虛擬硬體預設值。若要使用其他 variant（例如來源 guest 曾原地升級），請在目標定義檔設定 `vm.os_variant`。詳見 [os_variant](configuration.zh-TW.md#os_variant)。`clone --dry-run` 會顯示沿用的值；`validate --clone` 不知道來源是哪台 VM，因此無法顯示。
+
 限制：
 
 - 僅支援 Linux guest（`virt-sysprep` 的限制）。

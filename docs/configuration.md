@@ -265,6 +265,16 @@ uses virtio disks and network cards and a serial console.
 same alias always gives the same variant on a host. For your own image, set
 `vm.os_variant` yourself.
 
+`clone` copies the source's disk, so the clone keeps the source's OS variant
+unless the target definition sets `vm.os_variant` (or `KVM_VM_OS` is set).
+kvm-vm takes it from the source's effective definition (`vm.os_variant`, then
+`image.distro`), or else from the variant `virt-install` recorded in the source
+domain's libosinfo metadata, which also covers VMs that kvm-vm did not create.
+The inherited name goes through the same steps and is saved in the clone's
+effective definition. If the source guest was upgraded in place, for example
+from Ubuntu 24.04 to 26.04, these records are out of date: set `vm.os_variant`
+in the target definition.
+
 ### Adding an alias
 
 To add a short name such as `distro: myos1`, add an entry to `DISTROS` in the
@@ -369,7 +379,7 @@ without writing a new file.
 | `KVM_VM_VCPUS` | `vm.vcpus` | `4` | 1 to 1024. |
 | `KVM_VM_MEMORY` or `KVM_VM_MEMORY_MIB` | `vm.memory_mib` | `4096` | At least 256. |
 | `KVM_VM_DISK` or `KVM_VM_DISK_GIB` | `storage.disk_gib` | `50` | At least 1. |
-| `KVM_VM_OS` | `image.distro` and `vm.os_variant` | `rocky9` | Must be a [built-in alias](#built-in-aliases). Sets `os_variant` to the alias name, which is resolved as described in [os_variant](#os_variant). For `clone`, sets only `os_variant`. |
+| `KVM_VM_OS` | `image.distro` and `vm.os_variant` | `rocky9` | Must be a [built-in alias](#built-in-aliases). Sets `os_variant` to the alias name, which is resolved as described in [os_variant](#os_variant). For `clone`, sets only `os_variant`, replacing the one inherited from the source. |
 | `KVM_VM_BRIDGE` | `network.mode`, `network.bridge` | `br0` | Selects bridge mode. Cannot be combined with Macvtap. |
 | `KVM_VM_MACVTAP` | `network.mode`, `network.parent` | `eno1` | Selects Macvtap mode, even for a bridge or NAT definition. An empty value is an error. |
 | `KVM_VM_IPV4` | `network.ipv4` | `dhcp` or `192.168.1.50/24` | `dhcp`, `disabled`, or a static address with a prefix. |
