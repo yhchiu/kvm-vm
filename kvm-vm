@@ -1327,7 +1327,7 @@ def cmd_create(args: argparse.Namespace) -> int:
         owned[disk] = disk.lstat()
         restore_selinux([disk])
         cloud = CLOUD_DIR / name
-        cloud.mkdir(mode=0o700)
+        cloud.mkdir(mode=0o755)
         owned[cloud] = cloud.lstat()
         cloud_options = {"password_hash": password_hash} if password_hash else {}
         _, _, _, instance_id = make_cloud_files(cfg, p.parent, new_directory=True, **cloud_options)
@@ -1420,7 +1420,7 @@ def cmd_clone(args: argparse.Namespace) -> int:
                  f"if id -u {quoted} >/dev/null 2>&1; then usermod -L {quoted}; fi"])
         cloud_options = {"password_hash": password_hash} if password_hash else {}
         cloud = CLOUD_DIR / name
-        cloud.mkdir(mode=0o700)
+        cloud.mkdir(mode=0o755)
         owned[cloud] = cloud.lstat()
         _, _, _, instance_id = make_cloud_files(cfg, p.parent, reset_ssh_port=True, new_directory=True, **cloud_options)
         seed = CLOUD_DIR / name / "seed.img"

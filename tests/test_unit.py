@@ -1495,6 +1495,8 @@ def test_creation_seed_failure_cleans_owned_files_and_allows_retry(reinstall_mac
 
     def failed(cmd, **kwargs):
         if cmd[0] == "cloud-localds":
+            # libvirt changes seed ownership, but QEMU must also traverse its parent.
+            assert (kvm_vm.CLOUD_DIR / "clone01").stat().st_mode & 0o111 == 0o111
             raise subprocess.CalledProcessError(1, cmd, stderr="seed failed")
         return original(cmd, **kwargs)
 
