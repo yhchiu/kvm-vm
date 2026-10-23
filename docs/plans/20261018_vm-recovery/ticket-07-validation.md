@@ -141,3 +141,43 @@ The destination restore was not repeated: kvm-vm and
 change only affects a failure path. Both hosts were left without test guests,
 sets or logs. This gate used one inline review pass instead of separate review
 agents.
+
+## Review follow-up: lifecycle success coverage (2026-10-23)
+
+Status: acceptance cases added; real-host execution pending. The historical
+results above do not cover these new cases.
+
+`tests/test_snapshot_e2e.py::test_lifecycle_after_snapshot_recovery` now runs
+the lifecycle sequence after each of:
+
+- Successful offline Snapshot deletion.
+- Successful Snapshot rollback.
+- A failed live Snapshot deletion followed by the documented offline deletion.
+
+Each case verifies the expected guest marker hashes and standalone disk, then
+clones and boots the guest and checks the copied data. It explicitly deletes
+the clone. On the original VM it verifies `delete --keep-storage` preserves the
+disk hash and every managed file, defines the retained XML again, reinstalls
+and boots a fresh guest with a new instance ID, and explicitly deletes it.
+Domain absence and managed file removal are asserted; fixture teardown is not
+counted as successful delete acceptance. Teardown also owns the unique clone
+name and refuses file removal if its domain could not be undefined.
+
+The failed-delete case uses a PATH-local virsh wrapper only for that CLI call.
+It fails the live deletion before committing any blocks; all inspections and
+subsequent offline recovery use real libvirt/QEMU. It verifies rollback stays
+disabled until recovery finishes. This is deterministic lifecycle coverage,
+not a replacement for the partial-write/disk-full evidence in the Snapshot
+simplification validation record.
+
+Local attempt on Debian WSL as root collected all five Snapshot E2E cases and
+skipped them because `virsh` is unavailable. No real-host success is claimed.
+Run on a disposable-capacity Linux/KVM host with the usual guest image and
+libguestfs dependencies:
+
+```sh
+sudo python3 -m pytest tests/test_snapshot_e2e.py -v -s -p no:cacheprovider
+```
+
+Record the revision, libvirt/QEMU versions, host security mode, guest image and
+the three `SNAPSHOT_LIFECYCLE_PASSED` lines before closing real-host acceptance.

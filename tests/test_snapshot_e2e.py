@@ -16,6 +16,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 import uuid
 from pathlib import Path
@@ -23,6 +24,7 @@ from pathlib import Path
 import pytest
 
 from test_e2e import E2E_SSH_TIMEOUT, E2EHelper, build_vm_yaml, pytestmark, ssh_keypair  # noqa: F401
+from test_recovery_e2e import digest
 
 VM_DIR = Path(os.environ.get("KVM_VM_DISK_DIR", "/var/lib/libvirt/images/vm"))
 STATE_DIR = Path(os.environ.get("KVM_VM_STATE_DIR", "/var/lib/kvm-vm/state"))
@@ -32,8 +34,8 @@ DEF_DIR = Path(os.environ.get("KVM_VM_DEF_DIR", "/etc/kvm-vm/definitions"))
 GUEST_CHECK = "sudo sha256sum /var/tmp/snap-*; cat /proc/sys/kernel/random/boot_id"
 
 
-def kvm(*args: str, check: bool = True) -> subprocess.CompletedProcess:
-    result = E2EHelper.run_kvm_vm(*args, check=False)
+def kvm(*args: str, check: bool = True, env_extra=None) -> subprocess.CompletedProcess:
+    result = E2EHelper.run_kvm_vm(*args, check=False, env_extra=env_extra)
     print(f"$ kvm-vm {' '.join(args)} -> {result.returncode}\n{result.stdout}{result.stderr}", flush=True)
     if check:
         assert result.returncode == 0, result.stderr
@@ -72,16 +74,18 @@ def snapshot_vm(tmp_path, ssh_keypair):
     definition = tmp_path / f"{name}.yaml"
     definition.write_text(build_vm_yaml(name, ssh_keypair["public_key_content"]), encoding="utf-8")
     yield name, definition
-    if (STATE_DIR / "snapshots" / name).exists():
-        kvm("snapshot", "delete", name, "--yes", check=False)
-    kvm("delete", name, "--force", "--yes", check=False)
-    if E2EHelper.domain_exists(name):
-        E2EHelper.virsh("destroy", name, check=False)
-        E2EHelper.virsh("undefine", name, "--snapshots-metadata", check=False)
-    for path in [*VM_DIR.glob(f"{name}.*"), STATE_DIR / f"{name}.json", DEF_DIR / f"{name}.yaml"]:
-        path.unlink(missing_ok=True)
-    for directory in (CLOUD_DIR / name, STATE_DIR / "snapshots" / name):
-        shutil.rmtree(directory, ignore_errors=True)
+    for owned in (name + "-c", name):
+        if (STATE_DIR / "snapshots" / owned).exists():
+            kvm("snapshot", "delete", owned, "--yes", check=False)
+        kvm("delete", owned, "--force", "--yes", check=False)
+        if E2EHelper.domain_exists(owned):
+            E2EHelper.virsh("destroy", owned, check=False)
+            E2EHelper.virsh("undefine", owned, "--snapshots-metadata", check=False)
+        assert not E2EHelper.domain_exists(owned), f"Retaining files for domain that could not be removed: {owned}"
+        for path in [*VM_DIR.glob(f"{owned}.*"), STATE_DIR / f"{owned}.json", DEF_DIR / f"{owned}.yaml"]:
+            path.unlink(missing_ok=True)
+        for directory in (CLOUD_DIR / owned, STATE_DIR / "snapshots" / owned):
+            shutil.rmtree(directory, ignore_errors=True)
 
 
 def boot_guest(name: str, definition: Path, key: Path) -> str:
@@ -261,3 +265,93 @@ def test_snapshot_rollback(snapshot_vm, ssh_keypair):
     assert E2EHelper.ssh_exec(ip, key, GUEST_CHECK).splitlines()[:-1] == captured.splitlines()[:-1]
     assert_standalone(name, base)
     print("SNAPSHOT_ROLLBACK_E2E_PASSED", flush=True)
+
+
+def assert_lifecycle_after_snapshot(name, keypair, tmp_path, expected_data):
+    """Assert successful operations explicitly; fixture cleanup is not acceptance."""
+    key = keypair["private_key_path"]
+    wait_off(name)
+    clone_name = name + "-c"
+    clone_definition = tmp_path / "clone-after-snapshot.yaml"
+    clone_definition.write_text(build_vm_yaml(clone_name, keypair["public_key_content"]), encoding="utf-8")
+    kvm("clone", name, str(clone_definition))
+    clone_ip = E2EHelper.wait_for_ssh(clone_name, key, timeout=E2E_SSH_TIMEOUT)
+    E2EHelper.ssh_exec(clone_ip, key, "sudo cloud-init status --wait")
+    assert E2EHelper.ssh_exec(clone_ip, key, GUEST_CHECK).splitlines()[:-1] == expected_data
+    kvm("delete", clone_name, "--force", "--yes")
+    assert not E2EHelper.domain_exists(clone_name)
+    assert not (VM_DIR / f"{clone_name}.qcow2").exists()
+
+    # Keep-storage on the original VM must preserve every managed file and disk byte.
+    disk = VM_DIR / f"{name}.qcow2"
+    manifest = STATE_DIR / f"{name}.json"
+    files = [manifest, DEF_DIR / f"{name}.yaml", *sorted((CLOUD_DIR / name).iterdir())]
+    before = {path: path.read_bytes() for path in files}
+    checksum = digest(disk)
+    xml = tmp_path / "kept-domain.xml"
+    xml.write_text(E2EHelper.virsh("dumpxml", name, "--inactive").stdout, encoding="utf-8")
+    kvm("delete", name, "--keep-storage", "--yes")
+    assert not E2EHelper.domain_exists(name)
+    assert digest(disk) == checksum
+    assert {path: path.read_bytes() for path in files} == before
+
+    # Put back the retained definition, then prove reinstall boots a fresh guest.
+    E2EHelper.virsh("define", str(xml))
+    previous_instance = json.loads(before[manifest])["instance_id"]
+    kvm("reinstall", name, "--yes")
+    ip = E2EHelper.wait_for_ssh(name, key, timeout=E2E_SSH_TIMEOUT)
+    E2EHelper.ssh_exec(ip, key, "sudo cloud-init status --wait")
+    E2EHelper.ssh_exec(ip, key, "test -z \"$(find /var/tmp -maxdepth 1 -name 'snap-*' -print -quit)\"")
+    assert json.loads(manifest.read_text())["instance_id"] != previous_instance
+    kvm("validate", str(DEF_DIR / f"{name}.yaml"))
+    assert re.search(rf"^{re.escape(name)}\s+running\s+yes", kvm("list", "--managed").stdout, re.M)
+    kvm("delete", name, "--force", "--yes")
+    assert not E2EHelper.domain_exists(name)
+    assert not disk.exists() and not manifest.exists()
+    assert not (CLOUD_DIR / name).exists() and not (DEF_DIR / f"{name}.yaml").exists()
+
+
+@pytest.mark.parametrize("outcome", ["delete", "rollback", "failed-delete-recovered"])
+def test_lifecycle_after_snapshot_recovery(snapshot_vm, ssh_keypair, tmp_path, outcome):
+    name, definition = snapshot_vm
+    key = ssh_keypair["private_key_path"]
+    ip = boot_guest(name, definition, key)
+    captured = write_marker(ip, key, "before").splitlines()[:-1]
+    kvm("snapshot", "create", name)
+    latest = write_marker(ip, key, "after").splitlines()[:-1]
+    if outcome == "rollback":
+        kvm("snapshot", "rollback", name, "--force", "--yes")
+        expected = captured
+    else:
+        if outcome == "failed-delete-recovered":
+            # Inject a deterministic failed live delete at the external-command boundary.
+            # All other virsh calls, storage operations and subsequent recovery are real.
+            real_virsh = shutil.which("virsh")
+            assert real_virsh
+            shim_dir = tmp_path / "fail-live-delete"
+            shim_dir.mkdir()
+            shim = shim_dir / "virsh"
+            shim.write_text(
+                f"#!{sys.executable}\nimport os, sys\n"
+                f"if sys.argv[3:5] == ['snapshot-delete', {name!r}] and '--metadata' not in sys.argv:\n"
+                "    sys.stderr.write('injected acceptance failure before live commit\\n')\n"
+                "    sys.exit(1)\n"
+                f"os.execv({real_virsh!r}, [{real_virsh!r}, *sys.argv[1:]])\n", encoding="utf-8")
+            shim.chmod(0o700)
+            result = kvm("snapshot", "delete", name, "--yes", check=False,
+                         env_extra={"PATH": str(shim_dir) + os.pathsep + os.environ["PATH"]})
+            assert result.returncode == 1 and "injected acceptance failure" in result.stderr
+            assert "Rollback is disabled" in result.stderr
+            assert kvm("snapshot", "status", name, check=False).returncode == 1
+            refused = kvm("snapshot", "rollback", name, "--force", "--yes", check=False)
+            assert refused.returncode == 1 and "Only a ready Snapshot" in refused.stderr
+        wait_off(name)
+        kvm("snapshot", "delete", name, "--yes")
+        E2EHelper.virsh("start", name)
+        expected = latest
+    ip = E2EHelper.wait_for_ssh(name, key, timeout=E2E_SSH_TIMEOUT)
+    assert E2EHelper.ssh_exec(ip, key, GUEST_CHECK).splitlines()[:-1] == expected
+    assert_standalone(name, VM_DIR / f"{name}.qcow2")
+    assert kvm("snapshot", "status", name).stdout.strip() == "Snapshot: none"
+    assert_lifecycle_after_snapshot(name, ssh_keypair, tmp_path, expected)
+    print(f"SNAPSHOT_LIFECYCLE_PASSED {outcome}: clone, keep-storage, reinstall, delete", flush=True)
