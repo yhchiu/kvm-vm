@@ -14,6 +14,7 @@ import pytest
 import yaml
 
 from test_e2e import E2EHelper, _check_e2e_prerequisites
+from process_helpers import assert_cleanup_safe, run_owned_command
 
 _available, _reason = _check_e2e_prerequisites()
 pytestmark = pytest.mark.skipif(not _available, reason=_reason)
@@ -38,8 +39,7 @@ def recovery_domain():
         KVM_VM_CLOUD_DIR=str(root / "cloud"), KVM_VM_DEF_DIR=str(root / "definitions"))
 
     def cli(*args, check=True):
-        return subprocess.run([sys.executable, str(SCRIPT), *args], env=env,
-            text=True, capture_output=True, check=check)
+        return run_owned_command([sys.executable, str(SCRIPT), *args], env=env, check=check)
 
     base = root / "base.qcow2"
     subprocess.run(["qemu-img", "create", "-f", "qcow2", str(base), "1G"], check=True)
@@ -60,12 +60,12 @@ def recovery_domain():
         yield name, root, disk, clone, cli
     finally:
         # Only this fixture's uniquely named domain and directory are owned here.
+        assert_cleanup_safe(root / "state")
         for owned in (name + "-clone", name):
             if E2EHelper.domain_exists(owned):
                 E2EHelper.virsh("destroy", owned, check=False)
                 E2EHelper.virsh("undefine", owned, "--checkpoints-metadata", "--snapshots-metadata", "--nvram", check=False)
-            if E2EHelper.domain_exists(owned):
-                raise RuntimeError(f"Test domain {owned} still exists; retained its resources at {root}")
+            E2EHelper.assert_domain_absent(owned)
         shutil.rmtree(root)
 
 

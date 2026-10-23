@@ -38,6 +38,8 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 import pytest
 import yaml
 
+from process_helpers import assert_cleanup_safe, run_owned_command
+
 # Locate kvm-vm script
 _ROOT = Path(__file__).resolve().parent.parent
 KVM_VM_BIN = _ROOT / "kvm-vm"
@@ -92,14 +94,19 @@ class E2EHelper:
         if env_extra:
             env.update(env_extra)
         cmd = [sys.executable, str(KVM_VM_BIN), *args]
-        if capture:
-            return subprocess.run(cmd, check=check, text=True, capture_output=True, env=env)
-        return subprocess.run(cmd, check=check, text=True, env=env)
+        return run_owned_command(cmd, check=check, capture=capture, env=env)
 
     @staticmethod
     def virsh(*args: str, check: bool = True) -> subprocess.CompletedProcess:
         cmd = ["virsh", "-c", LIBVIRT_URI, *args]
-        return subprocess.run(cmd, check=check, text=True, capture_output=True)
+        return run_owned_command(cmd, check=check)
+
+    @classmethod
+    def assert_domain_absent(cls, name: str) -> None:
+        # A failing dominfo does not prove absence when libvirt is unavailable.
+        names = cls.virsh("list", "--all", "--name").stdout.splitlines()
+        if name in names:
+            raise RuntimeError(f"Test domain {name} still exists; retaining its files")
 
     @classmethod
     def domain_exists(cls, name: str) -> bool:
@@ -256,6 +263,8 @@ def vm_cleanup_tracker():
 
     yield tracked_vms
 
+    state_dir = Path(os.environ.get("KVM_VM_STATE_DIR", "/var/lib/kvm-vm/state"))
+    assert_cleanup_safe(state_dir)
     for name in list(tracked_vms):
         # Best effort cleanup via kvm-vm delete
         try:
@@ -270,23 +279,19 @@ def vm_cleanup_tracker():
                 E2EHelper.virsh("undefine", name, check=False)
             except Exception:
                 pass
-        # Clean lingering managed files
+        assert_cleanup_safe(state_dir)
+        E2EHelper.assert_domain_absent(name)
+        # Clean only files in the configured test directories.
         for p in (
-            Path(f"/var/lib/libvirt/images/vm/{name}.qcow2"),
-            Path(f"/var/lib/kvm-vm/state/{name}.json"),
-            Path(f"/etc/kvm-vm/definitions/{name}.yaml"),
+            Path(os.environ.get("KVM_VM_DISK_DIR", "/var/lib/libvirt/images/vm")) / f"{name}.qcow2",
+            state_dir / f"{name}.json",
+            Path(os.environ.get("KVM_VM_DEF_DIR", "/etc/kvm-vm/definitions")) / f"{name}.yaml",
         ):
             if p.exists():
-                try:
-                    p.unlink()
-                except Exception:
-                    pass
-        cloud_dir = Path(f"/var/lib/libvirt/images/cloud-init/{name}")
+                p.unlink()
+        cloud_dir = Path(os.environ.get("KVM_VM_CLOUD_DIR", "/var/lib/libvirt/images/cloud-init")) / name
         if cloud_dir.exists():
-            try:
-                shutil.rmtree(cloud_dir)
-            except Exception:
-                pass
+            shutil.rmtree(cloud_dir)
 
 
 def ssh_port_settings(ip: str, key_path: Path, port: int = 22) -> List[str]:

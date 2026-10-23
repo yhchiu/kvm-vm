@@ -25,6 +25,7 @@ import pytest
 
 from test_e2e import E2E_SSH_TIMEOUT, E2EHelper, build_vm_yaml, pytestmark, ssh_keypair  # noqa: F401
 from test_recovery_e2e import digest
+from process_helpers import assert_cleanup_safe
 
 VM_DIR = Path(os.environ.get("KVM_VM_DISK_DIR", "/var/lib/libvirt/images/vm"))
 STATE_DIR = Path(os.environ.get("KVM_VM_STATE_DIR", "/var/lib/kvm-vm/state"))
@@ -74,6 +75,7 @@ def snapshot_vm(tmp_path, ssh_keypair):
     definition = tmp_path / f"{name}.yaml"
     definition.write_text(build_vm_yaml(name, ssh_keypair["public_key_content"]), encoding="utf-8")
     yield name, definition
+    assert_cleanup_safe(STATE_DIR)
     for owned in (name + "-c", name):
         if (STATE_DIR / "snapshots" / owned).exists():
             kvm("snapshot", "delete", owned, "--yes", check=False)
@@ -81,11 +83,13 @@ def snapshot_vm(tmp_path, ssh_keypair):
         if E2EHelper.domain_exists(owned):
             E2EHelper.virsh("destroy", owned, check=False)
             E2EHelper.virsh("undefine", owned, "--snapshots-metadata", check=False)
-        assert not E2EHelper.domain_exists(owned), f"Retaining files for domain that could not be removed: {owned}"
+        assert_cleanup_safe(STATE_DIR)
+        E2EHelper.assert_domain_absent(owned)
         for path in [*VM_DIR.glob(f"{owned}.*"), STATE_DIR / f"{owned}.json", DEF_DIR / f"{owned}.yaml"]:
             path.unlink(missing_ok=True)
         for directory in (CLOUD_DIR / owned, STATE_DIR / "snapshots" / owned):
-            shutil.rmtree(directory, ignore_errors=True)
+            if directory.exists():
+                shutil.rmtree(directory)
 
 
 def boot_guest(name: str, definition: Path, key: Path) -> str:
