@@ -22,8 +22,6 @@ import subprocess
 import time
 import xml.etree.ElementTree as ET
 
-from recovery_checks import ChainError, check_backup_chain
-
 KEY_OPTIONS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
                "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
                "-o", "LogLevel=ERROR"]
@@ -112,11 +110,7 @@ def main():
         if path.exists():
             raise RuntimeError("Destination path conflict: " + str(path))
     # virtnbdrestore exits 0 for a missing increment or an unknown --until, so refuse first.
-    try:
-        applied = check_backup_chain(backup, until[1] if until else None)
-    except ChainError as error:
-        raise RuntimeError("Refusing to restore: %s" % error)
-    print("CHAIN COMPLETE: " + ", ".join(applied), flush=True)
+    run("kvm-vm", "backup", "check", str(backup), *until, capture=False)
     start = time.monotonic()
     run("virtnbdrestore", "-i", str(backup), "-o", "verify", capture=False)
     run("virtnbdrestore", "-i", str(backup), "-o", str(restored), *until, capture=False)
