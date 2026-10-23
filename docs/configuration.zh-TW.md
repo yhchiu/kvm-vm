@@ -108,7 +108,7 @@ cloud_init:
 | `cpu` | `host-passthrough` | 傳給 `virt-install --cpu`。詳見 [CPU 模型](#cpu-模型)。 |
 | `autostart` | `true` | 宿主機開機時自動啟動 VM。 |
 | `start` | `true` | `create` 或 `clone` 後開機。`--no-start` 可在單次執行時覆寫。 |
-| `os_variant` | 取自映像檔別名，否則為 `generic` | `virt-install` 使用的 libosinfo 名稱。詳見 [os_variant](#os_variant)。 |
+| `os_variant` | 依映像檔別名選擇，否則為 `generic` | `virt-install` 使用的 libosinfo 名稱。設定後會取代別名的選擇。詳見 [os_variant](#os_variant)。 |
 
 ### `storage`
 
@@ -171,18 +171,18 @@ cloud-init 以 MAC 位址找出 guest 的網卡並改名為 `eth0`，因此無�
 
 ### 內建別名
 
-| 別名 | 使用的 `os_variant` | 建立與 SSH 已驗證 |
+| 別名 | 依序嘗試的 `os_variant` | 建立與 SSH 已驗證 |
 |---|---|---|
 | `ubuntu24.04` | `ubuntu24.04` | 是 |
-| `ubuntu26.04` | `ubuntu26.04` | 是 |
+| `ubuntu26.04` | `ubuntu26.04`, `ubuntu24.04` | 是 |
 | `debian12` | `debian12` | 是 |
-| `debian13` | `debian13` | 是 |
+| `debian13` | `debian13`, `debian12` | 是 |
 | `rocky8` | `rocky8` | 是 |
-| `rocky9` | `rocky9` | 是（x86-64-v2 主機） |
-| `rocky10` | `rocky9` | 尚未：需要 x86-64-v3 主機 |
+| `rocky9` | `rocky9`, `rocky8` | 是（x86-64-v2 主機） |
+| `rocky10` | `rocky10`, `rocky9` | 尚未：需要 x86-64-v3 主機 |
 | `almalinux8` | `almalinux8` | 是 |
-| `almalinux9` | `almalinux9` | 是（x86-64-v2 主機） |
-| `almalinux10` | `almalinux9` | 尚未：需要 x86-64-v3 主機 |
+| `almalinux9` | `almalinux9`, `almalinux8` | 是（x86-64-v2 主機） |
+| `almalinux10` | `almalinux10`, `almalinux9` | 尚未：需要 x86-64-v3 主機 |
 
 別名下載的是發行版持續更新的 `current` 或 `latest` 雲端映像檔，因此每次下載的內容可能不同。實測紀錄與使用的映像檔請見 [tests/REAL_MACHINE_RESULTS.md](../tests/REAL_MACHINE_RESULTS.md)（英文）。
 
@@ -223,7 +223,15 @@ sudo kvm-vm create newvm.yaml --refresh-image
 
 ### `os_variant`
 
-`virt-install` 依 `os_variant` 選擇最佳化的虛擬硬體預設值。建立 VM 前，kvm-vm 會用 `osinfo-query os` 檢查名稱；若宿主機的 libosinfo 不認得，會記錄警告並改用 `generic`。VM 仍可正常開機，因為 kvm-vm 一律使用 virtio 磁碟與網卡及序列主控台。若想在較舊的宿主機上保留最佳化預設值，可自行指定最接近的舊版本，例如 Rocky Linux 10 指定 `rocky9`。
+`virt-install` 依 `os_variant` 選擇最佳化的虛擬硬體預設值。kvm-vm 在定義 VM 時依以下步驟選擇：
+
+1. 有設定 `vm.os_variant` 就從它開始，否則從映像檔別名開始。
+2. 若該名稱是內建別名，依[上方表格](#內建別名)列出的順序嘗試：先試該版本本身，再試前一版。其他名稱則照原樣嘗試。
+3. 使用宿主機 `osinfo-query os` 列出的第一個 variant。若都沒有列出，或未安裝 `osinfo-query`，則使用 `generic`。任何退回都會記錄警告。
+
+宿主機的 libosinfo 可能比新版發行版舊。例如 Debian 13 的 osinfo-db（0.20250606）認得 `almalinux10`，但不認得 `rocky10` 與 `ubuntu26.04`，因此在該主機上 `rocky10` 會使用 `rocky9`，`ubuntu26.04` 會使用 `ubuntu24.04`。即使用 `generic`，VM 仍可正常開機，因為 kvm-vm 一律使用 virtio 磁碟與網卡及序列主控台。
+
+`image.distro`、`KVM_VM_OS` 與 `reinstall --os` 都依相同步驟，因此在同一台宿主機上，同一個別名一定得到相同的 variant。使用自訂映像檔時，請自行設定 `vm.os_variant`。
 
 ### 新增別名
 
@@ -235,10 +243,12 @@ DISTROS = {
     "myos1": {
         "url": "https://images.example.com/myos-1-cloud.x86_64.qcow2",
         "cache": "myos-1-cloud.x86_64.qcow2",  # 映像檔快取中的檔名
-        "os_variant": "generic",               # osinfo-query 認得的名稱
+        "os_variants": ["myos1"],              # 依序嘗試的 libosinfo ID
     },
 }
 ```
+
+請依 `osinfo-query os` 顯示的 ID 填寫，新版在前。kvm-vm 會使用宿主機認得的第一個，否則使用 `generic`。
 
 請把這類修改保留在自己的分支，因為安裝新版 kvm-vm 會覆蓋腳本。若之後要 `clone` 這些 VM，請確認宿主機的 `virt-sysprep` 支援該 guest，詳見[檢查 virt-sysprep 支援](commands.zh-TW.md#檢查-virt-sysprep-支援)。
 
@@ -304,7 +314,7 @@ sudo KVM_VM_OS=debian13 KVM_VM_NAME=web02 KVM_VM_VCPUS=16 KVM_VM_DISK=100 \
 | `KVM_VM_VCPUS` | `vm.vcpus` | `4` | 1 到 1024。 |
 | `KVM_VM_MEMORY` 或 `KVM_VM_MEMORY_MIB` | `vm.memory_mib` | `4096` | 至少 256。 |
 | `KVM_VM_DISK` 或 `KVM_VM_DISK_GIB` | `storage.disk_gib` | `50` | 至少 1。 |
-| `KVM_VM_OS` | `image.distro` 與 `vm.os_variant` | `rocky9` | 必須是[內建別名](#內建別名)，`os_variant` 會設為別名本身。`clone` 時只設定 `os_variant`。 |
+| `KVM_VM_OS` | `image.distro` 與 `vm.os_variant` | `rocky9` | 必須是[內建別名](#內建別名)，`os_variant` 會設為別名本身，再依 [os_variant](#os_variant) 的步驟選擇。`clone` 時只設定 `os_variant`。 |
 | `KVM_VM_BRIDGE` | `network.mode`、`network.bridge` | `br0` | 選用橋接模式，不可與 Macvtap 並用。 |
 | `KVM_VM_MACVTAP` | `network.mode`、`network.parent` | `eno1` | 選用 Macvtap 模式，即使定義檔是橋接或 NAT 也一樣。空值會報錯。 |
 | `KVM_VM_IPV4` | `network.ipv4` | `dhcp` 或 `192.168.1.50/24` | `dhcp`、`disabled`，或含前綴長度的靜態位址。 |

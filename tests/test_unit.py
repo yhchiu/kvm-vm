@@ -1649,7 +1649,7 @@ def stale_create(tmp_path, monkeypatch):
     monkeypatch.setattr(kvm_vm, "domain_exists", lambda name: False)
     monkeypatch.setattr(kvm_vm, "run", MagicMock(return_value=subprocess.CompletedProcess([], 0, "", "")))
     monkeypatch.setattr(kvm_vm, "existing_macs", lambda: set())
-    monkeypatch.setattr(kvm_vm, "acquire_base_image", lambda *args: (tmp_path / "base", "ubuntu"))
+    monkeypatch.setattr(kvm_vm, "acquire_base_image", lambda *args: tmp_path / "base")
     monkeypatch.setattr(kvm_vm, "make_disk_from_base", lambda base, target, size: target.write_bytes(b"new disk"))
     monkeypatch.setattr(kvm_vm, "make_cloud_files", lambda *args, **kwargs: (None, None, None, "new"))
     return kvm_vm.build_parser().parse_args(["create", str(definition), "--no-start"]), manifest, disk
@@ -1892,7 +1892,7 @@ class TestCmdReinstall:
              patch("kvm_vm.load_state", return_value={"definition": str(def_file), "disk": str(disk)}), \
              patch("kvm_vm.domain_state", return_value="running"), \
              patch("kvm_vm.validate_network_attachment"), \
-             patch("kvm_vm.acquire_base_image", return_value=(mock_base, "rocky9")), \
+             patch("kvm_vm.acquire_base_image", return_value=mock_base), \
              patch("kvm_vm.make_disk_from_base") as mock_make_disk, \
              patch("kvm_vm.restore_selinux"), \
              patch("kvm_vm.run", side_effect=lambda cmd, **kw: lifecycle_probe(cmd, disk, **kw)) as mock_run, \
@@ -1952,7 +1952,7 @@ class TestCmdReinstall:
              patch("kvm_vm.load_state", return_value={"definition": str(def_file), "disk": str(disk)}), \
              patch("kvm_vm.domain_state", return_value="running"), \
              patch("kvm_vm.validate_network_attachment"), \
-             patch("kvm_vm.acquire_base_image", return_value=(mock_base, "debian13")), \
+             patch("kvm_vm.acquire_base_image", return_value=mock_base), \
              patch("kvm_vm.make_disk_from_base", side_effect=kvm_vm.KVMError("Out of disk space")), \
              patch("kvm_vm.run", side_effect=lambda cmd, **kw: lifecycle_probe(cmd, disk, **kw)) as mock_run, \
              patch("kvm_vm.undefine_domain") as mock_undefine:
@@ -1982,7 +1982,9 @@ class TestSupportedDistros:
         meta = kvm_vm.DISTROS[distro]
         assert meta["url"].startswith("https://")
         assert meta["cache"].endswith((".img", ".qcow2"))
-        assert isinstance(meta["os_variant"], str) and len(meta["os_variant"]) > 0
+        # Own release first; fallbacks are older releases that are aliases too.
+        assert meta["os_variants"][0] == distro
+        assert all(variant in kvm_vm.DISTROS for variant in meta["os_variants"])
 
     @pytest.mark.parametrize("distro", [
         "debian12", "ubuntu26.04", "rocky8", "rocky10", "almalinux8", "almalinux10",
@@ -1999,4 +2001,85 @@ class TestSupportedDistros:
         raw = _minimal_raw()
         kvm_vm.apply_os_override(raw, os_arg=distro)
         assert raw["storage"]["image"]["distro"] == distro
-        assert raw["vm"]["os_variant"] == kvm_vm.DISTROS[distro]["os_variant"]
+        assert raw["vm"]["os_variant"] == distro
+
+
+def osinfo_host(monkeypatch, known):
+    """Simulate a host whose libosinfo knows the given short IDs; record virt-install."""
+    commands = []
+    monkeypatch.setattr(kvm_vm.shutil, "which",
+                        lambda name: None if name == "osinfo-query" and known is None else name)
+
+    def host(cmd, **kwargs):
+        commands.append(cmd)
+        stdout = ""
+        if cmd[0] == "osinfo-query":
+            rows = [f" {short:<20} | Some OS | 1 | http://example.org/{short}" for short in known]
+            stdout = "\n".join([" Short ID | Name | Version | ID", "----+----+----+----"] + rows)
+        return subprocess.CompletedProcess(cmd, 0, stdout, "")
+
+    monkeypatch.setattr(kvm_vm.subprocess, "run", host)
+    return commands
+
+
+def installed_variant(commands):
+    install = next(cmd for cmd in commands if cmd[0] == "virt-install")
+    return install[install.index("--os-variant") + 1]
+
+
+class TestOsVariantChoice:
+    def define(self, tmp_path, raw):
+        cfg = kvm_vm.normalize_definition(raw)
+        cfg["network"]["mac"] = "52:54:00:00:00:01"
+        kvm_vm.define_vm(cfg, tmp_path / "disk.qcow2", tmp_path / "seed.img", no_start=True)
+
+    @pytest.mark.parametrize("known, expected", [
+        (["rocky10", "rocky9"], "rocky10"),
+        (["rocky9"], "rocky9"),
+        (["almalinux9"], "generic"),
+        (None, "generic"),  # osinfo-query is not installed
+    ])
+    def test_alias_uses_first_variant_the_host_knows(self, tmp_path, monkeypatch, known, expected):
+        commands = osinfo_host(monkeypatch, known)
+        self.define(tmp_path, _minimal_raw(storage={"image": {"distro": "rocky10"}}))
+        assert installed_variant(commands) == expected
+
+    def test_fallback_is_logged(self, tmp_path, monkeypatch, caplog):
+        osinfo_host(monkeypatch, ["ubuntu24.04"])
+        self.define(tmp_path, _minimal_raw(storage={"image": {"distro": "ubuntu26.04"}}))
+        assert "'ubuntu26.04' not available on this host; using 'ubuntu24.04'" in caplog.text
+
+    def test_every_way_of_choosing_an_alias_gives_the_same_variant(self, tmp_path, monkeypatch):
+        commands = osinfo_host(monkeypatch, ["rocky9"])
+        self.define(tmp_path, _minimal_raw(storage={"image": {"distro": "rocky10"}}))
+        monkeypatch.setenv("KVM_VM_OS", "rocky10")
+        self.define(tmp_path, _minimal_raw(vm={"name": "test01", "os_variant": "ubuntu24.04"}))
+        monkeypatch.delenv("KVM_VM_OS")
+        reinstalled = _minimal_raw(vm={"name": "test01", "os_variant": "ubuntu24.04"})
+        kvm_vm.apply_os_override(reinstalled, os_arg="rocky10")
+        self.define(tmp_path, reinstalled)
+        installs = [cmd for cmd in commands if cmd[0] == "virt-install"]
+        assert [installed_variant([cmd]) for cmd in installs] == ["rocky9"] * 3
+
+    def test_explicit_variant_wins_over_the_image_alias(self, tmp_path, monkeypatch):
+        commands = osinfo_host(monkeypatch, ["rocky10", "rocky9", "rocky8"])
+        self.define(tmp_path, _minimal_raw(vm={"name": "test01", "os_variant": "rocky8"},
+                                           storage={"image": {"distro": "rocky10"}}))
+        assert installed_variant(commands) == "rocky8"
+
+    def test_explicit_variant_naming_an_alias_uses_its_fallbacks(self, tmp_path, monkeypatch):
+        commands = osinfo_host(monkeypatch, ["ubuntu24.04"])
+        self.define(tmp_path, _minimal_raw(vm={"name": "test01", "os_variant": "ubuntu26.04"},
+                                           storage={"image": {"path": "/srv/images/custom.qcow2"}}))
+        assert installed_variant(commands) == "ubuntu24.04"
+
+    def test_unknown_explicit_variant_falls_back_to_generic(self, tmp_path, monkeypatch):
+        commands = osinfo_host(monkeypatch, ["rocky9"])
+        self.define(tmp_path, _minimal_raw(vm={"name": "test01", "os_variant": "centos-stream9"}))
+        assert installed_variant(commands) == "generic"
+
+    def test_custom_image_without_variant_uses_generic(self, tmp_path, monkeypatch):
+        commands = osinfo_host(monkeypatch, ["rocky9"])
+        self.define(tmp_path, _minimal_raw(storage={"image": {"url": "https://example.org/x.qcow2"}}))
+        assert installed_variant(commands) == "generic"
+        assert not any(cmd[0] == "osinfo-query" for cmd in commands)

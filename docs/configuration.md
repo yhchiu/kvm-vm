@@ -115,7 +115,7 @@ and [`clone-target.yaml`](../examples/clone-target.yaml) (target of `clone`).
 | `cpu` | `host-passthrough` | Passed to `virt-install --cpu`. See [CPU model](#cpu-model). |
 | `autostart` | `true` | Start the VM when the host boots. |
 | `start` | `true` | Boot the VM after `create` or `clone`. `--no-start` overrides this for one run. |
-| `os_variant` | from the image alias, otherwise `generic` | libosinfo name used by `virt-install`. See [os_variant](#os_variant). |
+| `os_variant` | chosen from the image alias, otherwise `generic` | libosinfo name used by `virt-install`. Setting it overrides the alias. See [os_variant](#os_variant). |
 
 ### `storage`
 
@@ -187,18 +187,18 @@ an older CPU these guests are created but do not finish booting.
 
 ### Built-in aliases
 
-| Alias | `os_variant` used | Create and SSH verified |
+| Alias | `os_variant` tried, in order | Create and SSH verified |
 |---|---|---|
 | `ubuntu24.04` | `ubuntu24.04` | Yes |
-| `ubuntu26.04` | `ubuntu26.04` | Yes |
+| `ubuntu26.04` | `ubuntu26.04`, `ubuntu24.04` | Yes |
 | `debian12` | `debian12` | Yes |
-| `debian13` | `debian13` | Yes |
+| `debian13` | `debian13`, `debian12` | Yes |
 | `rocky8` | `rocky8` | Yes |
-| `rocky9` | `rocky9` | Yes (x86-64-v2 host) |
-| `rocky10` | `rocky9` | Not yet: needs an x86-64-v3 host |
+| `rocky9` | `rocky9`, `rocky8` | Yes (x86-64-v2 host) |
+| `rocky10` | `rocky10`, `rocky9` | Not yet: needs an x86-64-v3 host |
 | `almalinux8` | `almalinux8` | Yes |
-| `almalinux9` | `almalinux9` | Yes (x86-64-v2 host) |
-| `almalinux10` | `almalinux9` | Not yet: needs an x86-64-v3 host |
+| `almalinux9` | `almalinux9`, `almalinux8` | Yes (x86-64-v2 host) |
+| `almalinux10` | `almalinux10`, `almalinux9` | Not yet: needs an x86-64-v3 host |
 
 Aliases download the vendor's moving `current` or `latest` cloud image, so the
 image can change between runs. The test runs and their exact images are recorded
@@ -244,12 +244,26 @@ sudo kvm-vm create newvm.yaml --refresh-image
 
 ### `os_variant`
 
-`virt-install` uses `os_variant` to pick tuned virtual hardware defaults. Before
-creating a VM, kvm-vm checks the name with `osinfo-query os`. If the host's
-libosinfo does not know it, kvm-vm logs a warning and uses `generic`. The VM
-still boots normally, because kvm-vm always uses virtio disks and network cards
-and a serial console. To keep tuned defaults on an older host, set the closest
-older release yourself, such as `rocky9` for Rocky Linux 10.
+`virt-install` uses `os_variant` to pick tuned virtual hardware defaults.
+kvm-vm chooses it when it defines the VM:
+
+1. It starts from `vm.os_variant` if it is set, otherwise from the image alias.
+2. If that name is a built-in alias, it tries the variants listed for the alias
+   in the [table above](#built-in-aliases), in order: the release itself, then
+   the previous release. Any other name is tried as given.
+3. It uses the first variant that `osinfo-query os` lists on this host. If none
+   is listed, or `osinfo-query` is not installed, it uses `generic`. Any fallback
+   is logged as a warning.
+
+A host's libosinfo can be older than a new release. Debian 13's osinfo-db
+(0.20250606), for example, knows `almalinux10` but not `rocky10` or
+`ubuntu26.04`, so on that host `rocky10` uses `rocky9` and `ubuntu26.04` uses
+`ubuntu24.04`. With `generic` the VM still boots normally, because kvm-vm always
+uses virtio disks and network cards and a serial console.
+
+`image.distro`, `KVM_VM_OS` and `reinstall --os` all follow these steps, so the
+same alias always gives the same variant on a host. For your own image, set
+`vm.os_variant` yourself.
 
 ### Adding an alias
 
@@ -262,10 +276,13 @@ DISTROS = {
     "myos1": {
         "url": "https://images.example.com/myos-1-cloud.x86_64.qcow2",
         "cache": "myos-1-cloud.x86_64.qcow2",  # file name in the image cache
-        "os_variant": "generic",               # a name that osinfo-query knows
+        "os_variants": ["myos1"],              # libosinfo IDs to try, in order
     },
 }
 ```
+
+List the IDs as `osinfo-query os` shows them, newest first. kvm-vm uses the
+first one the host knows, or `generic`.
 
 Keep such changes in your own branch, because installing a new kvm-vm version
 replaces the script. If you plan to `clone` these VMs, check that the host's
@@ -352,7 +369,7 @@ without writing a new file.
 | `KVM_VM_VCPUS` | `vm.vcpus` | `4` | 1 to 1024. |
 | `KVM_VM_MEMORY` or `KVM_VM_MEMORY_MIB` | `vm.memory_mib` | `4096` | At least 256. |
 | `KVM_VM_DISK` or `KVM_VM_DISK_GIB` | `storage.disk_gib` | `50` | At least 1. |
-| `KVM_VM_OS` | `image.distro` and `vm.os_variant` | `rocky9` | Must be a [built-in alias](#built-in-aliases). Sets `os_variant` to the alias name. For `clone`, sets only `os_variant`. |
+| `KVM_VM_OS` | `image.distro` and `vm.os_variant` | `rocky9` | Must be a [built-in alias](#built-in-aliases). Sets `os_variant` to the alias name, which is resolved as described in [os_variant](#os_variant). For `clone`, sets only `os_variant`. |
 | `KVM_VM_BRIDGE` | `network.mode`, `network.bridge` | `br0` | Selects bridge mode. Cannot be combined with Macvtap. |
 | `KVM_VM_MACVTAP` | `network.mode`, `network.parent` | `eno1` | Selects Macvtap mode, even for a bridge or NAT definition. An empty value is an error. |
 | `KVM_VM_IPV4` | `network.ipv4` | `dhcp` or `192.168.1.50/24` | `dhcp`, `disabled`, or a static address with a prefix. |
