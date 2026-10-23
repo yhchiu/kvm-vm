@@ -1,977 +1,172 @@
+[English](README.md) | 繁體中文
+
 # kvm-vm
 
-`kvm-vm` 是一個專為長期運行的獨立 KVM/libvirt 主機設計的輕量宣告式虛擬機器（VM）管理工具。
-它使用標準工具（`virsh`、`virt-install`、`qemu-img`、cloud-init），並為所建立的每個虛擬機器儲存一份生效的 YAML 定義（effective YAML definition）以及小型的狀態清單（state manifest）。
+`kvm-vm` 以簡短的 YAML 檔，在單一 KVM/libvirt 宿主機上建立與管理 VM。它使用標準工具（`virt-install`、`virsh`、`qemu-img`、cloud-init），並為每台建立的 VM 保存兩份紀錄：生效定義檔與狀態清單。之後的 `reinstall`、`clone`、`delete` 等指令都依這些紀錄運作，不必猜測 VM 當初是怎麼建立的。
 
-其設計刻意保持低於 OpenStack/Proxmox 等系統的複雜度，同時讓可重複執行的虛擬機器佈署比臨時拼湊的 `virt-install` 命令列更加安全可靠。
+它取代的是手寫的 `virt-install` 指令，而不是 OpenStack 或 Proxmox。詳見[kvm-vm 不做的事](#kvm-vm-不做的事)。
 
-## 指令
+- [快速上手](#快速上手)
+- [常用指令](#常用指令)
+- [文件導覽](#文件導覽)
+- [安全規則](#安全規則)
+- [系統需求](#系統需求)
+- [kvm-vm 不做的事](#kvm-vm-不做的事)
 
-```text
-kvm-vm create <vm.yaml> [--console-password-file <path>] [--refresh-image] [--no-start] [--dry-run]
-kvm-vm clone <source-vm> <target.yaml> [--console-password-file <path>] [--no-start] [--dry-run]
-kvm-vm reinstall <vm> [--console-password-file <path>] [--os <os>] [--image-url <url>] [--image-path <path>] [--refresh-image] [--no-start] [--dry-run] [--yes] [--force]
-kvm-vm list [--managed] [--ips]
-kvm-vm status <vm>
-kvm-vm console <vm>
-kvm-vm delete <vm> [--yes] [--force] [--keep-storage]
-kvm-vm snapshot create <vm> [--no-quiesce] [--dry-run]
-kvm-vm snapshot status <vm>
-kvm-vm snapshot delete <vm> [--yes]
-kvm-vm snapshot rollback <vm> [--yes] [--force] [--no-start]
-kvm-vm backup check <backup-dir> [--until <checkpoint>]
-kvm-vm validate <vm.yaml> [--clone]
-```
+## 快速上手
 
-## 主機依賴套件
+以下步驟會在 libvirt 的 `default` NAT 網路上建立第一台 VM，不需更動宿主機的網路設定。請在 KVM 宿主機上執行。
 
-### Python 需求
-- **Python 3.8+**
-- **執行期相依套件**：`PyYAML`（Debian/Ubuntu 為 `python3-yaml`，RHEL 系列為 `python3-pyyaml`，或 `pip install pyyaml`）。其餘模組全數使用 Python 標準函式庫。
-- **無須 C 語言綁定套件**：`kvm-vm` 刻意透過 subprocess 調用系統標準 CLI 工具（`virsh`、`virt-install`、`qemu-img`），**不依賴 `libvirt-python`**，避免因宿主機 libvirt 版本不同產生編譯或 ABI 相容性問題。
-- **測試相依套件（選用）**：`pytest`（Debian/Ubuntu 為 `python3-pytest`，或 `pip install pytest`），用於執行單元測試與 E2E 測試。
+**1. 安裝宿主機套件。**
 
-### 系統套件
-
-Debian / Ubuntu（套件名稱可能因發行版本而略有不同）：
+Debian / Ubuntu：
 
 ```bash
-apt install \
-  qemu-system-x86 qemu-utils \
-  libvirt-daemon-system libvirt-clients \
-  virt-install cloud-image-utils \
-  python3 python3-yaml \
+sudo apt install qemu-system-x86 qemu-utils libvirt-daemon-system libvirt-clients \
+  virt-install cloud-image-utils python3 python3-yaml \
   guestfs-tools libosinfo-bin iproute2 openssh-client openssl
 ```
 
-*(附註：在 Debian 11 或較舊的發行版上，請使用 `virtinst` 代替 `virt-install`，並使用 `libguestfs-tools` 代替 `guestfs-tools`)*
-
-RHEL / Rocky / Alma 系列：
+RHEL / Rocky Linux / AlmaLinux 9 以上：
 
 ```bash
-dnf install \
-  qemu-kvm qemu-img libvirt virt-install \
-  xorriso python3 python3-pyyaml \
+sudo dnf install qemu-kvm qemu-img libvirt virt-install xorriso python3 python3-pyyaml \
   guestfs-tools libosinfo iproute openssh-clients openssl
-
-# 啟動並設定開機自啟 libvirt 服務（RHEL 系列安裝後預設不會自動啟動服務）
-sudo systemctl enable --now libvirtd
+for drv in qemu network nodedev nwfilter secret storage interface; do
+  sudo systemctl start virt${drv}d{,-ro,-admin}.socket
+done
 ```
 
-*(附註：在 RHEL 8 / Rocky 8 等較舊的發行版上，請使用 `genisoimage` 代替 `xorriso`，並使用 `libguestfs-tools` 代替 `guestfs-tools`)*
+RHEL 9 以上使用 libvirt 的模組化 daemon（`virtqemud` 等），安裝套件時就已設為啟用；上面的迴圈取自 Red Hat 文件，可在不重開機的情況下啟動它們。請勿再啟用 `libvirtd`，它與模組化 daemon 互相衝突。
 
-建立 cloud-init seed 映像檔時，`kvm-vm` 會自動偵測並優先使用宿主機上可用的工具：`cloud-localds`（來自 `cloud-image-utils` 或 `cloud-utils`）、`genisoimage`、`mkisofs` 或 `xorriso`。
+較舊的發行版請見[系統需求](#系統需求)。
 
-`virt-sysprep` 與 `virt-customize` 僅在執行 `clone` 時需要，但仍建議在管理主機上安裝。
-
-啟用 Console 密碼時需要 OpenSSL，憑證交付需在具備 POSIX 擁有權與權限機制的
-Linux 管理主機上執行。
-
-### SSH 金鑰
-
-範例 VM 定義檔（`examples/*.yaml`）及預設 cloud-init 設定皆引用 `~/.ssh/id_ed25519.pub` 作為虛擬機器使用者的 SSH 登入公鑰。使用範例建立虛擬機器前，請確保主機上已存在此公鑰。
-
-若主機上尚未建立 Ed25519 金鑰對，可使用以下指令產生：
-
-```bash
-ssh-keygen -t ed25519
-```
-
-依照提示直接按 `Enter` 接受預設儲存路徑（`~/.ssh/id_ed25519`）即可。
-
-## 安裝
+**2. 安裝 kvm-vm**（在本專案的 checkout 目錄中）：
 
 ```bash
 sudo ./install.sh
 ```
 
-預設的 libvirt URI 為 `qemu:///system`。
+會安裝 `/usr/local/sbin/kvm-vm` 並建立所需目錄。重新執行即可升級。
 
-### 升級
+**3. 確認已有 SSH 金鑰。** 範例使用 `~/.ssh/id_ed25519.pub`，若不存在，請用 `ssh-keygen -t ed25519` 建立。
 
-```bash
-sudo ./install.sh
-```
-
-安裝腳本具有冪等性（idempotent），重複執行即可原地升級 `kvm-vm`。
-
-## 目錄結構
-
-```text
-/etc/kvm-vm/definitions/             生效的 YAML 定義
-/var/lib/kvm-vm/state/               工具狀態清單
-/var/lib/libvirt/images/base/        快取的發行版雲端映像檔
-/var/lib/libvirt/images/vm/          各虛擬機器獨立的 qcow2 系統磁碟
-/var/lib/libvirt/images/cloud-init/  各虛擬機器的 NoCloud seed 與來源檔案
-```
-
-Cloud-init 媒介檔案存放於 `/var/lib/libvirt/images` 目錄下，以自然符合常見的 libvirt/QEMU 檔案擁有權與 SELinux 策略。在啟用 SELinux 的主機上，若系統支援則會自動調用 `restorecon`。
-
-所有儲存路徑皆可透過環境變數進行覆寫；詳見[環境變數](#環境變數)。
-
-## 建立虛擬機器
-
-可從 `examples/ubuntu24-web01.yaml` 開始，修改網路設定與 SSH 金鑰路徑。預設的網路模式為 `bridge`，預設橋接介面為 `br0`（可透過環境變數 `KVM_VM_BRIDGE` 自訂）。
+**4. 確認 NAT 網路已啟動。**
 
 ```bash
-kvm-vm validate web01.yaml
-sudo kvm-vm create web01.yaml
+sudo virsh net-list --all
 ```
 
-環境變數可與 YAML 檔案搭配使用，在部署時覆寫特定的設定值（詳見[環境變數](#環境變數)）：
+若 `default` 不是 `active`，請啟動並設定自動啟動：
 
 ```bash
-sudo KVM_VM_OS=debian13 KVM_VM_NAME=web02 KVM_VM_VCPUS=16 KVM_VM_DISK=100 \
-  KVM_VM_MEMORY=32000 KVM_VM_IPV4=192.168.10.52/24 \
-  kvm-vm create examples/ubuntu24-web01.yaml
+sudo virsh net-start default
+sudo virsh net-autostart default
 ```
 
-此範例以 `examples/ubuntu24-web01.yaml` 作為基礎定義，透過環境變數覆寫了作業系統、名稱、資源規格與 IP 位址，在不需撰寫新 YAML 檔案的情況下建立一台完全不同的虛擬機器（`web02`）。
-
-### 發行版別名
-
-`create` 目前支援以下內建的便捷發行版別名（distro aliases）：
-
-```text
-ubuntu24.04
-ubuntu26.04
-debian12
-debian13
-rocky8
-rocky9
-rocky10
-almalinux8
-almalinux9
-almalinux10
-```
-
-您也可以改為提供自訂的映像檔：
-
-```yaml
-storage:
-  disk_gib: 80
-  image:
-    path: /srv/images/company-ubuntu.qcow2
-    sha256: 0123456789abcdef...
-```
-
-或：
-
-```yaml
-storage:
-  disk_gib: 80
-  image:
-    url: https://images.example.com/company-ubuntu.qcow2
-    sha256: 0123456789abcdef...
-```
-
-若要在正式環境中達到可重複驗證的佈署，使用固定的 URL/本機映像檔路徑搭配 `sha256` 會比隨時間變動的 `current`/`latest` 發行版別名更加理想。
-
-每個虛擬機器都會取得一個**完整且獨立的 qcow2 磁碟**。已存在的虛擬機器不會依賴快取的基底映像檔，因此重新整理（refresh）或刪除基底映像檔都不會影響到它們。
-
-### 連線至虛擬機器
-
-虛擬機器建立並完成 cloud-init 首次初始化後：
-
-> [!IMPORTANT]
-> **Macvtap 連線方式**：請從另一台能連到 VM LAN 位址的電腦執行 SSH。
-> KVM 宿主機無法經 parent 介面直接連入自己的 Macvtap VM，即使雙方在同一子網也一樣。
-> 若要從宿主機管理，請使用 `sudo kvm-vm console web01`，並在佈建前啟用
-> [Console 密碼登入](#選用-console-密碼登入)；預設密碼仍鎖定。
-> 詳見 [Macvtap 限制](#macvtap-限制)。
-
-1. **查詢獲配的 IP 位址**：
+**5. 建立 VM。** [`examples/ubuntu24-nat.yaml`](examples/ubuntu24-nat.yaml) 描述一台名為 `nat01` 的 Ubuntu 24.04 VM，有 2 個 vCPU、4 GiB 記憶體與 40 GiB 磁碟。
 
 ```bash
-kvm-vm list --ips
-# 或檢視詳細狀態：
-kvm-vm status web01
+sudo kvm-vm validate examples/ubuntu24-nat.yaml          # 檢查檔案並列出所有值
+sudo kvm-vm create examples/ubuntu24-nat.yaml --dry-run  # 一併檢查宿主機
+sudo kvm-vm create examples/ubuntu24-nat.yaml
 ```
 
-2. **透過 SSH 連線**：
+第一次執行會下載 Ubuntu 雲端映像檔，可能需要幾分鐘。
 
-使用定義檔中 `cloud_init.user` 所設定的使用者名稱（範例預設為 `admin`）及對應的 SSH 私鑰連線：
+**6. 連線。** VM 開機後，cloud-init 需要一兩分鐘完成設定。
 
 ```bash
-ssh admin@<vm-ip> -i ~/.ssh/id_ed25519
+sudo kvm-vm list --ips    # 查詢位址
+ssh admin@<vm-ip>         # admin 即 cloud_init.user
 ```
 
-若 `cloud_init.ssh_port` 設為自訂連接埠，連線時加上 `-p`：
+要移除這台測試 VM：`sudo kvm-vm delete nat01 --force --yes`。
+
+**下一步**：參考 [VM 定義檔參考](docs/configuration.zh-TW.md)撰寫自己的定義檔，並用橋接或 Macvtap 模式讓 VM 接上 LAN（[網路設定](docs/networking.zh-TW.md)）。
+
+## 常用指令
+
+請以 root 執行，例如透過 `sudo`。`kvm-vm 指令 --help` 會列出所有選項，[指令參考](docs/commands.zh-TW.md)有詳細說明。
+
+| 想做的事 | 指令 |
+|---|---|
+| 檢查定義檔（離線） | `kvm-vm validate vm.yaml` |
+| 在此宿主機預演建立 | `kvm-vm create vm.yaml --dry-run` |
+| 建立 VM | `kvm-vm create vm.yaml` |
+| 列出 VM 與位址 | `kvm-vm list --ips` |
+| 查看單台 VM 詳細資訊 | `kvm-vm status web01` |
+| 開啟序列主控台（按 `Ctrl+]` 離開） | `kvm-vm console web01` |
+| 重灌作業系統並保留設定 | `kvm-vm reinstall web01 [--os debian13]` |
+| 複製一台已關機的 VM | `kvm-vm clone web01 web02.yaml` |
+| 刪除 VM 與 kvm-vm 建立的檔案 | `kvm-vm delete web01` |
+| 從 libvirt 移除 VM 但保留檔案 | `kvm-vm delete web01 --keep-storage` |
+| 變更前建立回復點 | `kvm-vm snapshot create web01` |
+| 保留變更 | `kvm-vm snapshot delete web01 --yes` |
+| 撤銷變更 | `kvm-vm snapshot rollback web01 --yes --force` |
+| 還原前檢查備份 | `kvm-vm backup check /backups/web01` |
+
+常用選項：`--dry-run` 只檢查不變更，`--yes` 略過確認提示（用於腳本），`--force` 先強制關閉執行中的 VM，`--no-start` 讓 VM 保持關機。
+
+## 文件導覽
+
+| 我想要… | 請閱讀 |
+|---|---|
+| 撰寫 VM 定義檔：欄位、預設值、映像檔、覆寫 | [VM 定義檔參考](docs/configuration.zh-TW.md) |
+| 在橋接、NAT、Macvtap 之間做選擇 | [網路設定](docs/networking.zh-TW.md) |
+| 查詢指令的作用 | [指令參考](docs/commands.zh-TW.md) |
+| 從主控台登入，或重新取得存取權 | [存取與安全](docs/access.zh-TW.md) |
+| 安全地使用快照 | [Snapshots](docs/snapshots.md)（英文） |
+| 備份 VM 並在另一台宿主機還原 | [Backup and Restore](docs/full-backup-restore.md)（英文） |
+| 了解 clone、reinstall、delete 為何拒絕執行 | [Lifecycle operations around recovery state](docs/lifecycle-recovery-safety.md)（英文） |
+| 執行測試 | [測試](tests/README.zh-TW.md) |
+| 查詢 Snapshot、Backup 等術語 | [Glossary](GLOSSARY.md)（英文） |
+| 了解設計背後的理由 | [架構決策紀錄](docs/adr/)（英文） |
+
+## 安全規則
+
+- **`delete` 只移除 kvm-vm 建立的東西**：系統磁碟、cloud-init 檔案、定義檔與狀態。你掛載的資料磁碟永遠不會被刪除。
+- **`reinstall` 會清除系統磁碟**，但保留設定與資料磁碟。
+- **`clone` 只能用於已關機的 VM**，且只複製系統磁碟。
+- **破壞性指令會先確認。** `delete` 與 `reinstall` 會要求輸入 VM 名稱，除非加上 `--yes`；遇到執行中的 VM 會拒絕，除非加上 `--force`。
+- **快照不是備份。** 它是同一個儲存空間上、一個短期的回復點。若要能承受宿主機損毀，請使用[備份流程](docs/full-backup-restore.md)（英文）。
+- **密碼預設鎖定，SSH 僅接受金鑰。** Console 密碼登入需明確開啟。
+- **使用 Macvtap 時，宿主機無法透過網路連到自己的 VM。** 請從其他機器連線，或使用主控台。
+
+## 系統需求
+
+- 具備 KVM（`/dev/kvm`）與 libvirt 的 Linux 宿主機，透過 `qemu:///system` 使用。kvm-vm 已在 Debian 13 與 AlmaLinux 9.8 宿主機上測試。
+- Python 3.8 以上與 PyYAML。不需要 libvirt 的 Python 綁定：kvm-vm 直接執行 `virsh`、`virt-install`、`qemu-img`。
+- 建立 cloud-init seed 映像檔的工具：`cloud-localds`、`genisoimage`、`mkisofs`、`xorrisofs` 或 `xorriso`，kvm-vm 使用第一個找到的。
+- `clone` 需要：`virt-sysprep` 與 `virt-customize`（套件 `guestfs-tools`）。
+- Macvtap 需要：`ip`（套件 `iproute2` 或 `iproute`）。
+- Console 密碼登入需要：`openssl`。
+- 建議安裝：`osinfo-query`（套件 `libosinfo-bin` 或 `libosinfo`）。沒有它時，所有 VM 都使用 `generic` OS variant。
+
+較舊的發行版：
+
+- Debian 11 以前：以 `virtinst` 取代 `virt-install`，以 `libguestfs-tools` 取代 `guestfs-tools`。
+- RHEL 8 系列：預設的 `python3` 是 3.6，對 kvm-vm 來說太舊，且這類宿主機未經測試。套件名稱也不同：以 `genisoimage` 取代 `xorriso`，以 `libguestfs-tools` 取代 `guestfs-tools`。
+
+## kvm-vm 不做的事
+
+kvm-vm 管理的是單一宿主機上的 VM。它不會：
+
+- 即時遷移 VM，或管理叢集、Ceph/RBD 等共享儲存；
+- 為每台 VM 保留超過一個快照，或自行製作備份（它只在還原前檢查備份）；
+- 加入第二張網卡、設定 VLAN tag，或管理資料磁碟（你可以自行掛載資料磁碟，kvm-vm 不會動它們）；
+- 準備 Windows guest；
+- 讓既有 VM 跟著修改後的定義檔變更（不做 drift correction）。
+
+## 開發
 
 ```bash
-ssh -p 2222 admin@<vm-ip> -i ~/.ssh/id_ed25519
-```
-
-> [!NOTE]
-> **僅限 SSH 金鑰登入安全策略**：
-> SSH 維持僅金鑰登入。管理帳號密碼預設鎖定；[選用 Console 密碼登入](#選用-console-密碼登入)
-> 可啟用本機密碼，但不開啟 SSH 密碼認證或設定 root 密碼。緊急存取請見
-> [安全策略與帶外救援維護](#安全策略與帶外救援維護)。
-
-## YAML 定義範例
-
-範例：
-
-```yaml
-version: 1
-
-vm:
-  name: web01
-  vcpus: 4
-  memory_mib: 8192
-  cpu: host-passthrough
-  autostart: true
-  start: true
-  os_variant: ubuntu24.04
-
-storage:
-  disk_gib: 80
-  bus: virtio
-  cache: none
-  discard: unmap
-  image:
-    distro: ubuntu24.04
-
-network:
-  mode: bridge
-  bridge: br0
-  model: virtio
-  mac: auto
-  ipv4:
-    method: static
-    address: 192.168.10.51/24
-    gateway: 192.168.10.1
-    dns:
-      - 192.168.10.1
-      - 1.1.1.1
-  ipv6:
-    method: disabled
-
-cloud_init:
-  user: admin
-  console_password: false
-  ssh_port: 22
-  ssh_authorized_keys:
-    - file:~/.ssh/id_ed25519.pub
-  package_update: false
-  qemu_guest_agent: true
-  timezone: Asia/Taipei
-  packages:
-    - curl
-    - vim
-  runcmd: []
-```
-
-`cloud_init.ssh_port` 接受 `1–65535` 的整數，預設為 `22`。使用預設值時，工具不會改動映像檔原本的 SSH 連接埠設定。例如，設定 `ssh_port: 2222` 即使用 TCP port 2222。首次初始化時，工具會在使用者的 `runcmd` 執行後，替換 `/etc/ssh/sshd_config` 和 `/etc/ssh/sshd_config.d/*.conf` 中啟用的 `Port` 設定，驗證 SSH 設定並重啟監聽服務。若 SSH 由 `ssh.socket` 啟動（例如 Ubuntu），工具還會寫入 `/etc/systemd/system/ssh.socket.d/zz-kvm-vm-port.conf`；socket 的 port 由這個檔案決定，之後若要手動改 port，請一併修改或刪除它。Clone 使用目標 YAML 的 port（省略時為 22）；若 clone 使用 22，工具會移除來源 VM 留下的 `Port` 設定與 socket 設定檔，讓 SSH 回到映像檔預設值。Reinstall 保留已儲存的 port。單純修改定義檔不會更新正在運行的 VM。
-
-請讓 VM 內及上游防火牆允許所選的 port。Rocky/Alma 等啟用 SELinux 的 VM，還需在 SSH 重啟前授權自訂 port。例如，若該 port 尚未在 SELinux policy 中指定用途：
-
-```yaml
-cloud_init:
-  ssh_port: 2222
-  packages:
-    - policycoreutils-python-utils
-  runcmd:
-    - [semanage, port, -a, -t, ssh_port_t, -p, tcp, '2222']
-```
-
-請將以上欄位合併至原有的 `cloud_init` 區段，保留使用者與 SSH 金鑰設定。
-
-若 SSH 無法在新 port 啟動（例如被 SELinux 或其他服務擋住），工具會還原先前的 SSH 設定檔並重啟 SSH。VM 仍可從原本的 port 連線（新 VM 為 22），cloud-init 會回報錯誤，`/var/log/cloud-init-output.log` 中會出現 `kvm-vm: could not move SSH to port <port>`。
-
-SSH 金鑰可以是純文字 OpenSSH 公鑰字串，或是 `file:/path/to/key.pub` 格式。相對的 `file:` 路徑會以該 YAML 檔案所在位置為基準進行解析；支援波浪號展開（`file:~/.ssh/...`），若透過 `sudo` 執行，會自動辨識並解析為 `$SUDO_USER` 的家目錄。
-
-`mac: auto` 在儲存的生效 YAML 中會被替換為實際的 `52:54:00:*` 位址。靜態 cloud-init 網路設定會比對該 MAC 位址並將網路介面重新命名為 `eth0`，因此設定不會受到不同發行版將介面命名為 `ens3`、`enp1s0` 等差異的影響。
-
-## 環境變數
-
-下列變數可覆寫路徑、libvirt URI 與部分定義欄位。定義覆寫在 `validate`、`create`、
-`clone` 生效，優先權高於 YAML；`reinstall` 保留已儲存的定義值，忽略這些環境覆寫。
-Console 密碼由 YAML 明確啟用，交付路徑使用 CLI 參數，不提供環境變數覆寫。
-
-### 路徑與系統配置
-
-| 變數 | 預設值 | 說明 |
-|---|---|---|
-| `KVM_VM_LIBVIRT_URI` | `qemu:///system` | libvirt 連線 URI |
-| `KVM_VM_BASE_DIR` | `/var/lib/libvirt/images/base` | 快取的發行版雲端映像檔目錄 |
-| `KVM_VM_DISK_DIR` | `/var/lib/libvirt/images/vm` | 各虛擬機器獨立的 qcow2 系統磁碟目錄 |
-| `KVM_VM_STATE_DIR` | `/var/lib/kvm-vm/state` | 工具狀態清單目錄 |
-| `KVM_VM_CLOUD_DIR` | `/var/lib/libvirt/images/cloud-init` | 各虛擬機器 NoCloud seed 與來源檔案目錄 |
-| `KVM_VM_DEF_DIR` | `/etc/kvm-vm/definitions` | 生效的 YAML 定義儲存目錄 |
-
-### 虛擬機器定義覆寫
-
-| 變數 | YAML 路徑 | 範例 | 說明 |
-|---|---|---|---|
-| `KVM_VM_NAME` | `vm.name` | `web02` | 覆寫虛擬機器名稱 |
-| `KVM_VM_VCPUS` | `vm.vcpus` | `4` | 覆寫 vCPU 核心數（1-1024） |
-| `KVM_VM_MEMORY` / `KVM_VM_MEMORY_MIB` | `vm.memory_mib` | `4096` | 覆寫記憶體容量（MiB，>= 256） |
-| `KVM_VM_DISK` / `KVM_VM_DISK_GIB` | `storage.disk_gib` | `50` | 覆寫磁碟大小（GiB，>= 1） |
-| `KVM_VM_OS` | `image.distro` / `os_variant` | `rocky9` | 覆寫發行版別名（詳見[發行版別名](#發行版別名)）與 `os_variant` |
-| `KVM_VM_BRIDGE` | `network.mode`, `network.bridge` | `br0` | 同時選擇 bridge 模式與橋接介面；與 Macvtap 衝突 |
-| `KVM_VM_MACVTAP` | `network.mode`, `network.parent` | `eno1` | 同時選擇 Macvtap 與實體 parent，可切換原有 bridge／NAT YAML；空值或同時設定 `KVM_VM_BRIDGE` 會報錯 |
-| `KVM_VM_IPV4` | `network.ipv4` | `dhcp`, `192.168.1.50/24` | 設定 IP 取得方式（`dhcp`, `disabled`）或靜態 CIDR 位址 |
-| `KVM_VM_GATEWAY` | `network.ipv4.gateway` | `192.168.1.1` | 覆寫預設 IPv4 閘道 |
-| `KVM_VM_DNS` | `network.ipv4.dns` | `1.1.1.1,8.8.8.8` | 覆寫 DNS 伺服器列表（以逗號分隔） |
-
-## 網路模式
-
-`kvm-vm` 支援三種單網卡連接模式：bridge、NAT 與 Macvtap。
-
-### 橋接模式（Bridge mode）
-
-橋接模式為預設模式。如果省略 `network.mode` 與 `network.bridge`，虛擬機器將連接至 `br0`（或由 `KVM_VM_BRIDGE` 指定的橋接介面）：
-
-```yaml
-network:
-  mode: bridge
-  bridge: br0
-  model: virtio
-  mac: auto
-  ipv4:
-    method: dhcp
-```
-
-這會產生等同於以下的指令參數：
-
-```text
-virt-install ... --network bridge=br0,model=virtio,mac=...
-```
-
-為了向後相容，僅包含 `network.bridge` 的現有 YAML 仍會採用橋接模式。預設橋接介面為 `br0`，亦可透過環境變數 `KVM_VM_BRIDGE` 在主機層級進行自訂。
-
-### NAT 模式（NAT mode）
-
-NAT 模式將虛擬機器連接至 libvirt 虛擬網路，而非直接連接至該虛擬網路的 Linux 橋接介面。常見的 libvirt `default` 網路通常底層由 `virbr0`、dnsmasq/DHCP 以及對外 NAT 所支援。
-
-```yaml
-network:
-  mode: nat
-  libvirt_network: default
-  model: virtio
-  mac: auto
-  ipv4:
-    method: dhcp
-  ipv6:
-    method: disabled
-```
-
-這會產生等同於以下的指令參數：
-
-```text
-virt-install ... --network network=default,model=virtio,mac=...
-```
-
-在執行 `create` 或 `clone` 之前，`kvm-vm` 會驗證所指定的 libvirt 網路是否存在、是否為啟動狀態（active），以及是否已設定 NAT 轉發。若網路存在但尚未啟動，可透過以下指令啟動：
-
-```bash
-virsh -c qemu:///system net-start default
-virsh -c qemu:///system net-autostart default
-```
-
-`examples/ubuntu24-nat.yaml` 提供了完整的 NAT 範例。對於 NAT 網路而言，DHCP 通常是最簡單的選擇，因為 IP 位址分配會由 libvirt 網路的 DHCP 服務負責管理。雖然系統也允許設定客體（Guest）靜態 IP，但您必須自行確保該位址位於 NAT 子網路內，且不會與 DHCP 分配或保留範圍發生衝突。
-
-### Macvtap 模式
-
-Macvtap 讓 VM 直接接入實體 LAN，無須將宿主機網卡改接 Linux bridge。
-將以下網路區段合併至 VM 定義：
-
-```yaml
-network:
-  mode: macvtap
-  parent: eno1
-  model: virtio
-  mac: auto
-  ipv4:
-    method: dhcp
-  ipv6:
-    method: disabled
-```
-
-也可以直接覆寫現有定義：
-
-```bash
-sudo KVM_VM_MACVTAP=eno1 KVM_VM_IPV4=dhcp \
-  kvm-vm create examples/ubuntu24-web01.yaml
-```
-
-請將 `eno1` 換成既有實體 Ethernet 介面。靜態 IPv4 沿用前述 YAML 的
-`address`、`gateway`、`dns` 欄位，或使用 `KVM_VM_IPV4`、`KVM_VM_GATEWAY`
-與 `KVM_VM_DNS` 覆寫。
-
-Macvtap 固定使用 bridge 轉送子模式。`KVM_VM_MACVTAP` 同時覆寫模式與 parent，
-包括原本的 bridge／NAT 定義。空值會報錯；從 YAML 或環境變數選擇 Macvtap 時，
-請移除 `KVM_VM_BRIDGE`，兩者不可並用。
-
-#### Macvtap 限制
-
-- **宿主機無法經 parent 直接連入 VM**：SSH、ping 與其他 IP 服務皆受此限制，
-  即使在同一子網也一樣；Macvtap 的 bridge 轉送子模式不會解除此限制。
-  SSH 需從另一台具備通往 VM 路由的電腦發起。`list --ips` 查到位址，不代表
-  宿主機能連到該位址。
-- **宿主機管理使用 Serial console**：在宿主機執行 `sudo kvm-vm console web01`。
-  若需密碼登入，須在佈建前設定 `cloud_init.console_password: true`，並提供
-  `--console-password-file`。單純連上 Console 不會解鎖帳號，詳見
-  [Console 密碼登入](#選用-console-密碼登入)。
-- **每台 VM 僅一張網卡**：不會另外加入 NAT 或 isolated 管理網卡。同一宿主機上的
-  不同 VM 可以分別使用 bridge、NAT、Macvtap，但 Macvtap parent 不可同時隸屬
-  Linux bridge 或 bond。例如 `eno1` 已加入 `br0` 時，Macvtap 需使用另一張獨立
-  實體介面。不同模式 VM 之間是否互通，取決於路由與防火牆政策。
-
-Parent 必須已啟用、未隸屬 bridge／bond，且能透過 Linux sysfs 與
-`ip -j -d link` 檢查。不存在、不支援或檢查失敗時會停止；首版不支援
-Wi-Fi、bond、VLAN、bridge 或從屬介面。工具不會設定或刪除 parent。
-`validate` 離線驗證定義；`create --dry-run` 另外檢查主機介面。
-
-LAN 必須允許額外的 VM MAC，並提供 DHCP 或適當靜態位址，這些需自行
-確認，不能由本機 preflight 保證。交換器或供應商對額外 MAC 的限制，可能使
-通過本機驗證的 VM 仍無法連網。外部 DHCP
-租約不一定出現在 libvirt；透過 guest agent 取得 IP 需 agent 與 channel 正常。
-`cloud_init.qemu_guest_agent: true`（預設）會加入 virtio agent channel，並由
-cloud-init 安裝 guest agent；請等待 Guest 初始化完成後再使用 `list --ips` 查詢。
-
-Create／clone 保存實際網路設定；reinstall 保留該設定並忽略
-`KVM_VM_MACVTAP` 等環境覆寫。跨主機還原時需提供相容的 parent。
-連上 serial console 不代表能密碼登入，預設使用者密碼仍鎖定，請參閱下方政策。
-靜態網路、受控 LAN DHCP、guest-agent 位址探索與生命週期行為已通過
-[實機網路驗收](docs/plans/20261019_macvtap-console/ticket-05-validation.md)。
-部署的 LAN 仍須符合前述 MAC 與位址配置需求。
-
-## 列出與檢視狀態
-
-快速列出虛擬機器（不偵測 IP）：
-
-```bash
-kvm-vm list
-```
-
-僅列出由本工具管理的虛擬機器：
-
-```bash
-kvm-vm list --managed
-```
-
-包含 IP 偵測（較慢，因為會探查 guest-agent、DHCP 租約以及 ARP 資料）：
-
-```bash
-kvm-vm list --ips
-```
-
-詳細檢視：
-
-```bash
-kvm-vm status web01
-```
-
-`status` 會顯示 libvirt 網域資訊、kvm-vm 狀態清單、磁碟、網路介面以及 libvirt 已知的 IP 位址。
-
-## 序列主控台（Serial console）
-
-```bash
-kvm-vm console web01
-```
-
-使用 `Ctrl+]` 退出 `virsh console`。
-
-連上 Console 不會自動啟用密碼登入。若要從宿主機管理 Macvtap VM，請在佈建前
-啟用下方的管理帳號密碼功能。此功能也適用於 bridge 與 NAT，無須新增第二張管理網卡。
-
-## 選用 Console 密碼登入
-
-設定 `cloud_init.console_password: true`，可為指定的非 root 管理帳號產生隨機
-本機密碼。此設定與 bridge、NAT、Macvtap 網路無關，預設仍鎖定密碼。
-SSH 公鑰設定仍為必要項目。
-
-將以下欄位合併至既有的 `cloud_init` 區段：
-
-```yaml
-cloud_init:
-  user: admin
-  console_password: true
-  ssh_authorized_keys:
-    - file:~/.ssh/id_ed25519.pub
-```
-
-若定義中的 `vm.name` 為 `web01`：
-
-```bash
-sudo install -d -m 0700 /root/vm-credentials
-sudo kvm-vm create web01.yaml --console-password-file /root/vm-credentials/web01.json
-sudo kvm-vm console web01
-```
-
-目的檔案必須尚不存在，並放在執行管理員擁有的私有目錄內；既有檔案與符號連結
-會被拒絕。JSON 欄位為 `vm`、`user`、`password`，密碼為隨機 24 字元，檔案權限為 0600。
-請透過已授權的管理連線在本機讀取，並在登入提示使用其中的 `user` 與 `password`。
-CLI 不輸出密碼，受管理的定義與 state
-不儲存密碼；cloud-init 的受限檔案僅包含加鹽雜湊。宿主機需要 OpenSSL。
-`validate` 不產生密碼或憑證檔。政策啟用時，`create`、`clone`、`reinstall`
-都必須指定 `--console-password-file`，包括 `--dry-run`；預覽只驗證目的路徑，
-不建立憑證檔。政策停用時提供此參數則會報錯。
-
-Guest 起初保持帳號密碼鎖定；最後的佈建步驟關閉 SSH password 與
-keyboard-interactive 驗證、檢查 SSH 設定並啟動 serial getty，成功後才解鎖。
-SSH 公鑰登入保留。建立成功不代表佈建或 Console 登入成功，應檢查 cloud-init
-並實際登入；驗收範圍請見[下方結果](#macvtap-與-console-驗收)。不設定 root 密碼或自動登入：
-`disable_root` 控制 SSH 存取，本身不決定本機 root 帳號的密碼政策。
-
-本機密碼並非只限於 Serial console 使用。持有人可透過管理帳號既有的免密碼 sudo
-取得管理權限。預設不強制到期或首次登入更換。後續建立失敗時應保留憑證檔，
-因為殘留資源可能已使用該密碼；重試必須選用新目的檔案。
-刪除 VM 不會刪除此檔案，清理責任屬於管理員。在 Guest 內更換密碼後，初始檔案
-即失效；遺失憑證時需使用其他已授權存取方式或離線重設，沒有密碼取回命令。
-
-Clone 使用目標定義的政策。啟用密碼的目標必須指定新的憑證檔：
-
-```bash
-sudo kvm-vm clone source target.yaml --console-password-file /root/vm-credentials/target.json
-```
-
-每個啟用密碼的 clone 都會取得獨立憑證。開機前會離線鎖定複製磁碟內的目標管理
-帳號，以及已知啟用 Console 密碼的來源管理帳號；之後僅為啟用功能的目標帳號
-套用新憑證並解鎖。未啟用的目標保持鎖定，來源 VM 不變。交付失敗不修改 Guest
-資源；較晚的失敗保留目標資源與已交付憑證。
-
-Reinstall 保留已儲存的 Console 政策與網路設定。啟用密碼的 VM 必須指定新的
-目的檔案，並取得新密碼：
-
-```bash
-sudo kvm-vm reinstall vm --yes --console-password-file /root/vm-credentials/vm-reinstalled.json
-```
-
-憑證檢查與交付會在強制關機或替換磁碟前完成。既有憑證檔不會被覆寫或刪除。
-未啟用此功能或舊版定義的 VM 保持密碼鎖定，不需指定目的檔案。
-`--dry-run` 不產生憑證。替換後舊密碼不再適用，應使用新交付的憑證驗證 Guest
-佈建與登入。替換後失敗會保留殘存資源，但不保證能還原原始磁碟。
-
-## 安全策略與帶外救援維護
-
-預設由 cloud-init 鎖定管理帳號密碼（`lock_passwd: true`）、停用 SSH 密碼認證
-（`ssh_pwauth: false`），並停用 root 直接 SSH 存取（`disable_root: true`）。
-啟用 Console 密碼仍維持 SSH 僅金鑰登入，完成最後的 SSH 政策檢查後才解鎖非 root
-管理帳號；不設定 root 密碼或啟用自動登入。自訂映像本身的本機 root 帳號政策仍須自行確認。
-
-預先規劃 Console 存取時，請使用 [Console 密碼登入](#選用-console-密碼登入)，
-不要將密碼放入 YAML 或 `runcmd`。若已無可用的 Console 憑證或 SSH 金鑰，
-可使用以下離線 SSH 金鑰救援流程；修改磁碟前，先確認 VM 已完全關機。
-
-### SSH 金鑰遺失救援（SSH key recovery）
-
-若您遺失了 SSH 私鑰，或因設定錯誤被鎖在系統外且無法登入主控台：
-
-1. 將虛擬機器關機：
-   ```bash
-   virsh shutdown web01
-   ```
-
-2. 使用 `virt-customize` 直接將新的公鑰注入至虛擬磁碟中的使用者帳號：
-   ```bash
-   virt-customize -d web01 --ssh-inject admin:file:/path/to/new_key.pub
-   ```
-   *（或直接指定磁碟路徑：`virt-customize -a /var/lib/libvirt/images/vm/web01.qcow2 --ssh-inject admin:file:~/.ssh/id_ed25519.pub`）*
-
-3. 重新啟動虛擬機器並以新金鑰連線：
-   ```bash
-   virsh start web01
-   ssh admin@<vm-ip> -i /path/to/new_key
-   ```
-
-## 安全刪除機制
-
-```bash
-kvm-vm delete web01
-```
-
-此指令會要求輸入虛擬機器名稱以供確認。若要用於自動化流程：
-
-```bash
-kvm-vm delete web01 --yes
-```
-
-執行中的虛擬機器**不會**被隱式強制銷毀。請先將其關機，或明確指定：
-
-```bash
-kvm-vm delete web01 --force --yes
-```
-
-重要安全規則：`kvm-vm` **不會**使用 `virsh undefine --remove-all-storage`。
-它僅會刪除記錄於自身狀態清單中的系統磁碟與 cloud-init 媒介檔案。
-因此，管理員後續手動掛載的資料磁碟不會被意外刪除。
-
-對於非本工具管理（既有）的虛擬機器，系統會拒絕刪除儲存空間。您可以在保留所有磁碟不變的情況下取消定義（undefine）該虛擬機器：
-
-```bash
-kvm-vm delete legacy01 --keep-storage
-```
-
-對於由本工具管理的虛擬機器，您也可以選擇保留所有受管理的檔案：
-
-```bash
-kvm-vm delete web01 --keep-storage
-```
-
-在這種情況下，狀態與定義檔仍會保留，以避免儲存空間默默成為孤立檔案（orphan storage）。
-
-## 重灌虛擬機器（Reinstall）
-
-重灌受管理的 VM 會從基底映像建立新的系統磁碟，保留 vCPU、記憶體、磁碟容量、
-MAC、IP 設定、cloud-init 使用者與 SSH 金鑰、Console 政策及網路連接設定
-（bridge、NAT 網路或 Macvtap parent）。已啟用的 Console 密碼會輪替，不會沿用。
-
-```bash
-# 使用現有定義中的作業系統進行重灌
-kvm-vm reinstall web01
-
-# 重灌並更換為不同的作業系統
-kvm-vm reinstall web01 --os debian13
-```
-
-### 選項參數
-
-- `--console-password-file <path>`：已儲存的 Console 政策為啟用時必填；在關機或替換磁碟前，將新憑證交付至新的私有檔案。詳見 [Console 密碼登入](#選用-console-密碼登入)。
-- `--os <distro|url|path>`：發行版別名（詳見[發行版別名](#發行版別名)）、自訂映像檔 URL 或本機映像檔路徑。
-- `--image-url <url>`：明確指定雲端映像檔下載 URL。
-- `--image-path <path>`：明確指定本機雲端映像檔路徑。
-- `--os-variant <variant>`：指定供 `virt-install` 最佳化使用的 libosinfo OS variant 名稱。
-- `--refresh-image`：強制重新下載雲端基礎映像檔（即使快取已存在）。
-- `--no-start`：重灌並在 libvirt 中完成定義，但不立即開機。
-- `--force`：若虛擬機器目前正在運行中，強制將其關閉並進行重灌（若未指定 `--force`，運行中的虛擬機器將拒絕重灌）。
-- `--yes`：略過互動式確認提示（在自動化腳本或非互動環境中必備）。
-- `--dry-run`：執行所有事前檢查並輸出生效的 YAML 定義，不會異動任何磁碟或 libvirt 網域。
-
-```bash
-# 自動化重灌範例（更換 OS 並強制關機執行）
-kvm-vm reinstall web01 --os rocky9 --force --yes
-```
-
-## 複製虛擬機器（Clone）
-
-複製目標的 YAML 格式請參閱 `examples/clone-target.yaml`。它刻意不需要 `storage.image` 欄位，因為來源虛擬機器的磁碟本身就是來源映像檔。
-
-```bash
-virsh shutdown web01
-# 等待狀態變更：virsh domstate web01 -> "shut off"
-kvm-vm validate --clone web02.yaml
-sudo kvm-vm clone web01 web02.yaml
-```
-
-複製功能刻意**僅支援離線操作（offline only）**。來源網域必須處於關機（shut off）狀態。
-
-處理流程如下：
-
-```text
-來源系統磁碟
-      |
-      +-- qemu-img convert --> 獨立的目標 qcow2
-                                  |
-                                  +-- virt-sysprep
-                                  |     machine-id
-                                  |     SSH 主機金鑰
-                                  |     hostname/網路殘留狀態
-                                  |     DHCP 狀態
-                                  |     隨機種子（random seed）
-                                  |
-                                  +-- cloud-init clean
-                                  |
-                                  +-- 新 MAC + 新 NoCloud instance-id
-                                  |
-                                  +-- 目標 YAML 的網路/使用者設定
-```
-
-此處僅執行經過明確挑選的安全 `virt-sysprep` 操作。腳本**不會**執行範圍廣泛的預設操作集，因為複製不應該無預警地清除使用者帳號或不相關的應用程式狀態。
-
-目前的複製限制均為刻意設計：
-
-- 僅支援 Linux 客體系統（`virt-sysprep` 的限制）。
-- 來源虛擬機器必須處於關機狀態。
-- 來源系統磁碟必須是獨立的一般 qcow2 或 raw 檔案。
-- 額外資料磁碟保持不動，不會複製到新 VM；復原用磁碟鏈與進行中的復原工作仍會阻擋複製。
-- 拒絕將目標虛擬磁碟縮小。允許設定較大的容量；擴充磁碟分割區與檔案系統仍由雲端映像檔或客體系統工具負責處理。
-
-### 驗證 virt-sysprep 相容性
-
-在進行複製之前，若要測試主機上的 `virt-sysprep` 是否支援目標客體作業系統：
-
-1. **檢查主機支援的操作**：
-   ```bash
-   virt-sysprep --list-operations
-   ```
-   `kvm-vm` 至少需要 `machine-id` 與 `ssh-hostkeys`。
-
-2. **測試作業系統探測（OS inspection）**：
-   `virt-sysprep` 仰賴 `libguestfs` 的探測功能。驗證客體作業系統結構是否能被正確辨識：
-   ```bash
-   virt-inspector -a /path/to/image.qcow2
-   ```
-   探測成功會輸出包含 `<operatingsystem>`、`<distro>`、`<version>` 與掛載點的 XML。
-
-3. **使用 `--dry-run` 模擬操作**：
-   使用 `kvm-vm` 所執行的完全相同操作集，對映像檔進行非破壞性的模擬測試：
-   ```bash
-   virt-sysprep --dry-run -a /path/to/image.qcow2 \
-     --operations machine-id,ssh-hostkeys,ssh-userdir,net-hostname,net-hwaddr,dhcp-client-state,random-seed
-   ```
-   若執行成功且無掛載錯誤或未辨識作業系統的警告，即表示 `virt-sysprep` 完全相容。
-
-## CPU 模型注意事項
-
-範例中設定：
-
-```yaml
-cpu: host-passthrough
-```
-
-這能最大程度使用主機 CPU 功能，適用於穩定的單一主機或同質硬體主機環境。若未來有在不同世代 CPU 之間進行即時遷移（live migration）的需求，請改為明確指定支援遷移的 CPU 模型。
-
-## 重新整理基底映像檔
-
-在先前的 `create` 流程中所下載的發行版雲端映像檔會被快取於本地（預設路徑為 `/var/lib/libvirt/images/base/`）。後續建立 VM 時若快取已存在，預設會直接重用該映像檔，以避免重複下載。
-
-若上游發行版已有更新，且您希望拉取最新版本的映像檔來建立新 VM，可加上 `--refresh-image` 參數：
-
-```bash
-kvm-vm create newvm.yaml --refresh-image
-```
-
-- **不影響既有 VM**：此參數只會更新本地快取的基底映像檔。由於每個 VM 在建立時都會分配獨立的 qcow2 系統磁碟，因此重新下載或更新基底映像檔完全不會影響已建立運行的虛擬機器。
-- **無條件重新下載**：經程式碼確認，`--refresh-image` 執行時不會比對 HTTP `ETag` 或 `Last-Modified` 標頭；只要帶入此參數，系統就會無條件重新下載完整映像檔並覆蓋本地快取。因此即使本地快取的映像檔已經是最新版，依然會重新下載。
-
-## 快照（Snapshots）
-
-`kvm-vm snapshot create NAME` 可在更新前建立一個短期的回復點，不需停止 VM；
-會透過 QEMU guest agent 短暫凍結 guest 檔案系統。`kvm-vm snapshot status NAME`
-可查看狀態，`kvm-vm snapshot delete NAME --yes` 會刪除快照並保留目前資料。
-若更新出問題，`kvm-vm snapshot rollback NAME --yes --force` 會回到快照當時的磁碟、
-VM 設定與 kvm-vm 檔案，並重新啟動 VM，身分保持不變。快照不是備份，也不會與增量備份
-追蹤（checkpoint）並用：建立快照前先解除追蹤，快照刪除或回復後再重新做一次完整備份，
-詳見 [Snapshots and Backups](docs/snapshots.md#snapshots-and-backups)。已驗證的主機組合、
-暫停時間、失敗後的處理與 AppArmor 行為請見 [docs/snapshots.md](docs/snapshots.md)。
-
-## 復原狀態安全檢查
-
-Clone、reinstall 與 delete 會拒絕 checkpoint、snapshot、backing chain、
-不一致的磁碟路徑與進行中的復原工作；支援獨立的 qcow2／raw 系統磁碟檔案，以及額外的檔案或區塊裝置資料碟。
-Reinstall 保留資料碟連接設定，clone 只複製系統碟；`delete --keep-storage` 也允許系統碟使用區塊裝置。
-Create／clone 若在定義 domain 前失敗，會檢查相依性後清除本次建立且未被使用的檔案；
-較晚發生或狀態不明的失敗仍保留資源，重試不會覆寫既有檔案。
-若 VM 已不存在且僅剩管理 state／定義檔，`create` 與 `clone` 可重新使用同一目標名稱。
-它會檢查目前與 state 記錄的磁碟、cloud-init 路徑及磁碟轉換暫存檔，
-並只在建立成功後更新 state。若仍有資料檔，會拒絕建立並顯示待檢查的路徑。
-依賴檢查、keep-storage、操作鎖與外部工具的執行順序，請見
-[lifecycle 復原安全說明](docs/lifecycle-recovery-safety.md)。
-
-完整備份，以及「完整＋增量」備份歷史中指定還原點的跨主機復原，已通過一次實機驗收
-（Debian 13 還原到 AlmaLinux 9.8，單一 guest、同步標記檔工作負載）。備份與還原直接使用
-virtnbdbackup 與 virtnbdrestore；其他 guest、應用程式與主機組合尚未驗證。還原前務必執行
-`kvm-vm backup check DIR [--until virtnbdbackup.N]`：`virtnbdrestore` 在備份歷史不完整或
-檔案順序錯亂時仍可能回傳 0（見 [ADR 0004](docs/adr/0004-pre-restore-backup-check.md)）。請參閱
-[操作流程](docs/full-backup-restore.md)、
-[雙主機驗收步驟](docs/full-backup-acceptance.md)、
-[ticket 03 驗證紀錄](docs/plans/20261018_vm-recovery/ticket-03-validation.md)與
-[ticket 04 驗證紀錄](docs/plans/20261018_vm-recovery/ticket-04-validation.md)。
-
-## `--no-start`
-
-`create`、`clone` 與 `reinstall` 皆支援：
-
-```bash
-kvm-vm create vm.yaml --no-start
-kvm-vm reinstall web01 --no-start
-```
-
-虛擬機器網域會被定義（define）但維持關機狀態。若您想在首次開機前檢查 `virsh dumpxml` 或套用其他額外的 libvirt 策略，此選項非常實用。
-
-## `--dry-run`
-
-`create`、`clone` 與 `reinstall` 皆支援：
-
-```bash
-kvm-vm create vm.yaml --dry-run
-kvm-vm clone source-vm target.yaml --dry-run
-kvm-vm reinstall web01 --os debian13 --dry-run
-```
-
-執行所有事前檢查（YAML 正規化、網域/狀態衝突檢查、bridge／NAT／Macvtap 驗證、MAC 位址分配以及 SSH 金鑰解析），並輸出正規化後的 YAML，過程中不會下載映像檔、不會異動磁碟，也不會定義 libvirt 網域。對於 `clone`，它還會在進行任何磁碟轉換前，使用 dry-run 檢查驗證來源磁碟與 `virt-sysprep` 的相容性。
-
-## 建議的維運工作流程
-
-將您撰寫的 YAML 檔案納入 Git 版控，例如：
-
-```text
-infra/
-  kvm/
-    web01.yaml
-    web02.yaml
-    db01.yaml
-```
-
-接著執行：
-
-```bash
-kvm-vm validate infra/kvm/web01.yaml
-kvm-vm create infra/kvm/web01.yaml
-kvm-vm status web01
-```
-
-請將 `/etc/kvm-vm/definitions/*.yaml` 視為工具產生的**生效佈署記錄（effective deployment record）**，而非主要的事實來源（source-of-truth）。這樣可以將經過審查的預期設定定義，與主機上實際使用的精確設定（包含自動產生的 MAC 位址）清楚分離。
-
-## 使用較新或自訂的 Linux 發行版
-
-`kvm-vm` 不受限於內建的發行版別名。支援較新的發行版本（例如 Ubuntu 26.04、Rocky Linux 10、AlmaLinux 10）或自訂映像檔有以下兩種方式：
-
-### 1. 直接指定 URL 或本機檔案路徑（無需修改程式碼）
-
-任何支援 cloud-init 的 qcow2/raw 映像檔都可以透過指定 `url` 或 `path` 直接使用：
-
-```yaml
-vm:
-  name: web01
-  # 選用：指定 os_variant 以利 virt-install 最佳化。
-  # 若主機的 libosinfo 尚未收錄該全新版本，可指定前一個版本或直接省略。
-  os_variant: ubuntu24.04
-
-storage:
-  disk_gib: 40
-  image:
-    url: https://cloud-images.ubuntu.com/resolute/current/resolute-server-cloudimg-amd64.img
-    # 或本機路徑：
-    # path: /var/lib/libvirt/images/base/Rocky-10-GenericCloud-Base.latest.x86_64.qcow2
-```
-
-### 2. 在 `kvm-vm` 中新增發行版別名
-
-若想為其他發行版使用簡短別名（例如 `distro: fedora41`），可在 `kvm-vm` 腳本中的 `DISTROS` 字典加入項目：
-
-```python
-DISTROS = {
-    ...
-    "fedora41": {
-        "url": "https://download.fedoraproject.org/pub/fedora/linux/releases/41/Cloud/x86_64/images/Fedora-Cloud-Base-Generic.x86_64-41-1.4.qcow2",
-        "cache": "Fedora-Cloud-Base-Generic.x86_64-41-1.4.qcow2",
-        "os_variant": "fedora41",
-    },
-}
-```
-
-較新發行版的重要注意事項：
-- **`os_variant` 與 `libosinfo` 相容性**：
-  - **自動降級至 `generic`**：`kvm-vm` 在建立 VM 前會自動透過 `osinfo-query os` 檢查。若指定的 `os_variant` 未被主機的 `libosinfo` 收錄，系統會記錄警告訊息並自動安全降級為 `--os-variant generic`，而不會造成建立失敗或中斷。
-  - **對伺服器 VM 幾乎無影響**：由於 `kvm-vm` 採用無圖形介面（`--graphics none`），且已明確指定使用高效能的 `virtio` 磁碟匯流排與 `virtio` 網卡模型，降級為 `generic` 不會影響開機，對標準伺服器效能亦無負面影響。
-  - **最佳實踐建議**：若希望 `virt-install` 能套用貼近目標系統的虛擬硬體拓撲最佳化，但在主機 `libosinfo` 更新前，建議在 YAML 的 `vm.os_variant` 明確指定前一個相容的主要版本（例如 Rocky Linux 10 指定為 `rocky9`，或 Ubuntu 26.04 指定為 `ubuntu24.04`）。
-- **複製時的 Sysprep 支援**：若使用 `kvm-vm clone`，請確保主機的 `libguestfs-tools` / `virt-sysprep` 版本支援該客體作業系統結構（machine-id、網路設定等）。測試方式請參閱[驗證 virt-sysprep 相容性](#驗證-virt-sysprep-相容性)。
-
-## 本工具刻意不處理的事項
-
-本工具並非叢集管理員（Cluster Manager）的替代品。目前**不**處理以下功能：
-
-- 即時遷移（live migration）
-- Ceph/RBD 儲存系統
-- 多個或長期保存的快照，或備份（本工具只保留一個短期
-  [快照](docs/snapshots.md)；備份請使用外部工具的[操作流程](docs/full-backup-restore.md)）
-- 多張網路卡（multiple NICs）
-- 多個受管理的資料磁碟
-- VLAN 標籤（VLAN tagging）
-- Windows sysprep
-- 已建立虛擬機器的狀態調和 / 偏離校正（reconciliation / drift correction）
-
-上述功能未來可在不更動基本 YAML / 狀態模型的前提下擴充加入。
-
-## 測試
-
-### 前置需求
-
-```bash
-pip install pytest
-```
-
-### 單元測試
-
-單元測試涵蓋純 Python 函式（YAML 正規化、MAC 位址產生、SSH 金鑰解析、下載重試邏輯、CLI 參數解析），不需要 libvirt 環境或 root 權限。
-
-```bash
-python3 -m pytest tests/test_unit.py -v
-```
-
-### 冒煙測試（Smoke tests）
-
-冒煙測試腳本會編譯檢查主腳本語法、執行 `--help` / `--version`、在有安裝 pytest 時執行單元測試，並使用正規化器驗證範例 YAML 檔案。此測試不需要運行中的 libvirt 守護行程（daemon）。
-
-```bash
+python3 -m pytest tests -q   # 離線測試；實機測試除非以 root 在 KVM 宿主機上執行，否則會略過
 bash tests/smoke.sh
 ```
 
-### 端到端測試（E2E tests）
+實機測試請見[測試](tests/README.zh-TW.md)。
 
-實機端到端測試會在真實的 Linux KVM/libvirt 主機上執行完整的 VM 生命週期驗證：
-- 下載雲端基礎映像檔（預設：Debian 12）
-- 產生 cloud-init seed ISO 並透過 NAT 虛擬網路建立虛擬機
-- 等待 DHCP 租約 IP 並驗證 SSH 連線、主機名設定與使用者建立
-- 驗證 `kvm-vm status` 與 `kvm-vm list` 輸出結果
-- 停機進行 `kvm-vm clone` 複製並由 `virt-sysprep` 重置系統後開機連線
-- 自訂 SSH port、clone 時還原為 22，以及新 port 被占用時的回滾
-- 測試 `kvm-vm reinstall --force --yes` 線上重裝作業系統
-- 完整刪除與儲存檔案清理驗證
+## 授權
 
-**前置需求：**
-- 具備硬體虛擬化（`/dev/kvm`）的 Linux 主機
-- `root` 執行權限（需使用 `sudo`）
-- 運作中的 libvirt 守護行程以及已啟動的 `default` NAT 虛擬網路
-- 必要 CLI 工具（`virsh`、`virt-install`、`qemu-img`、`virt-sysprep`、`cloud-localds`/`genisoimage`/`xorriso`、`ssh`）
-
-執行前置環境檢查與 E2E 測試：
-
-```bash
-sudo bash tests/run_e2e.sh
-```
-
-或指定特定發行版與詳細輸出：
-
-```bash
-sudo bash tests/run_e2e.sh --distro ubuntu24.04 -v
-```
-
-這些測試預設等待 SSH 180 秒。Rocky／Alma 會在首次開機時安裝 SELinux 工具，在較慢的主機上可能需要更久，可用 `KVM_VM_E2E_SSH_TIMEOUT` 延長：
-
-```bash
-sudo KVM_VM_E2E_SSH_TIMEOUT=600 bash tests/run_e2e.sh --distro rocky8 -v
-```
-
-驗證所有宣稱支援的 distro alias 都能 `create` 並透過 SSH 登入：
-
-```bash
-sudo python3 -m pytest tests/test_distro_e2e.py -v -s
-```
-
-每個案例建立 2 vCPU、2048 MiB RAM、20 GiB 磁碟的 NAT VM，使用 SSH port 2222，
-驗證金鑰登入、實際 OS 版本及 cloud-init 完成狀態。Rocky／Alma 會在 SSH 重啟前
-設定 SELinux 及已啟動的 firewalld。測試失敗時也會清理臨時 VM。
-
-主機 CPU 必須符合 guest 映像需求：Rocky／AlmaLinux 9 需要 x86-64-v2，預設的
-Rocky／AlmaLinux 10 映像需要 x86-64-v3。KVM 的 `host-passthrough` 無法提供實體
-CPU 缺少的指令；硬體不相容造成的 SSH 逾時仍屬驗證失敗，不能視為通過。
-
-可用 `KVM_VM_E2E_DISTROS` 選擇逗號分隔的 alias，並用 `KVM_VM_E2E_SSH_TIMEOUT`
-調整預設 600 秒的初始化等待時間：
-
-```bash
-sudo KVM_VM_E2E_DISTROS=ubuntu26.04,debian13,rocky8,rocky9,rocky10,almalinux8,almalinux9,almalinux10 \
-  python3 -m pytest tests/test_distro_e2e.py -v -s
-```
-
-實測映像、開機修正及測試主機的硬體限制，請見
-[實機驗證報告](tests/REAL_MACHINE_RESULTS.md)。
-### Macvtap 與 Console 驗收
-
-[Macvtap 流程](tests/MACVTAP_ACCEPTANCE.md)與
-[Console 流程](tests/CONSOLE_ACCEPTANCE.md)提供需明確啟用的實機測試。
-需使用已授權的 KVM 主機；bridge／Macvtap 的 SSH 檢查需另一台能連到 VM 的電腦。
-Console 測試另需控制端的 Paramiko 與 Linux 主機的 pexpect，兩者不是產品相依套件。
-
-Debian 12／13、Ubuntu 24.04／26.04、Rocky Linux 8、AlmaLinux 8 已通過
-Console 登入、sudo、SSH 僅金鑰登入與重開機檢查。矩陣亦涵蓋三種網路模式的預設鎖定、
-clone 憑證隔離與 reinstall 密碼輪替。Rocky／AlmaLinux 9、10 的 Console 驗收仍等待
-相容硬體，完整映像矩陣尚未驗收完成。實際範圍、保留的失敗紀錄與成功續跑，請見
-[Console 驗收報告](docs/plans/20261019_macvtap-console/ticket-06-validation.md)。
-
-[English](README.md) | 繁體中文
+GPL-3.0，詳見 [LICENSE](LICENSE)。

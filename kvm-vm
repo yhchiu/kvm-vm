@@ -56,56 +56,59 @@ DEF_DIR = Path(os.environ.get("KVM_VM_DEF_DIR", "/etc/kvm-vm/definitions"))
 DEFAULT_BRIDGE = "br0"
 NET_SYS_DIR = Path("/sys/class/net")
 
+# os_variants: libosinfo IDs to try in order. A host's osinfo-db can predate a
+# new release, so each alias also lists the previous release, which is tried
+# before 'generic' (for example, Debian 13's osinfo-db lacks rocky10).
 DISTROS = {
     "ubuntu24.04": {
         "url": "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img",
         "cache": "ubuntu-24.04-server-cloudimg-amd64.img",
-        "os_variant": "ubuntu24.04",
+        "os_variants": ["ubuntu24.04"],
     },
     "ubuntu26.04": {
         "url": "https://cloud-images.ubuntu.com/resolute/current/resolute-server-cloudimg-amd64.img",
         "cache": "ubuntu-26.04-server-cloudimg-amd64.img",
-        "os_variant": "ubuntu26.04",
+        "os_variants": ["ubuntu26.04", "ubuntu24.04"],
     },
     "debian12": {
         "url": "https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.qcow2",
         "cache": "debian-12-generic-amd64.qcow2",
-        "os_variant": "debian12",
+        "os_variants": ["debian12"],
     },
     "debian13": {
         "url": "https://cloud.debian.org/images/cloud/trixie/latest/debian-13-generic-amd64.qcow2",
         "cache": "debian-13-generic-amd64.qcow2",
-        "os_variant": "debian13",
+        "os_variants": ["debian13", "debian12"],
     },
     "rocky8": {
         "url": "https://download.rockylinux.org/pub/rocky/8/images/x86_64/Rocky-8-GenericCloud-Base.latest.x86_64.qcow2",
         "cache": "Rocky-8-GenericCloud-Base.latest.x86_64.qcow2",
-        "os_variant": "rocky8",
+        "os_variants": ["rocky8"],
     },
     "rocky9": {
         "url": "https://download.rockylinux.org/pub/rocky/9/images/x86_64/Rocky-9-GenericCloud-Base.latest.x86_64.qcow2",
         "cache": "Rocky-9-GenericCloud-Base.latest.x86_64.qcow2",
-        "os_variant": "rocky9",
+        "os_variants": ["rocky9", "rocky8"],
     },
     "rocky10": {
         "url": "https://download.rockylinux.org/pub/rocky/10/images/x86_64/Rocky-10-GenericCloud-Base.latest.x86_64.qcow2",
         "cache": "Rocky-10-GenericCloud-Base.latest.x86_64.qcow2",
-        "os_variant": "rocky9",
+        "os_variants": ["rocky10", "rocky9"],
     },
     "almalinux8": {
         "url": "https://repo.almalinux.org/almalinux/8/cloud/x86_64/images/AlmaLinux-8-GenericCloud-latest.x86_64.qcow2",
         "cache": "AlmaLinux-8-GenericCloud-latest.x86_64.qcow2",
-        "os_variant": "almalinux8",
+        "os_variants": ["almalinux8"],
     },
     "almalinux9": {
         "url": "https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/AlmaLinux-9-GenericCloud-latest.x86_64.qcow2",
         "cache": "AlmaLinux-9-GenericCloud-latest.x86_64.qcow2",
-        "os_variant": "almalinux9",
+        "os_variants": ["almalinux9", "almalinux8"],
     },
     "almalinux10": {
         "url": "https://repo.almalinux.org/almalinux/10/cloud/x86_64/images/AlmaLinux-10-GenericCloud-latest.x86_64.qcow2",
         "cache": "AlmaLinux-10-GenericCloud-latest.x86_64.qcow2",
-        "os_variant": "almalinux9",
+        "os_variants": ["almalinux10", "almalinux9"],
     },
 }
 
@@ -655,19 +658,17 @@ def download(url: str, dst: Path, *, retries: int = 2, timeout: int = 30) -> Non
     raise KVMError(f"Download failed after {retries} attempt(s): {last_exc}") from last_exc
 
 
-def acquire_base_image(cfg: Dict[str, Any], refresh: bool) -> Tuple[Path, Optional[str]]:
+def acquire_base_image(cfg: Dict[str, Any], refresh: bool) -> Path:
     image = cfg["storage"]["image"]
     distro = image.get("distro")
     url = image.get("url")
     local_path = image.get("path")
     expected_sha = image.get("sha256")
-    default_variant: Optional[str] = None
 
     if distro:
         meta = DISTROS[distro]
         url = meta["url"]
         cache_path = BASE_DIR / meta["cache"]
-        default_variant = meta["os_variant"]
     elif url:
         name = Path(urlparse(url).path).name
         if not name:
@@ -680,14 +681,14 @@ def acquire_base_image(cfg: Dict[str, Any], refresh: bool) -> Tuple[Path, Option
         if expected_sha and sha256_file(p).lower() != str(expected_sha).lower():
             raise KVMError(f"SHA256 mismatch for {p}")
         qemu_img_info(p)
-        return p, default_variant
+        return p
 
     if refresh or not cache_path.exists():
         download(str(url), cache_path)
     if expected_sha and sha256_file(cache_path).lower() != str(expected_sha).lower():
         raise KVMError(f"SHA256 mismatch for {cache_path}")
     qemu_img_info(cache_path)
-    return cache_path, default_variant
+    return cache_path
 
 
 def qemu_img_info(path: Path, *, shared: bool = False) -> Dict[str, Any]:
@@ -1137,16 +1138,64 @@ def os_variant_available(variant: str) -> bool:
     return re.search(rf"(^|\s|\|){re.escape(variant)}(\s|\||$)", p.stdout, re.MULTILINE) is not None
 
 
-def define_vm(cfg: Dict[str, Any], disk: Path, seed: Path, default_variant: Optional[str], *, no_start: bool = False) -> None:
+def choose_os_variant(cfg: Dict[str, Any]) -> str:
+    """Return the first OS variant for this definition that the host's libosinfo knows.
+
+    vm.os_variant wins over the image alias. A variant that names a built-in alias
+    tries that alias's os_variants in order; anything else is tried as given.
+    """
+    requested = cfg["vm"].get("os_variant") or cfg["storage"]["image"].get("distro") or "generic"
+    candidates = DISTROS[requested]["os_variants"] if requested in DISTROS else [requested]
+    variant = next((v for v in candidates if v == "generic" or os_variant_available(v)), "generic")
+    if variant != candidates[0]:
+        log.warning(f"osinfo variant '{candidates[0]}' not available on this host; using '{variant}'")
+    return variant
+
+
+LIBOSINFO_NS = "{http://libosinfo.org/xmlns/libvirt/domain/1.0}"
+
+
+def domain_os_variant(name: str) -> Optional[str]:
+    """Return the libosinfo short ID virt-install recorded for a domain, if this host knows it."""
+    try:
+        root = ET.fromstring(output(["virsh", "-c", LIBVIRT_URI, "dumpxml", name, "--inactive"]))
+    except ET.ParseError:
+        return None
+    entry = root.find(f"./metadata/{LIBOSINFO_NS}libosinfo/{LIBOSINFO_NS}os")
+    full_id = entry.get("id") if entry is not None else None
+    if not full_id or not shutil.which("osinfo-query"):
+        return None
+    p = run(["osinfo-query", "os"], check=False, capture=True)
+    for line in p.stdout.splitlines():
+        columns = [c.strip() for c in line.split("|")]
+        if len(columns) > 1 and columns[-1] == full_id:
+            return columns[0]
+    return None
+
+
+def inherit_os_variant(cfg: Dict[str, Any], source_name: str, source_config: Dict[str, Any]) -> None:
+    """Give a clone its source's OS variant, because the copied disk holds the same OS.
+
+    A variant named by the target (vm.os_variant, KVM_VM_OS or image.distro) wins.
+    Otherwise use the source's effective definition, then the variant virt-install
+    recorded for the source domain, which also covers VMs kvm-vm did not create.
+    """
+    if cfg["vm"].get("os_variant") or cfg["storage"]["image"].get("distro"):
+        return
+    inherited = (dig(source_config, "vm", "os_variant") or dig(source_config, "storage", "image", "distro")
+                 or domain_os_variant(source_name))
+    if inherited:
+        cfg["vm"]["os_variant"] = inherited
+        log.info("OS variant %s inherited from source VM %s", inherited, source_name)
+
+
+def define_vm(cfg: Dict[str, Any], disk: Path, seed: Path, *, no_start: bool = False) -> None:
     vm = cfg["vm"]
     st = cfg["storage"]
     net = cfg["network"]
     name = vm["name"]
 
-    requested_variant = vm.get("os_variant") or default_variant or "generic"
-    variant = requested_variant if requested_variant == "generic" or os_variant_available(requested_variant) else "generic"
-    if variant != requested_variant:
-        log.warning(f"osinfo variant '{requested_variant}' not available on this host; using 'generic'")
+    variant = choose_os_variant(cfg)
 
     disk_opts = f"path={disk},format=qcow2,bus={st['bus']},cache={st['cache']},discard={st['discard']}"
     if net["mode"] == "bridge":
@@ -1339,7 +1388,7 @@ def cmd_create(args: argparse.Namespace) -> int:
         print(yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True))
         return 0
 
-    base, default_variant = acquire_base_image(cfg, args.refresh_image)
+    base = acquire_base_image(cfg, args.refresh_image)
     disk = VM_DIR / f"{name}.qcow2"
     check_new_artifacts(name, disk)
     password_hash = deliver_console_credential(cfg, destination, preview=False)
@@ -1356,7 +1405,7 @@ def cmd_create(args: argparse.Namespace) -> int:
         _, _, _, instance_id = make_cloud_files(cfg, p.parent, new_directory=True, **cloud_options)
         seed = CLOUD_DIR / name / "seed.img"
         definition_started = True
-        define_vm(cfg, disk, seed, default_variant, no_start=args.no_start)
+        define_vm(cfg, disk, seed, no_start=args.no_start)
         save_state(cfg, disk, {"type": "base-image", "path": str(base)}, instance_id, p)
     except (Exception, KeyboardInterrupt) as exc:
         if definition_started or isinstance(exc, KeyboardInterrupt):
@@ -1401,6 +1450,7 @@ def cmd_clone(args: argparse.Namespace) -> int:
     cfg = normalize_definition(yaml_load(p), for_clone=True)
     source_definition = Path(source_state.get("definition") or DEF_DIR / f"{source_name}.yaml") if source_state else DEF_DIR / f"{source_name}.yaml"
     source_config = yaml_load(source_definition) if source_definition.exists() else {}
+    inherit_os_variant(cfg, source_name, source_config)
     destination = vars(args).get("console_password_file")
     deliver_console_credential(cfg, destination, preview=True)
     name = cfg["vm"]["name"]
@@ -1448,7 +1498,7 @@ def cmd_clone(args: argparse.Namespace) -> int:
         _, _, _, instance_id = make_cloud_files(cfg, p.parent, reset_ssh_port=True, new_directory=True, **cloud_options)
         seed = CLOUD_DIR / name / "seed.img"
         definition_started = True
-        define_vm(cfg, disk, seed, None, no_start=args.no_start)
+        define_vm(cfg, disk, seed, no_start=args.no_start)
         save_state(cfg, disk, {"type": "clone", "source_vm": source_name, "source_disk": str(src_disk)}, instance_id, p)
     except (Exception, KeyboardInterrupt) as exc:
         if definition_started or isinstance(exc, KeyboardInterrupt):
@@ -1480,7 +1530,7 @@ def apply_os_override(
             image["url"] = None
             image["path"] = None
             image["sha256"] = None
-            vm["os_variant"] = DISTROS[val]["os_variant"]
+            vm["os_variant"] = val
         elif val.startswith(("http://", "https://")):
             image["distro"] = None
             image["url"] = val
@@ -1745,7 +1795,7 @@ def cmd_reinstall(args: argparse.Namespace) -> int:
     check_recovery_metadata(name)
     current_disk = checked_domain_disk(name, state)
     check_storage_dependents(name, current_disk, state)
-    base, default_variant = acquire_base_image(cfg, args.refresh_image)
+    base = acquire_base_image(cfg, args.refresh_image)
     disk = current_disk
     password_hash = deliver_console_credential(cfg, destination, preview=False)
     # An exclusively created directory owns both conversion intermediates and
@@ -1789,7 +1839,7 @@ def cmd_reinstall(args: argparse.Namespace) -> int:
         cloud_options = {"password_hash": password_hash} if password_hash else {}
         _, _, _, instance_id = make_cloud_files(cfg, source_dir, **cloud_options)
         seed = CLOUD_DIR / name / "seed.img"
-        define_vm(cfg, disk, seed, default_variant, no_start=args.no_start or bool(extra_disks))
+        define_vm(cfg, disk, seed, no_start=args.no_start or bool(extra_disks))
         for index, item in enumerate(extra_disks):
             # Let libvirt allocate addresses in the newly generated domain.
             for child in list(item):
