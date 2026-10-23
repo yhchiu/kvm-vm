@@ -53,3 +53,10 @@ kvm-vm now owns one read-only check of an external tool's format and must
 follow format changes in future virtnbdbackup versions. The real-machine
 harnesses in `tests/` call the same code. This is not the unified backup
 command or engine that ADR 0001 rules out.
+
+## Numbering
+
+This ADR was ADR 0002 on the `recovery-validation` branch. It was renumbered
+after that branch was merged, because master already used 0002 for the
+[Macvtap attachment boundary](0002-macvtap-attachment-boundary.md). Commit
+messages written before the renumbering still call it ADR 0002.

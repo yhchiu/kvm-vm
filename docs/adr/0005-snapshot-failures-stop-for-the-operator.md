@@ -135,3 +135,10 @@ No such tool exists; libvirt stays the base. See
 - [Ticket 02: guard lifecycle commands](../plans/20261018_vm-recovery/issues/02-guard-lifecycle-recovery-state.md).
 - [ADR 0004: check a Backup directory before Restore](0004-pre-restore-backup-check.md).
 - [libvirt issue #806](https://gitlab.com/libvirt/libvirt/-/issues/806).
+
+## Numbering
+
+This ADR was ADR 0003 on the `recovery-validation` branch. It was renumbered
+after that branch was merged, because master already used 0003 for
+[explicit console password authentication](0003-explicit-console-password-authentication.md).
+Commit messages written before the renumbering still call it ADR 0003.

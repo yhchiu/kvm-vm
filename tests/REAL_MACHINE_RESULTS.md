@@ -38,7 +38,7 @@ with no subsequent kernel output. Adding only a VGA adapter to that same guest
 allowed Linux and cloud-init to start. A fresh, unmodified `create` with the fix
 then passed the complete SSH test in 137 seconds.
 
-Commit `2effee4` adds `--video vga` to `virt-install`, retaining `--graphics none`
+Commit `0545e5b` adds `--video vga` to `virt-install`, retaining `--graphics none`
 and the serial console. No VNC or SPICE server is enabled.
 
 The stall depends on the host. On a second host (AlmaLinux 9.8, QEMU 10.1.0,
@@ -52,7 +52,7 @@ but it has not been isolated. QEMU logged no KVM internal error during the stall
 [Debian bug #1111240](https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=1111240)
 reports the same `Booting Debian GNU/Linux` stall on a guest without a video device.
 
-All four passing aliases were verified using the final runtime at `2effee4`.
+All four passing aliases were verified using the final runtime at `0545e5b`.
 Ubuntu 26.04 and AlmaLinux 8 passed their final two-case run in 716 seconds.
 Rocky 8 passed a fresh create in 355 seconds. An earlier Rocky 8 diagnostic run
 was forcibly restarted during initialization and later reported invalid host
