@@ -119,6 +119,9 @@ After power loss, verify the actual files regardless of the recorded phase.
 
 ## Validation
 
+See the [review follow-up acceptance](plans/20261018_vm-recovery/review-followup-validation.md)
+for strict-umask real-host lifecycle results and their limits.
+
 `tests/test_reinstall_signals.py` sends real SIGINT and SIGTERM signals to the
 reinstall process and its process group at preparation, undefinition and disk
 replacement boundaries. It uses simulated host commands and a real blocking
