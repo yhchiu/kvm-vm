@@ -220,6 +220,31 @@ def record():
     return json.loads((kvm_vm.snapshot_dir("test01") / "record.json").read_text())
 
 
+@pytest.mark.parametrize("field,value", [
+    ("base", []), ("overlay", {}), ("overlay", "bad\x00path"),
+    ("snapshot", None), ("snapshot", " "), ("status", []), ("status", "future-state"),
+    ("guest_state", 42), ("consistency", False), ("warnings", "warning"),
+    ("warnings", [None]), ("problem", {}), ("pause_ms", True), ("pause_ms", -1),
+    ("pause_ms", "10"), ("version", True), ("version", 2), ("vm", "another-vm"),
+])
+def test_malformed_record_reports_recovery_guidance_without_mutation(host, capsys, field, value):
+    create()
+    saved = record()
+    saved[field] = value
+    kvm_vm.save_snapshot_record("test01", saved)
+    before = host.files()
+    snapshots = list(host.snapshots)
+    code, report = status(capsys)
+    assert code == 1
+    assert "unreadable" in report
+    assert "virsh snapshot-list" in report
+    for command in (kvm_vm.cmd_snapshot_delete, kvm_vm.cmd_snapshot_rollback):
+        with pytest.raises(kvm_vm.KVMError):
+            command(argparse.Namespace(name="test01", yes=True, force=True))
+    assert host.files() == before
+    assert host.snapshots == snapshots
+
+
 def test_create_keeps_the_guest_running_and_records_a_coherent_recovery_point(host, capsys):
     definition, manifest = host.definition.read_bytes(), host.manifest.read_bytes()
     assert create() == 0

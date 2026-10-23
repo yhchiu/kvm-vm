@@ -2137,6 +2137,23 @@ def load_snapshot_record(name: str) -> Optional[Dict[str, Any]]:
         record = json.loads((directory / "record.json").read_text(encoding="utf-8"))
         if not isinstance(record, dict) or any(key not in record for key in SNAPSHOT_RECORD_KEYS):
             raise ValueError("missing Snapshot fields")
+        for key in SNAPSHOT_RECORD_KEYS:
+            if not isinstance(record[key], str) or not record[key].strip() or "\x00" in record[key]:
+                raise ValueError(f"invalid Snapshot field {key}: expected a nonempty string")
+        if record["status"] not in ("creating", "ready", "deleting", "rolling-back"):
+            raise ValueError("unknown Snapshot status")
+        if "version" in record and (type(record["version"]) is not int or record["version"] != 1):
+            raise ValueError("unsupported Snapshot record version")
+        if "vm" in record and record["vm"] != name:
+            raise ValueError("Snapshot record belongs to another VM")
+        if "warnings" in record and (not isinstance(record["warnings"], list)
+                                      or any(not isinstance(item, str) for item in record["warnings"])):
+            raise ValueError("invalid Snapshot warnings: expected a list of strings")
+        if "problem" in record and not isinstance(record["problem"], str):
+            raise ValueError("invalid Snapshot problem: expected a string")
+        pause = record.get("pause_ms")
+        if pause is not None and (type(pause) is not int or pause < 0):
+            raise ValueError("invalid Snapshot pause_ms: expected nonnegative milliseconds")
         return record
     except (OSError, ValueError) as exc:
         return {"status": "unreadable", "error": str(exc)}
