@@ -24,7 +24,7 @@ from pathlib import Path
 import pytest
 
 from test_e2e import E2E_SSH_TIMEOUT, E2EHelper, build_vm_yaml, pytestmark, ssh_keypair  # noqa: F401
-from test_recovery_e2e import digest
+from file_helpers import digest
 from process_helpers import assert_cleanup_safe
 
 VM_DIR = Path(os.environ.get("KVM_VM_DISK_DIR", "/var/lib/libvirt/images/vm"))

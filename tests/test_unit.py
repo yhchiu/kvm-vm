@@ -1316,11 +1316,15 @@ def test_conflicting_lifecycle_work_preserves_lock_and_vm(reinstall_machine):
 
 @pytest.mark.parametrize("filename", ["dependent.qcow2", "dependent.img", "dependent"])
 @pytest.mark.parametrize("operation", ["delete", "reinstall"])
-def test_lifecycle_preserves_disk_used_by_unattached_overlay(reinstall_machine, filename, operation):
+@pytest.mark.parametrize("backing_format", ["absolute", "relative", "full"])
+def test_lifecycle_preserves_disk_used_by_unattached_overlay(reinstall_machine, filename, operation, backing_format):
     machine = reinstall_machine
     overlay = machine["disk"].with_name(filename)
     overlay.write_bytes(b"dependent writes")
-    machine["other_images"] = {str(overlay): {"backing-filename": str(machine["disk"])}}
+    info = {"backing-filename": machine["disk"].name if backing_format == "relative" else str(machine["disk"])}
+    if backing_format == "full":
+        info = {"full-backing-filename": str(machine["disk"]), "backing-filename": "stale-relative-name"}
+    machine["other_images"] = {str(overlay): info}
     machine["args"].keep_storage = False
     with pytest.raises(kvm_vm.KVMError, match="dependent disk"):
         getattr(kvm_vm, "cmd_" + operation)(machine["args"])

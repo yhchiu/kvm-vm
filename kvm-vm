@@ -1613,6 +1613,25 @@ def checked_domain_disk(name: str, state: Optional[Dict[str, Any]], *, keep_stor
     return system
 
 
+def domain_file_sources(name: str) -> set:
+    """Inspect every file disk/backing source in live and persistent XML."""
+    sources = set()
+    for flags in ([], ["--inactive"]):
+        try:
+            root = ET.fromstring(output(["virsh", "-c", LIBVIRT_URI, "dumpxml", name] + flags))
+        except ET.ParseError as exc:
+            raise KVMError(f"Cannot inspect storage dependencies for {name}: invalid domain XML") from exc
+        sources.update(Path(source.get("file")).resolve()
+                       for source in root.findall("./devices/disk//source[@file]"))
+    return sources
+
+
+def image_backing_path(image: Path, info: Dict[str, Any]) -> Optional[Path]:
+    """Resolve qemu-img's backing filename relative to the image, never cwd."""
+    backing = info.get("full-backing-filename") or info.get("backing-filename")
+    return (image.parent / backing).resolve() if backing else None
+
+
 def check_storage_dependents(name: str, disk: Path, state: Optional[Dict[str, Any]]) -> None:
     """Inspect defined domains and managed images; external tools must be quiescent."""
     protected = {disk.resolve()}
@@ -1635,16 +1654,10 @@ def check_storage_dependents(name: str, disk: Path, state: Optional[Dict[str, An
     for other in output(["virsh", "-c", LIBVIRT_URI, "list", "--all", "--name"]).splitlines():
         if other == name:
             continue
-        for flags in ([], ["--inactive"]):
-            try:
-                root = ET.fromstring(output(["virsh", "-c", LIBVIRT_URI, "dumpxml", other] + flags))
-            except ET.ParseError as exc:
-                raise KVMError(f"Cannot inspect storage dependencies for {other}") from exc
-            for source in root.findall("./devices/disk//source[@file]"):
-                candidate = Path(source.get("file")).resolve()
-                if protected_path(candidate):
-                    raise KVMError(f"Storage is referenced by domain {other}; preserve it and resolve the dependent disk first")
-                candidates.add(candidate)
+        for candidate in domain_file_sources(other):
+            if protected_path(candidate):
+                raise KVMError(f"Storage is referenced by domain {other}; preserve it and resolve the dependent disk first")
+            candidates.add(candidate)
     visited = set()
     while candidates:
         candidate = candidates.pop()
@@ -1654,10 +1667,9 @@ def check_storage_dependents(name: str, disk: Path, state: Optional[Dict[str, An
         if protected_path(candidate):
             raise KVMError(f"Storage has a dependent disk referencing {candidate}; preserve the chain before retrying")
         info = qemu_img_info(candidate, shared=True)
-        backing = info.get("full-backing-filename") or info.get("backing-filename")
+        backing = image_backing_path(candidate, info)
         if backing:
-            parent = Path(backing)
-            candidates.add((parent if parent.is_absolute() else candidate.parent / parent).resolve())
+            candidates.add(backing)
 
 
 @lifecycle_exclusive
@@ -2202,8 +2214,8 @@ def disk_topology(name: str) -> Dict[str, Tuple[Optional[str], Optional[str]]]:
         elif top and Path(top).exists():
             # libvirt leaves the chain out of an inactive domain's XML; the image names its backing file.
             info = qemu_img_info(Path(top), shared=True)
-            named = info.get("full-backing-filename") or info.get("backing-filename")
-            backing = str(Path(top).parent / named) if named else None
+            named = image_backing_path(Path(top), info)
+            backing = str(named) if named else None
         topology[label] = (top, backing)
     return topology
 
@@ -2496,18 +2508,16 @@ def cmd_snapshot_status(args: argparse.Namespace) -> int:
 def remove_unreferenced_overlay(name: str, overlay: Path) -> bool:
     """Remove a leftover overlay only when no domain or managed image still uses it."""
     for other in virsh_names():
-        for flags in ([], ["--inactive"]):
-            root = ET.fromstring(output(["virsh", "-c", LIBVIRT_URI, "dumpxml", other] + flags))
-            if any(same_path(s.get("file"), str(overlay)) for s in root.findall("./devices/disk//source[@file]")):
-                return False
+        if overlay.resolve() in domain_file_sources(other):
+            return False
     for candidate in VM_DIR.rglob("*"):
         if candidate.is_file() and not same_path(str(candidate), str(overlay)):
             try:
                 info = qemu_img_info(candidate, shared=True)
             except KVMError:
                 return False  # an image that cannot be inspected might depend on the overlay
-            backing = info.get("full-backing-filename") or info.get("backing-filename")
-            if backing and same_path(str(candidate.parent / backing), str(overlay)):
+            backing = image_backing_path(candidate, info)
+            if backing == overlay.resolve():
                 return False
     overlay.unlink()
     return True

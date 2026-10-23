@@ -1,6 +1,5 @@
 """Real Linux/KVM refusal checks. These do not prove guest recovery or Backup Restore."""
 
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -15,18 +14,11 @@ import yaml
 
 from test_e2e import E2EHelper, _check_e2e_prerequisites
 from process_helpers import assert_cleanup_safe, run_owned_command
+from file_helpers import digest
 
 _available, _reason = _check_e2e_prerequisites()
 pytestmark = pytest.mark.skipif(not _available, reason=_reason)
 SCRIPT = Path(__file__).resolve().parents[1] / "kvm-vm"
-
-
-def digest(path):
-    checksum = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            checksum.update(block)
-    return checksum.hexdigest()
 
 
 @pytest.fixture

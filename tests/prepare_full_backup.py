@@ -7,7 +7,6 @@ It is NOT a passing cross-host acceptance test. See docs/full-backup-acceptance.
 """
 
 import argparse
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -18,18 +17,11 @@ import uuid
 import xml.etree.ElementTree as ET
 
 from test_e2e import E2EHelper, build_vm_yaml
+from file_helpers import digest
 
 
 def run(*args):
     return subprocess.run(args, check=True, text=True, capture_output=True).stdout
-
-
-def digest(path):
-    result = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            result.update(block)
-    return result.hexdigest()
 
 
 def main():

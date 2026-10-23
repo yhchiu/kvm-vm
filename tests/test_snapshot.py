@@ -517,7 +517,8 @@ def test_interrupted_offline_delete_stops_for_the_operator(host, capsys, step):
 
 
 @pytest.mark.parametrize("dependent", ["image backed by the overlay", "file qemu-img cannot read"])
-def test_leftover_overlay_is_kept_unless_proven_unused(host, caplog, monkeypatch, dependent):
+@pytest.mark.parametrize("relative", [False, True])
+def test_leftover_overlay_is_kept_unless_proven_unused(host, caplog, monkeypatch, dependent, relative):
     host.fail["snapshot-create-as"] = "disk full"
     host.leave_overlay_on_failure = True
     with pytest.raises(kvm_vm.KVMError):
@@ -531,7 +532,7 @@ def test_leftover_overlay_is_kept_unless_proven_unused(host, caplog, monkeypatch
         if cmd[:2] == ["qemu-img", "info"] and Path(cmd[-1]) == other:
             if dependent.startswith("file"):
                 raise subprocess.CalledProcessError(1, cmd, "", "unknown format")
-            return subprocess.CompletedProcess(cmd, 0, json.dumps({"backing-filename": str(overlay)}), "")
+            return subprocess.CompletedProcess(cmd, 0, json.dumps({"backing-filename": overlay.name if relative else str(overlay)}), "")
         return original_run(cmd, **kwargs)
 
     monkeypatch.setattr(kvm_vm.subprocess, "run", run)
