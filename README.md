@@ -38,8 +38,15 @@ RHEL / Rocky Linux / AlmaLinux 9 or later:
 ```bash
 sudo dnf install qemu-kvm qemu-img libvirt virt-install xorriso python3 python3-pyyaml \
   guestfs-tools libosinfo iproute openssh-clients openssl
-sudo systemctl enable --now libvirtd
+for drv in qemu network nodedev nwfilter secret storage interface; do
+  sudo systemctl start virt${drv}d{,-ro,-admin}.socket
+done
 ```
+
+RHEL 9 and later use libvirt's modular daemons (`virtqemud` and others), which
+are enabled when the packages are installed. The loop, from Red Hat's
+documentation, starts them without a reboot. Do not also enable `libvirtd`: it
+conflicts with the modular daemons.
 
 For older releases, see [Requirements](#requirements).
 

@@ -32,8 +32,12 @@ RHEL / Rocky Linux / AlmaLinux 9 以上：
 ```bash
 sudo dnf install qemu-kvm qemu-img libvirt virt-install xorriso python3 python3-pyyaml \
   guestfs-tools libosinfo iproute openssh-clients openssl
-sudo systemctl enable --now libvirtd
+for drv in qemu network nodedev nwfilter secret storage interface; do
+  sudo systemctl start virt${drv}d{,-ro,-admin}.socket
+done
 ```
+
+RHEL 9 以上使用 libvirt 的模組化 daemon（`virtqemud` 等），安裝套件時就已設為啟用；上面的迴圈取自 Red Hat 文件，可在不重開機的情況下啟動它們。請勿再啟用 `libvirtd`，它與模組化 daemon 互相衝突。
 
 較舊的發行版請見[系統需求](#系統需求)。
 
