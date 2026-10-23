@@ -119,6 +119,19 @@ After power loss, verify the actual files regardless of the recorded phase.
 
 ## Validation
 
+`tests/test_reinstall_signals.py` sends real SIGINT and SIGTERM signals to the
+reinstall process and its process group at preparation, undefinition and disk
+replacement boundaries. It uses simulated host commands and a real blocking
+subprocess, so it validates signal handling and retained recovery files without
+claiming real-libvirt acceptance.
+
+E2E lifecycle commands run in owned process groups. Cancellation and command
+timeouts stop those groups before teardown. A remaining lifecycle lock blocks
+automatic cleanup and reports its path; inspect the owner, domain and storage
+before removing it. File cleanup requires a successful libvirt inventory that
+confirms the test domain is absent. Cleanup errors are reported rather than
+silently ignored.
+
 Fast regression tests use the actual command handlers and temporary files, with
 host programs simulated. `tests/test_recovery_e2e.py` exercises real libvirt
 checkpoint and external-chain refusal through the CLI. It compares file hashes

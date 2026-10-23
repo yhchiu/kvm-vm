@@ -35,8 +35,8 @@ kvm-vm also keeps a record in `KVM_VM_STATE_DIR/snapshots/NAME/`:
 
 | File | Content |
 | --- | --- |
-| `record.json` | Snapshot name, recovery-point and overlay paths, status (`creating`, `ready`, `deleting`), consistency and measured freeze time |
-| `domain.xml`, `live.xml` | Persistent and (for a running VM) live domain XML at creation |
+| `record.json` | Snapshot name, recovery-point and overlay paths, status (`creating`, `ready`, `deleting`, `rolling-back`), consistency and measured freeze time |
+| `domain.xml` | Persistent domain XML at creation |
 | `effective.yaml`, `state.json`, `cloud/` | kvm-vm definition, state manifest and cloud-init files at creation |
 
 The record is written before anything changes and is removed only after a
