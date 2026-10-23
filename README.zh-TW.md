@@ -753,8 +753,9 @@ VM 設定與 kvm-vm 檔案，並重新啟動 VM，身分保持不變。快照不
 Clone、reinstall 與 delete 會拒絕 checkpoint、snapshot、backing chain、
 不一致的磁碟路徑與進行中的復原工作；支援獨立的 qcow2／raw 系統磁碟檔案，以及額外的檔案或區塊裝置資料碟。
 Reinstall 保留資料碟連接設定，clone 只複製系統碟；`delete --keep-storage` 也允許系統碟使用區塊裝置。
-Create／clone 失敗會保留現存資源供檢查，重試不會覆寫既有檔案。
-若 VM 已不存在且僅剩管理 state／定義檔，`create` 可重新使用同一名稱。
+Create／clone 若在定義 domain 前失敗，會檢查相依性後清除本次建立且未被使用的檔案；
+較晚發生或狀態不明的失敗仍保留資源，重試不會覆寫既有檔案。
+若 VM 已不存在且僅剩管理 state／定義檔，`create` 與 `clone` 可重新使用同一目標名稱。
 它會檢查目前與 state 記錄的磁碟、cloud-init 路徑及磁碟轉換暫存檔，
 並只在建立成功後更新 state。若仍有資料檔，會拒絕建立並顯示待檢查的路徑。
 依賴檢查、keep-storage、操作鎖與外部工具的執行順序，請見

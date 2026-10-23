@@ -826,7 +826,9 @@ class TestMakeCloudFiles:
         args.dry_run = False
         args.no_start = False
 
-        with patch("kvm_vm.require_commands"), \
+        with patch("kvm_vm.VM_DIR", tmp_path), \
+             patch("kvm_vm.CLOUD_DIR", tmp_path), \
+             patch("kvm_vm.require_commands"), \
              patch("kvm_vm.require_cloud_seed_generator"), \
              patch("kvm_vm.ensure_dirs"), \
              patch("kvm_vm.domain_exists", side_effect=lambda name: name == "src01"), \
@@ -835,7 +837,7 @@ class TestMakeCloudFiles:
              patch("kvm_vm.validate_network_attachment"), \
              patch("kvm_vm.existing_macs", return_value=set()), \
              patch("kvm_vm.verify_sysprep_compatibility"), \
-             patch("kvm_vm.make_disk_from_clone"), \
+             patch("kvm_vm.make_disk_from_clone", side_effect=lambda src, dst, size: dst.touch()), \
              patch("kvm_vm.restore_selinux"), \
              patch("kvm_vm.sysprep_clone_disk"), \
              patch("kvm_vm.make_cloud_files", return_value=(None, None, None, "iid-123")) as mock_cloud, \
@@ -845,7 +847,7 @@ class TestMakeCloudFiles:
             assert kvm_vm.cmd_clone(args) == 0
 
         # The copied disk may still carry the source guest's SSH port.
-        assert mock_cloud.call_args.kwargs == {"reset_ssh_port": True}
+        assert mock_cloud.call_args.kwargs == {"reset_ssh_port": True, "new_directory": True}
 
     def test_static_ipv4_uses_cidr_default_route(self, tmp_path, monkeypatch):
         monkeypatch.setattr(kvm_vm, "CLOUD_DIR", tmp_path / "cloud-init")
@@ -1486,6 +1488,77 @@ def test_clone_refuses_unowned_cloud_artifacts(reinstall_machine):
     assert not (kvm_vm.VM_DIR / "clone01.qcow2").exists()
 
 
+@pytest.mark.parametrize("operation", ["create", "clone"])
+def test_creation_seed_failure_cleans_owned_files_and_allows_retry(reinstall_machine, monkeypatch, operation):
+    machine = reinstall_machine
+    original = kvm_vm.subprocess.run
+
+    def failed(cmd, **kwargs):
+        if cmd[0] == "cloud-localds":
+            raise subprocess.CalledProcessError(1, cmd, stderr="seed failed")
+        return original(cmd, **kwargs)
+
+    monkeypatch.setattr(kvm_vm.subprocess, "run", failed)
+    with pytest.raises(subprocess.CalledProcessError):
+        getattr(kvm_vm, "cmd_" + operation)(machine["args"])
+    assert not (kvm_vm.VM_DIR / "clone01.qcow2").exists()
+    assert not (kvm_vm.CLOUD_DIR / "clone01").exists()
+    for path, content in machine["originals"].items():
+        assert path.read_bytes() == content
+    monkeypatch.setattr(kvm_vm.subprocess, "run", original)
+    machine["install_succeeds"] = True
+    assert getattr(kvm_vm, "cmd_" + operation)(machine["args"]) == 0
+
+
+def test_clone_can_replace_stale_target_state(reinstall_machine):
+    machine = reinstall_machine
+    cfg = kvm_vm.yaml_load(Path(machine["args"].definition))
+    kvm_vm.save_state(cfg, kvm_vm.VM_DIR / "clone01.qcow2", {}, "stale", Path(machine["args"].definition))
+    machine["install_succeeds"] = True
+    assert kvm_vm.cmd_clone(machine["args"]) == 0
+    assert kvm_vm.load_state("clone01")["instance_id"] != "stale"
+
+
+@pytest.mark.parametrize("unsafe", ["inventory", "referenced", "replaced", "cleanup"])
+def test_creation_cleanup_refuses_uncertain_resources(reinstall_machine, monkeypatch, caplog, unsafe):
+    machine = reinstall_machine
+    target = kvm_vm.VM_DIR / "clone01.qcow2"
+    cloud = kvm_vm.CLOUD_DIR / "clone01"
+    original = kvm_vm.subprocess.run
+    failed = False
+
+    def external(cmd, **kwargs):
+        nonlocal failed
+        if cmd[0] == "cloud-localds":
+            failed = True
+            if unsafe == "referenced":
+                machine["other_domain_disk"] = target
+            if unsafe == "replaced":
+                cloud.rename(cloud.with_name("previous-cloud"))
+                cloud.mkdir()
+                (cloud / "foreign").write_bytes(b"do not remove")
+            raise subprocess.CalledProcessError(7, cmd, stderr="original seed failure")
+        if failed and unsafe == "inventory" and cmd[0] == "virsh" and cmd[3] == "list":
+            raise subprocess.CalledProcessError(1, cmd, stderr="inventory unavailable")
+        return original(cmd, **kwargs)
+
+    original_unlink = Path.unlink
+    def unlink(path, *args, **kwargs):
+        if unsafe == "cleanup" and path == target:
+            raise PermissionError("cleanup denied")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(kvm_vm.subprocess, "run", external)
+    monkeypatch.setattr(Path, "unlink", unlink)
+    with pytest.raises(subprocess.CalledProcessError) as error:
+        kvm_vm.cmd_clone(machine["args"])
+    assert error.value.returncode == 7
+    assert target.exists() and cloud.exists()
+    assert "manual recovery" in caplog.text
+    if unsafe == "replaced":
+        assert (cloud / "foreign").read_bytes() == b"do not remove"
+
+
 def test_reinstall_uses_inspected_disk_when_manifest_is_absent(reinstall_machine):
     machine = reinstall_machine
     actual = machine["disk"].with_name("actual.qcow2")
@@ -1537,7 +1610,7 @@ def stale_create(tmp_path, monkeypatch):
     monkeypatch.setattr(kvm_vm, "existing_macs", lambda: set())
     monkeypatch.setattr(kvm_vm, "acquire_base_image", lambda *args: (tmp_path / "base", "ubuntu"))
     monkeypatch.setattr(kvm_vm, "make_disk_from_base", lambda base, target, size: target.write_bytes(b"new disk"))
-    monkeypatch.setattr(kvm_vm, "make_cloud_files", lambda *args: (None, None, None, "new"))
+    monkeypatch.setattr(kvm_vm, "make_cloud_files", lambda *args, **kwargs: (None, None, None, "new"))
     return kvm_vm.build_parser().parse_args(["create", str(definition), "--no-start"]), manifest, disk
 
 

@@ -64,14 +64,24 @@ backup, migration, block copy, commit or pull jobs first; do not start a new one
 between preflight and completion. The domain-job and block-job checks detect
 existing work, but cannot exclude an independently started external operation.
 
-Failed create/clone operations retain surviving domain, disk and cloud-init
-files for inspection. A retry refuses existing disk, conversion-temp or
-cloud-init artifacts rather than overwriting them. Failed reinstall retains
+Before attempting domain definition, failed create/clone operations remove
+only the disk successfully created by that attempt and its exclusively reserved
+cloud-init directory. Cleanup requires a successful domain inventory, no domain
+or image references to those resources, and unchanged file identities. An
+inspection or cleanup failure retains resources and reports manual recovery
+without replacing the original error. Once definition has been attempted, or
+on Ctrl-C, resources are retained because libvirt or a child tool may still
+be using them. Delivered console credentials are always retained; retry with
+a new credential path. Previous state and definition files are never removed
+by this cleanup.
+
+A retry refuses surviving disk, conversion-temp or cloud-init artifacts rather
+than overwriting them. Failed reinstall retains
 surviving resources and reports whether replacement began; it cannot undo an
 already completed destructive replacement. Inspect actual domain references,
 then recover or explicitly remove only resources no longer needed.
 
-Create permits a stale managed state record when a successful libvirt inventory
+Create and clone permit a stale target managed state record when a successful libvirt inventory
 confirms the domain is absent and neither current nor recorded disk/cloud-init
 paths (including disk conversion temporary files) survive. Existing definition
 files alone do not block creation. The old state remains during dry-run and

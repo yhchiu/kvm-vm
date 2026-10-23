@@ -955,12 +955,15 @@ subprocess.run(["usermod", "-U", sys.argv[1]], check=True)
 
 
 def make_cloud_files(cfg: Dict[str, Any], source_def_dir: Path, *, reset_ssh_port: bool = False,
-                     password_hash: Optional[str] = None) -> Tuple[Path, Path, Path, str]:
+                     password_hash: Optional[str] = None, new_directory: bool = False) -> Tuple[Path, Path, Path, str]:
     if cfg["cloud_init"].get("console_password") and not password_hash:
         raise KVMError("Console password provisioning requires a delivered credential")
     name = cfg["vm"]["name"]
     cdir = CLOUD_DIR / name
-    if cdir.exists():
+    if new_directory:
+        if not cdir.is_dir() or any(cdir.iterdir()):
+            raise KVMError(f"Expected a newly reserved empty cloud-init directory: {cdir}")
+    elif cdir.exists():
         shutil.rmtree(cdir)
     cdir.mkdir(parents=True, exist_ok=True)
 
@@ -1197,6 +1200,33 @@ def report_failed_creation(name: str, disk: Path) -> None:
     )
 
 
+def cleanup_unpublished_creation(name: str, disk: Path, owned: Dict[Path, os.stat_result]) -> None:
+    """Clean only this attempt's files, before any domain definition was attempted."""
+    if not owned:
+        report_failed_creation(name, disk)
+        return
+    try:
+        domains = output(["virsh", "-c", LIBVIRT_URI, "list", "--all", "--name"]).splitlines()
+        if name in domains:
+            raise KVMError(f"Domain {name} appeared during creation")
+        check_storage_dependents(name, disk, None)
+        for path, identity in owned.items():
+            current = path.lstat()
+            if (current.st_dev, current.st_ino, stat.S_IFMT(current.st_mode)) != (identity.st_dev, identity.st_ino, stat.S_IFMT(identity.st_mode)):
+                raise KVMError(f"Artifact changed ownership during creation: {path}")
+        for path, identity in owned.items():
+            if stat.S_ISDIR(identity.st_mode):
+                shutil.rmtree(path)
+            else:
+                path.unlink()
+        check_new_artifacts(name, disk)
+        log.error(f"Creation failed before domain definition; removed this attempt's unused disk/cloud-init files for {name}. "
+                  "You can retry. Any delivered console credential was retained; use a new credential path when retrying.")
+    except Exception as exc:
+        log.error(f"Could not safely clean failed creation of {name}: {exc}")
+        report_failed_creation(name, disk)
+
+
 def check_new_artifacts(name: str, disk: Path) -> None:
     for path in (disk, disk.with_suffix(disk.suffix + ".tmp"), CLOUD_DIR / name, snapshot_dir(name)):
         if path.exists() or path.is_symlink():
@@ -1290,16 +1320,26 @@ def cmd_create(args: argparse.Namespace) -> int:
     disk = VM_DIR / f"{name}.qcow2"
     check_new_artifacts(name, disk)
     password_hash = deliver_console_credential(cfg, destination, preview=False)
+    owned = {}
+    definition_started = False
     try:
         make_disk_from_base(base, disk, int(cfg["storage"]["disk_gib"]))
+        owned[disk] = disk.lstat()
         restore_selinux([disk])
+        cloud = CLOUD_DIR / name
+        cloud.mkdir(mode=0o700)
+        owned[cloud] = cloud.lstat()
         cloud_options = {"password_hash": password_hash} if password_hash else {}
-        _, _, _, instance_id = make_cloud_files(cfg, p.parent, **cloud_options)
+        _, _, _, instance_id = make_cloud_files(cfg, p.parent, new_directory=True, **cloud_options)
         seed = CLOUD_DIR / name / "seed.img"
+        definition_started = True
         define_vm(cfg, disk, seed, default_variant, no_start=args.no_start)
         save_state(cfg, disk, {"type": "base-image", "path": str(base)}, instance_id, p)
-    except Exception:
-        report_failed_creation(name, disk)
+    except (Exception, KeyboardInterrupt) as exc:
+        if definition_started or isinstance(exc, KeyboardInterrupt):
+            report_failed_creation(name, disk)
+        else:
+            cleanup_unpublished_creation(name, disk, owned)
         raise
 
     print(f"Created VM: {name}")
@@ -1343,8 +1383,9 @@ def cmd_clone(args: argparse.Namespace) -> int:
     name = cfg["vm"]["name"]
     if name == source_name:
         raise KVMError("Clone target name must differ from source")
-    if domain_exists(name) or load_state(name):
-        raise KVMError(f"Clone target already exists or has managed state: {name}")
+    if domain_exists(name):
+        raise KVMError(f"Clone target already exists: {name}")
+    check_create_state(name, VM_DIR / f"{name}.qcow2")
     validate_network_attachment(cfg["network"])
     if cfg["network"]["mac"] == "auto":
         cfg["network"]["mac"] = generate_mac(exclude=existing_macs())
@@ -1363,8 +1404,11 @@ def cmd_clone(args: argparse.Namespace) -> int:
     disk = VM_DIR / f"{name}.qcow2"
     check_new_artifacts(name, disk)
     password_hash = deliver_console_credential(cfg, destination, preview=False)
+    owned = {}
+    definition_started = False
     try:
         make_disk_from_clone(src_disk, disk, cfg["storage"].get("disk_gib"))
+        owned[disk] = disk.lstat()
         restore_selinux([disk])
         sysprep_clone_disk(disk)
         users_to_lock = {cfg["cloud_init"]["user"]}
@@ -1375,12 +1419,19 @@ def cmd_clone(args: argparse.Namespace) -> int:
             run(["virt-customize", "-a", str(disk), "--run-command",
                  f"if id -u {quoted} >/dev/null 2>&1; then usermod -L {quoted}; fi"])
         cloud_options = {"password_hash": password_hash} if password_hash else {}
-        _, _, _, instance_id = make_cloud_files(cfg, p.parent, reset_ssh_port=True, **cloud_options)
+        cloud = CLOUD_DIR / name
+        cloud.mkdir(mode=0o700)
+        owned[cloud] = cloud.lstat()
+        _, _, _, instance_id = make_cloud_files(cfg, p.parent, reset_ssh_port=True, new_directory=True, **cloud_options)
         seed = CLOUD_DIR / name / "seed.img"
+        definition_started = True
         define_vm(cfg, disk, seed, None, no_start=args.no_start)
         save_state(cfg, disk, {"type": "clone", "source_vm": source_name, "source_disk": str(src_disk)}, instance_id, p)
-    except Exception:
-        report_failed_creation(name, disk)
+    except (Exception, KeyboardInterrupt) as exc:
+        if definition_started or isinstance(exc, KeyboardInterrupt):
+            report_failed_creation(name, disk)
+        else:
+            cleanup_unpublished_creation(name, disk, owned)
         raise
 
     print(f"Cloned VM: {source_name} -> {name}")

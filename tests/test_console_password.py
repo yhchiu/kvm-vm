@@ -405,7 +405,7 @@ def test_clone_failure_and_preview_preserve_source(console_machine, monkeypatch,
             console_machine["install_succeeds"] = False
         with pytest.raises(subprocess.CalledProcessError):
             invoke(*args)
-        assert (kvm_vm.VM_DIR / "clone01.qcow2").exists()
+        assert (kvm_vm.VM_DIR / "clone01.qcow2").exists() == (case == "late_failure")
         if case == "offline_lock":
             assert not console_machine.get("target_defined")
         password = json.loads(destination.read_text())["password"]

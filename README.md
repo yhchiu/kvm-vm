@@ -833,9 +833,10 @@ Clone, reinstall and delete refuse checkpoints, snapshots, backing chains,
 inconsistent disk paths and active recovery jobs. They support an independent
 qcow2 or raw system file and additional file/block data disks. Reinstall keeps
 data disk attachments; clone copies only the system disk. `delete --keep-storage`
-also permits a block-backed system disk. Failed create/clone operations retain surviving
-resources for inspection; retrying does not overwrite existing artifacts.
-If a VM is absent and only its managed state/definition remain, `create` can
+also permits a block-backed system disk. Before domain definition, failed create/clone
+operations clean only their own unused files after checking references. Later
+or uncertain failures retain resources; retrying does not overwrite them.
+If a VM is absent and only its managed state/definition remain, `create` and `clone` can
 reuse the name. It checks both current and recorded disk/cloud-init paths,
 including conversion temporary files, and replaces the state only on success.
 Existing data still blocks creation; the error identifies the path to inspect.
