@@ -44,14 +44,40 @@ successful delete or rollback, so an interrupted operation is always visible.
 libvirt also stores the domain configuration in its snapshot metadata. RAM and
 running processes are not captured.
 
-## Supported configuration
+## Tested host configurations
+
+Snapshot acceptance is limited to these recorded host combinations. It does
+not establish support for every version above a minimum or for other security
+modes. These are historical results for the revisions in the linked records,
+not evidence that every later revision has been rerun on those hosts.
+
+| Host | libvirt | QEMU | Host security mode | Evidence and limits |
+| --- | --- | --- | --- | --- |
+| AlmaLinux 9.8 | 11.10.0 | 10.1.0 | SELinux permissive | [Snapshot failure validation](plans/20261018_vm-recovery/snapshot-simplification-validation.md); enforcing mode was not tested |
+| Debian 13 | 11.3.0 | 10.0.13 | AppArmor | [Snapshot failure validation](plans/20261018_vm-recovery/snapshot-simplification-validation.md); live deletion after reboot can be refused, requiring offline deletion |
+
+Guest coverage includes Debian 12 and AlmaLinux 9; see the
+[Snapshot/Backup interoperability record](plans/20261018_vm-recovery/ticket-07-validation.md)
+for the actual combinations. Other libvirt/QEMU combinations, including
+libvirt 9.9 through 11.2, and SELinux enforcing are **unvalidated**. The CLI
+does not detect or certify a host's QEMU/security-mode combination.
+
+The libvirt 9.9 check below is an API floor, not a support claim. Passing it
+allows an operator to run acceptance tests on another configuration; it does
+not add that configuration to this table. Before relying on another host,
+run `tests/test_snapshot_e2e.py` on disposable guests, including the lifecycle
+checks after successful and recovered operations, and record the exact host
+versions, security mode, revision and results. Failure-injection and Backup
+interoperability acceptance must also be recorded before claiming the same
+coverage as the hosts above. Do not disable host security to turn a failed
+acceptance run into a pass.
+
+## Runtime preflight checks
 
 Creation checks all of these before it changes anything, and refuses otherwise:
 
-- libvirt daemon 9.9 or newer through the QEMU driver (`qemu:///system`).
-  Tested: AlmaLinux 9.8 (libvirt 11.10.0, QEMU 10.1.0, SELinux permissive) and
-  Debian 13 (libvirt 11.3.0, QEMU 10.0.13, AppArmor), with Debian 12 and
-  AlmaLinux 9 guests.
+- libvirt daemon API floor of 9.9 through the QEMU driver (`qemu:///system`).
+  This is separate from the tested host configurations above.
 - A VM managed by kvm-vm (state manifest and effective definition present).
 - The VM is running or shut off (not paused).
 - Exactly one system disk: a regular, standalone qcow2 file whose live,

@@ -823,7 +823,7 @@ to the captured disk, VM configuration and kvm-vm files and starts the VM again,
 keeping its identity. A Snapshot is not a Backup, and it is never combined with
 incremental Backup tracking: retire the tracking before the Snapshot and start
 a new full Backup after it, as described in
-[Snapshots and Backups](docs/snapshots.md#snapshots-and-backups). Supported
+[Snapshots and Backups](docs/snapshots.md#snapshots-and-backups). Tested host
 configurations, pauses, failure recovery and AppArmor behavior are in
 [docs/snapshots.md](docs/snapshots.md).
 

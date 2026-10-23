@@ -2035,7 +2035,7 @@ def cmd_backup_check(args: argparse.Namespace) -> int:
 # A failed or interrupted operation is never continued automatically (ADR 0005):
 # the record keeps it, and the status says what the operator does next.
 
-SNAPSHOT_MIN_LIBVIRT = (9, 9, 0)  # mature external snapshot support; tested with 11.3 and 11.10
+SNAPSHOT_LIBVIRT_API_FLOOR = (9, 9, 0)  # API preflight only, not a tested support range; see docs/snapshots.md
 SNAPSHOT_RECORD_KEYS = ("snapshot", "status", "base", "overlay", "guest_state", "consistency")
 SNAPSHOT_NEXT_STEP = {
     "creating": "Creation stopped. If libvirt lists the Snapshot and the VM uses the overlay, "
@@ -2198,7 +2198,7 @@ def check_snapshot_support() -> None:
     match = re.search(r"Running against daemon:\s*(\d+)\.(\d+)\.(\d+)", text)
     if not match:
         raise KVMError("Cannot determine the libvirt daemon version; Snapshots need libvirt 9.9 or newer")
-    if tuple(int(x) for x in match.groups()) < SNAPSHOT_MIN_LIBVIRT:
+    if tuple(int(x) for x in match.groups()) < SNAPSHOT_LIBVIRT_API_FLOOR:
         raise KVMError(f"Snapshots need libvirt 9.9 or newer; this host runs {'.'.join(match.groups())}")
 
 

@@ -745,7 +745,7 @@ kvm-vm create newvm.yaml --refresh-image
 若更新出問題，`kvm-vm snapshot rollback NAME --yes --force` 會回到快照當時的磁碟、
 VM 設定與 kvm-vm 檔案，並重新啟動 VM，身分保持不變。快照不是備份，也不會與增量備份
 追蹤（checkpoint）並用：建立快照前先解除追蹤，快照刪除或回復後再重新做一次完整備份，
-詳見 [Snapshots and Backups](docs/snapshots.md#snapshots-and-backups)。支援的設定、
+詳見 [Snapshots and Backups](docs/snapshots.md#snapshots-and-backups)。已驗證的主機組合、
 暫停時間、失敗後的處理與 AppArmor 行為請見 [docs/snapshots.md](docs/snapshots.md)。
 
 ## 復原狀態安全檢查
