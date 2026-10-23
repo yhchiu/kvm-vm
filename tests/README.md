@@ -26,8 +26,12 @@ that need POSIX file permissions skip on Windows.
 
 > [!WARNING]
 > On a KVM host, running this command as root also runs the real-VM tests, which
-> create and delete VMs. Run it as a normal user there to get only the offline
-> tests.
+> create and delete VMs. To run only the offline tests there, add `-m "not e2e"`
+> (or run as a normal user):
+>
+> ```bash
+> sudo python3 -m pytest tests -q -m "not e2e"
+> ```
 
 ## Smoke test
 

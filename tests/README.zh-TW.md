@@ -23,7 +23,11 @@ python3 -m pytest tests -q
 會執行所有測試檔。需要實體 KVM 宿主機的測試，除非以 root 在具備 `/dev/kvm` 與可用 libvirt 連線的 Linux 上執行，否則會自動略過。需要 POSIX 檔案權限的測試在 Windows 上會略過。
 
 > [!WARNING]
-> 在 KVM 宿主機上以 root 執行此指令，也會執行會建立與刪除 VM 的實機測試。在宿主機上請改用一般使用者執行，只跑離線測試。
+> 在 KVM 宿主機上以 root 執行此指令，也會執行會建立與刪除 VM 的實機測試。在宿主機上若只要跑離線測試，請加上 `-m "not e2e"`（或改用一般使用者執行）：
+>
+> ```bash
+> sudo python3 -m pytest tests -q -m "not e2e"
+> ```
 
 ## Smoke 測試
 
