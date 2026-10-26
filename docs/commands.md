@@ -120,7 +120,8 @@ sudo kvm-vm console web01
 
 Attaches to the serial console. Press `Ctrl+]` to leave. Attaching does not
 unlock any password; to log in on the console, see
-[Console password login](access.md#console-password-login).
+[Console password login](access.md#console-password-login), or
+[set the management user's password](access.md#set-the-management-users-password) offline.
 
 ## reinstall
 

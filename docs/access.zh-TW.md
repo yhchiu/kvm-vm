@@ -5,7 +5,7 @@
 - [預設政策](#預設政策)
 - [使用 SSH 連線](#使用-ssh-連線)
 - [Console 密碼登入](#console-密碼登入)
-- [以新 SSH 金鑰重新取得存取權](#以新-ssh-金鑰重新取得存取權)
+- [重新取得存取權](#重新取得存取權)
 
 ## 預設政策
 
@@ -77,7 +77,7 @@ sudo kvm-vm console web01
 - 請保護好檔案。即使 `create` 在後續步驟失敗也要保留，因為 VM 的檔案可能已經使用這組密碼。重試時需要新的檔案路徑。
 - `kvm-vm delete` 不會刪除此檔案，請自行清理。
 - 若有人在 guest 內修改密碼，檔案內容就會過時。
-- 沒有找回密碼的指令。遺失時請使用其他存取方式，或下方的離線方法。
+- 沒有找回密碼的指令。遺失時請使用其他存取方式，或下方的[離線方法](#重新取得存取權)。
 
 ### Clone 與 reinstall
 
@@ -101,28 +101,64 @@ sudo kvm-vm reinstall web01 --yes --console-password-file /root/vm-credentials/w
 
 Debian 12 與 13、Ubuntu 24.04 與 26.04、Rocky Linux 8、AlmaLinux 8 已通過主控台登入、`sudo`、SSH 僅金鑰登入與重開機檢查，也驗證了三種網路模式下的預設鎖定、clone 憑證隔離與 reinstall 密碼更換。Rocky Linux 與 AlmaLinux 9、10 尚未測試主控台登入。詳見 [Console 驗收報告](plans/20261019_macvtap-console/ticket-06-validation.md)（英文）。
 
-## 以新 SSH 金鑰重新取得存取權
+## 重新取得存取權
 
-若遺失私鑰且沒有 Console 密碼，可在 VM 關機時把新公鑰加入磁碟：
+若 VM 沒有可用的 Console 密碼，可用 `virt-customize` 離線修改它的磁碟。請依問題選擇方法：
 
-1. 將 VM 關機並等待完全關閉：
+- [設定管理帳號密碼](#設定管理帳號密碼)：VM 無法透過網路連線時使用，例如從宿主機管理的 Macvtap VM，或網路設定已損壞的 guest。設定後從主控台登入。
+- [加入新的 SSH 金鑰](#加入新的-ssh-金鑰)：網路正常，但遺失私鑰時使用。
 
-   ```bash
-   sudo virsh shutdown web01
-   sudo virsh domstate web01      # 等到顯示 "shut off"
-   ```
+`virt-customize` 不可對執行中的 VM 使用。請先將 VM 關機並等待完全關閉：
 
-2. 用 `virt-customize` 加入新金鑰：
+```bash
+sudo virsh shutdown web01
+sudo virsh domstate web01      # 等到顯示 "shut off"
+```
 
-   ```bash
-   sudo virt-customize -d web01 --ssh-inject admin:file:/path/to/new_key.pub
-   ```
+若 VM 有 kvm-vm [快照](snapshots.md)（英文），請使用 `-d web01`，它會修改 VM 目前使用的磁碟。不要使用 `-a .../web01.qcow2`：該檔案是快照的唯讀回復點。
 
-3. 啟動 VM，並以新金鑰連線：
+### 設定管理帳號密碼
 
-   ```bash
-   sudo virsh start web01
-   ssh admin@<vm-ip> -i /path/to/new_key
-   ```
+此方法為管理帳號（`cloud_init.user`，預設 `admin`）設定密碼，也就是 [Console 密碼登入](#console-密碼登入)使用的同一個帳號；不會設定 root 密碼。帳號名稱可在 VM 的生效定義檔 `/etc/kvm-vm/definitions/web01.yaml` 中查到。
 
-切勿修改執行中 VM 的磁碟。
+**從標準輸入讀取**，適用 libvirt 中已定義的 VM。輸入時不會顯示密碼，也不會留在 shell 歷史紀錄或行程清單中：
+
+```bash
+read -rsp 'New password for admin: ' pw && echo
+printf '%s\n' "$pw" | sudo virt-customize -d web01 --password admin:file:/dev/stdin
+unset pw
+```
+
+**從檔案讀取並指定磁碟路徑**，適用沒有 libvirt domain 的磁碟，例如以 `delete --keep-storage` 保留的磁碟，或從備份還原的磁碟。檔案的第一行即為密碼。請以 0600 權限建立，用完即刪除：
+
+```bash
+sudo virt-customize -a /var/lib/libvirt/images/vm/web01.qcow2 \
+  --password admin:file:/root/web01-admin-password
+sudo rm /root/web01-admin-password
+```
+
+接著啟動 VM，並在主控台以 `admin` 登入。此帳號具免密碼 `sudo` 權限：
+
+```bash
+sudo virsh start web01
+sudo kvm-vm console web01
+```
+
+- kvm-vm 會關閉 SSH 密碼登入（`ssh_pwauth: false`），但只有開啟 Console 密碼登入時才會關閉 keyboard-interactive 登入，其他 VM 則取決於映像檔。請在 guest 內確認，兩個值都應為 `no`：
+
+  ```bash
+  sudo sshd -T | grep -E '^(passwordauthentication|kbdinteractiveauthentication) '
+  ```
+
+  若任一個為 `yes`，請在 SSH 設定中改為 `no` 並重啟 SSH，或在用完後立即重新鎖定密碼。
+- Rocky Linux、AlmaLinux 等啟用 SELinux 的 guest，目前版本的 `virt-customize` 會自動修正變更檔案的 SELinux 標籤。較舊的版本需要加上 `--selinux-relabel`；在目前版本中此選項不做任何事，加上也無妨。
+- 問題排除後，請在 guest 內執行 `sudo passwd -l admin` 重新鎖定密碼，回到預設政策。
+- kvm-vm 的驗收測試涵蓋的是 Console 密碼登入，不包括此流程。
+
+### 加入新的 SSH 金鑰
+
+```bash
+sudo virt-customize -d web01 --ssh-inject admin:file:/path/to/new_key.pub
+sudo virsh start web01
+ssh admin@<vm-ip> -i /path/to/new_key
+```

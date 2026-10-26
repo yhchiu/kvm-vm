@@ -107,7 +107,8 @@ Replace `eno1` with your interface. For a static address, use `ipv4.address`,
 - **Manage the VM from the host with the serial console.** Run
   `sudo kvm-vm console NAME`. To log in there with a password, turn on
   [console password login](access.md#console-password-login) before you create
-  the VM; passwords are locked by default.
+  the VM; passwords are locked by default. Without it, set the password
+  offline ([Regain access](access.md#set-the-management-users-password)).
 - **One network card per VM.** kvm-vm does not add a second NAT or management
   card. Whether VMs in different modes can talk to each other depends on your
   routing and firewalls.

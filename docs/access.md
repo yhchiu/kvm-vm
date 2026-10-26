@@ -5,7 +5,7 @@ English | [繁體中文](access.zh-TW.md)
 - [Default policy](#default-policy)
 - [Connect with SSH](#connect-with-ssh)
 - [Console password login](#console-password-login)
-- [Regain access with a new SSH key](#regain-access-with-a-new-ssh-key)
+- [Regain access](#regain-access)
 
 ## Default policy
 
@@ -103,8 +103,8 @@ and try the console login.
   may already use it. A retry needs a new file path.
 - `kvm-vm delete` does not delete the file. Remove it yourself.
 - If someone changes the password in the guest, the file is out of date.
-- There is no command to recover a lost password. Use another access path or the
-  offline method below.
+- There is no command to recover a lost password. Use another access path or one
+  of the [offline methods](#regain-access) below.
 
 ### Clones and reinstalls
 
@@ -141,29 +141,86 @@ password changes. Rocky Linux and AlmaLinux 9 and 10 have not been tested for
 console login yet. See the
 [console validation report](plans/20261019_macvtap-console/ticket-06-validation.md).
 
-## Regain access with a new SSH key
+## Regain access
 
-If you lost the private key and have no console password, add a new public key to
-the disk while the VM is off:
+If the VM has no usable console password, change its disk offline with
+`virt-customize`. Pick the method that matches the problem:
 
-1. Shut the VM down and wait until it is off:
+- [Set the management user's password](#set-the-management-users-password) when
+  the VM cannot be reached over the network, for example a Macvtap VM managed
+  from its own host, or a guest whose network settings are broken. You then log
+  in on the console.
+- [Add a new SSH key](#add-a-new-ssh-key) when the network works but the private
+  key is lost.
 
-   ```bash
-   sudo virsh shutdown web01
-   sudo virsh domstate web01      # wait for "shut off"
-   ```
+`virt-customize` must not run against a running VM. Shut the VM down first and
+wait until it is off:
 
-2. Add the new key with `virt-customize`:
+```bash
+sudo virsh shutdown web01
+sudo virsh domstate web01      # wait for "shut off"
+```
 
-   ```bash
-   sudo virt-customize -d web01 --ssh-inject admin:file:/path/to/new_key.pub
-   ```
+If the VM has a kvm-vm [Snapshot](snapshots.md), use `-d web01`, which edits the
+disk the VM currently uses. Do not use `-a .../web01.qcow2`: that file is the
+Snapshot's read-only recovery point.
 
-3. Start the VM and connect with the new key:
+### Set the management user's password
 
-   ```bash
-   sudo virsh start web01
-   ssh admin@<vm-ip> -i /path/to/new_key
-   ```
+This gives the management user (`cloud_init.user`, default `admin`) a password.
+It is the same account that [console password login](#console-password-login)
+uses, and no root password is set. The account name is in the VM's effective
+definition, `/etc/kvm-vm/definitions/web01.yaml`.
 
-Never edit the disk of a running VM.
+**From standard input**, for a VM defined in libvirt. The password is not shown
+while you type, and it stays out of shell history and the process list:
+
+```bash
+read -rsp 'New password for admin: ' pw && echo
+printf '%s\n' "$pw" | sudo virt-customize -d web01 --password admin:file:/dev/stdin
+unset pw
+```
+
+**From a file, by disk path**, for a disk that has no libvirt domain, such as one
+kept with `delete --keep-storage` or restored from a Backup. The first line of
+the file is the password. Create it with mode 0600 and delete it afterwards:
+
+```bash
+sudo virt-customize -a /var/lib/libvirt/images/vm/web01.qcow2 \
+  --password admin:file:/root/web01-admin-password
+sudo rm /root/web01-admin-password
+```
+
+Then start the VM and log in as `admin` on the console. The account has
+passwordless `sudo`:
+
+```bash
+sudo virsh start web01
+sudo kvm-vm console web01
+```
+
+- kvm-vm turns off SSH password login (`ssh_pwauth: false`). It turns off
+  keyboard-interactive login only for console password login, so on other VMs
+  that depends on the image. Check it in the guest; both values should be `no`:
+
+  ```bash
+  sudo sshd -T | grep -E '^(passwordauthentication|kbdinteractiveauthentication) '
+  ```
+
+  If either is `yes`, set it to `no` in the SSH configuration and restart SSH,
+  or lock the password again as soon as you are done.
+- On SELinux guests such as Rocky Linux and AlmaLinux, current `virt-customize`
+  versions fix the SELinux labels of changed files automatically. Older versions
+  need `--selinux-relabel`; on current versions that option does nothing, so it
+  is safe to add.
+- After you have fixed the problem, lock the password again with
+  `sudo passwd -l admin` in the guest to return to the default policy.
+- kvm-vm's acceptance tests cover console password login, not this procedure.
+
+### Add a new SSH key
+
+```bash
+sudo virt-customize -d web01 --ssh-inject admin:file:/path/to/new_key.pub
+sudo virsh start web01
+ssh admin@<vm-ip> -i /path/to/new_key
+```

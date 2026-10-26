@@ -85,7 +85,7 @@ sudo KVM_VM_MACVTAP=eno1 KVM_VM_IPV4=dhcp \
 ### Macvtap 限制
 
 - **宿主機無法透過網路連到 VM。** SSH、ping 與所有 IP 服務都一樣，即使在同一子網路也是。請從 LAN 上的其他機器連線。`list --ips` 查得到位址，不代表宿主機連得到。
-- **從宿主機管理 VM 請用序列主控台。** 執行 `sudo kvm-vm console NAME`。若要在主控台用密碼登入，請在建立 VM 前開啟 [Console 密碼登入](access.zh-TW.md#console-密碼登入)；密碼預設鎖定。
+- **從宿主機管理 VM 請用序列主控台。** 執行 `sudo kvm-vm console NAME`。若要在主控台用密碼登入，請在建立 VM 前開啟 [Console 密碼登入](access.zh-TW.md#console-密碼登入)；密碼預設鎖定。若未開啟，可離線設定管理帳號密碼（[重新取得存取權](access.zh-TW.md#設定管理帳號密碼)）。
 - **每台 VM 只有一張網卡。** kvm-vm 不會另外加入 NAT 或管理用網卡。不同模式的 VM 能否互通，取決於你的路由與防火牆。
 
 ### Parent 介面需求

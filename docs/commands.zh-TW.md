@@ -97,7 +97,7 @@ sudo kvm-vm status web01
 sudo kvm-vm console web01
 ```
 
-連上序列主控台，按 `Ctrl+]` 離開。連上主控台不會解鎖任何密碼；若要在主控台登入，請見 [Console 密碼登入](access.zh-TW.md#console-密碼登入)。
+連上序列主控台，按 `Ctrl+]` 離開。連上主控台不會解鎖任何密碼；若要在主控台登入，請見 [Console 密碼登入](access.zh-TW.md#console-密碼登入)，或離線[設定管理帳號密碼](access.zh-TW.md#設定管理帳號密碼)。
 
 ## reinstall
 
