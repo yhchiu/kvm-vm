@@ -208,17 +208,24 @@ def virsh_names() -> List[str]:
     return [x.strip() for x in text.splitlines() if x.strip()]
 
 
+def domain_macs(name: str) -> set[str]:
+    """Collect MAC addresses attached to a single libvirt domain."""
+    macs: set[str] = set()
+    p = run(["virsh", "-c", LIBVIRT_URI, "domiflist", name], check=False, capture=True)
+    if p.returncode != 0:
+        return macs
+    for line in p.stdout.splitlines():
+        cols = line.split()
+        if len(cols) >= 5 and MAC_RE.match(cols[-1]):
+            macs.add(cols[-1].lower())
+    return macs
+
+
 def existing_macs() -> set[str]:
     """Collect MAC addresses already assigned to libvirt domains."""
     macs: set[str] = set()
     for name in virsh_names():
-        p = run(["virsh", "-c", LIBVIRT_URI, "domiflist", name], check=False, capture=True)
-        if p.returncode != 0:
-            continue
-        for line in p.stdout.splitlines():
-            cols = line.split()
-            if len(cols) >= 5 and MAC_RE.match(cols[-1]):
-                macs.add(cols[-1].lower())
+        macs.update(domain_macs(name))
     return macs
 
 
@@ -1905,21 +1912,63 @@ def dominfo_map(name: str) -> Dict[str, str]:
     return out
 
 
-def get_ips(name: str) -> List[str]:
-    found: List[str] = []
-    seen = set()
+IGNORED_GUEST_IFACE_RE = re.compile(
+    r"^(?:lo|docker\d*|br-[0-9a-f]+|veth[0-9a-z_-]*|virbr\d*|cni\d*|flannel[0-9a-z_.-]*|cali[0-9a-z_-]*|podman\d*|lxcbr\d*|tunl\d*|vxlan[0-9a-z_.-]*)$",
+    re.IGNORECASE,
+)
+
+
+def get_ips(name: str, *, include_cidr: bool = False) -> List[str]:
+    host_macs = domain_macs(name)
+    matched: List[Tuple[ipaddress._BaseAddress, str]] = []
+    fallback: List[Tuple[ipaddress._BaseAddress, str]] = []
+    seen_matched: set[str] = set()
+    seen_fallback: set[str] = set()
+
     for src in ("agent", "lease", "arp"):
         p = run(["virsh", "-c", LIBVIRT_URI, "domifaddr", name, "--source", src, "--full"], check=False, capture=True)
         if p.returncode != 0:
             continue
+        cur_iface = "-"
+        cur_mac = "-"
         for line in p.stdout.splitlines():
             cols = line.split()
-            if len(cols) >= 4 and ("ipv4" in cols or "ipv6" in cols):
-                addr = cols[-1]
-                if addr not in seen:
-                    seen.add(addr)
-                    found.append(addr)
-    return found
+            if len(cols) < 4 or ("ipv4" not in cols and "ipv6" not in cols):
+                continue
+            if cols[0] != "-":
+                cur_iface = cols[0]
+            if cols[1] != "-":
+                cur_mac = cols[1]
+            if cur_iface != "-" and IGNORED_GUEST_IFACE_RE.match(cur_iface):
+                continue
+            raw_addr = cols[-1].strip()
+            try:
+                iface = ipaddress.ip_interface(raw_addr)
+            except ValueError:
+                continue
+            ip_obj = iface.ip
+            if ip_obj.is_loopback or ip_obj.is_link_local or ip_obj.is_unspecified or ip_obj.is_multicast:
+                continue
+            ip_str = str(ip_obj)
+            if include_cidr and "/" in raw_addr and not raw_addr.endswith("/0"):
+                formatted = f"{ip_str}/{iface.network.prefixlen}"
+            else:
+                formatted = ip_str
+
+            mac_lower = cur_mac.lower()
+            if host_macs and MAC_RE.match(mac_lower) and mac_lower in host_macs:
+                if ip_str not in seen_matched:
+                    seen_matched.add(ip_str)
+                    matched.append((ip_obj, formatted))
+            else:
+                if ip_str not in seen_fallback:
+                    seen_fallback.add(ip_str)
+                    fallback.append((ip_obj, formatted))
+
+    chosen = matched if matched else fallback
+    ipv4 = [fmt for ip_obj, fmt in chosen if ip_obj.version == 4]
+    ipv6 = [fmt for ip_obj, fmt in chosen if ip_obj.version == 6]
+    return ipv4 + ipv6
 
 
 def human_mem(info: Dict[str, str]) -> str:
@@ -1941,6 +1990,7 @@ def cmd_list(args: argparse.Namespace) -> int:
             continue
         info = dominfo_map(name)
         ips = get_ips(name) if args.ips and is_running_state(info.get("State", "unknown")) else []
+        ip_cells = ips if ips else ["-"]
         rows.append([
             name,
             info.get("State", "?"),
@@ -1948,8 +1998,10 @@ def cmd_list(args: argparse.Namespace) -> int:
             info.get("Autostart", "?"),
             info.get("CPU(s)", "?"),
             human_mem(info),
-            ",".join(ips) if ips else "-",
+            ip_cells[0],
         ])
+        for extra_ip in ip_cells[1:]:
+            rows.append(["", "", "", "", "", "", extra_ip])
     headers = ["NAME", "STATE", "MANAGED", "AUTOSTART", "VCPU", "MEMORY", "IP"]
     widths = [len(x) for x in headers]
     for row in rows:
@@ -1986,7 +2038,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         print_section("Snapshot", f"Cannot inspect Snapshot state: {exc}")
     print_section("Disks", output(["virsh", "-c", LIBVIRT_URI, "domblklist", name, "--details"]))
     print_section("Interfaces", output(["virsh", "-c", LIBVIRT_URI, "domiflist", name]))
-    ips = get_ips(name)
+    ips = get_ips(name, include_cidr=True)
     print_section("IP addresses", "\n".join(ips) if ips else "No address reported (qemu-guest-agent/lease/ARP may not have data yet).")
     return 0
 

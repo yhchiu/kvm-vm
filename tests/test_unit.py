@@ -2160,3 +2160,99 @@ class TestOsVariantChoice:
         self.define(tmp_path, _minimal_raw(storage={"image": {"url": "https://example.org/x.qcow2"}}))
         assert installed_variant(commands) == "generic"
         assert not any(cmd[0] == "osinfo-query" for cmd in commands)
+
+
+# --- get_ips() & cmd_list() ---
+
+VHOST_PB_DOMIFLIST = """\
+ Interface   Type     Source   Model    MAC
+-----------------------------------------------------------
+ vnet0       bridge   br0      virtio   52:54:00:31:d8:72
+"""
+
+VHOST_PB_AGENT_DOMIFADDR = """\
+ Name       MAC address          Protocol     Address
+-------------------------------------------------------------------------------
+ lo         00:00:00:00:00:00    ipv4         127.0.0.1/8
+ -          -                    ipv6         ::1/128
+ enp1s0     52:54:00:31:d8:72    ipv4         100.180.220.60/29
+ -          -                    ipv6         fe80::5054:ff:fe31:d872/64
+ docker0    02:42:ac:11:00:01    ipv4         172.17.0.1/16
+ -          -                    ipv6         fe80::30dd:f0ff:feed:411f/64
+ br-5c1f42  02:42:5c:1f:42:01    ipv4         172.18.0.1/16
+ -          -                    ipv6         fe80::5c1f:42ff:fe01:490e/64
+ veth1a2b   fe:4a:c4:11:cb:c2    ipv6         fe80::a44a:c4ff:fe11:cbc2/64
+"""
+
+
+class TestGetIpsAndCmdList:
+    def test_get_ips_filters_loopback_link_local_and_docker_bridges(self, monkeypatch):
+        def fake_run(cmd, **kwargs):
+            if cmd[3] == "domiflist":
+                return subprocess.CompletedProcess(cmd, 0, VHOST_PB_DOMIFLIST, "")
+            if cmd[3] == "domifaddr" and "agent" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, VHOST_PB_AGENT_DOMIFADDR, "")
+            return subprocess.CompletedProcess(cmd, 1, "", "")
+
+        monkeypatch.setattr(kvm_vm, "run", fake_run)
+        assert kvm_vm.get_ips("vhost-pb") == ["100.180.220.60"]
+        assert kvm_vm.get_ips("vhost-pb", include_cidr=True) == ["100.180.220.60/29"]
+
+    def test_get_ips_orders_ipv4_before_global_ipv6_and_deduplicates_across_sources(self, monkeypatch):
+        agent_out = """\
+ Name       MAC address          Protocol     Address
+-------------------------------------------------------------------------------
+ enp1s0     52:54:00:31:d8:72    ipv6         2001:db8::10/64
+ enp1s0     52:54:00:31:d8:72    ipv4         100.180.220.60/29
+"""
+        arp_out = """\
+ Name       MAC address          Protocol     Address
+-------------------------------------------------------------------------------
+ vnet0      52:54:00:31:d8:72    ipv4         100.180.220.60/0
+"""
+
+        def fake_run(cmd, **kwargs):
+            if cmd[3] == "domiflist":
+                return subprocess.CompletedProcess(cmd, 0, VHOST_PB_DOMIFLIST, "")
+            if cmd[3] == "domifaddr" and "agent" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, agent_out, "")
+            if cmd[3] == "domifaddr" and "arp" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, arp_out, "")
+            return subprocess.CompletedProcess(cmd, 1, "", "")
+
+        monkeypatch.setattr(kvm_vm, "run", fake_run)
+        assert kvm_vm.get_ips("vhost-pb") == ["100.180.220.60", "2001:db8::10"]
+        assert kvm_vm.get_ips("vhost-pb", include_cidr=True) == ["100.180.220.60/29", "2001:db8::10/64"]
+
+    def test_cmd_list_multiline_aligned_ips(self, monkeypatch, capsys):
+        monkeypatch.setattr(kvm_vm, "require_commands", lambda cmds: None)
+        monkeypatch.setattr(kvm_vm, "virsh_names", lambda: ["vhost-pb", "db01"])
+        monkeypatch.setattr(kvm_vm, "load_state", lambda name: {"name": name} if name == "vhost-pb" else None)
+        monkeypatch.setattr(
+            kvm_vm,
+            "dominfo_map",
+            lambda name: {
+                "State": "running" if name == "vhost-pb" else "shut off",
+                "Autostart": "enable" if name == "vhost-pb" else "disable",
+                "CPU(s)": "20" if name == "vhost-pb" else "4",
+                "Max memory": "51200000 KiB" if name == "vhost-pb" else "4194304 KiB",
+            },
+        )
+        monkeypatch.setattr(
+            kvm_vm,
+            "get_ips",
+            lambda name: ["100.180.220.60", "10.0.0.15"] if name == "vhost-pb" else [],
+        )
+
+        args = argparse.Namespace(managed=False, ips=True)
+        assert kvm_vm.cmd_list(args) == 0
+        lines = capsys.readouterr().out.splitlines()
+        assert len(lines) == 5
+        ip_col = lines[0].index("IP")
+        assert lines[2].startswith("vhost-pb")
+        assert lines[2][ip_col:].strip() == "100.180.220.60"
+        assert lines[3][:ip_col].strip() == ""
+        assert lines[3][ip_col:].strip() == "10.0.0.15"
+        assert lines[4].startswith("db01")
+        assert lines[4][ip_col:].strip() == "-"
+
