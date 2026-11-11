@@ -19,6 +19,9 @@ that tool and the remaining fixes.
   operator is about to fix. `validate` stays offline. The warning runs from
   `create`, `clone` and `reinstall`, including `--dry-run`, because those
   commands already inspect the bridge on the host.
+- B-006: the kernel ORs `net.bridge.bridge-nf-call-iptables` with the
+  per-bridge `nf_call_iptables` bit. A per-bridge 0 does not disable
+  filtering, and it is not a documented workaround.
 - B-001 keeps the lifecycle lock for `--dry-run`. A user who cannot create
   the lock gets `ERROR:` and exit code 1, with no traceback.
 - B-002 checks `disk_gib` against a base image that is already on disk.

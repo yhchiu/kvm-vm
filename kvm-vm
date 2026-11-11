@@ -557,16 +557,29 @@ def _read_sysctl(path: Path) -> Optional[str]:
 
 
 def bridge_calls_iptables(bridge: str) -> Optional[str]:
-    """1 when bridged IPv4 on this bridge is passed to iptables.
+    """"1" when bridged IPv4 on this bridge is passed to iptables.
 
-    A per-bridge nf_call_iptables value wins over the global sysctl. The
-    per-bridge file exists only after the bridge exists and br_netfilter is
-    loaded.
+    br_nf_pre_routing in the kernel accepts the frame straight through only
+    when both knobs are off:
+
+        if (!brnet->call_iptables && !br_opt_get(br, BROPT_NF_CALL_IPTABLES))
+            return NF_ACCEPT;
+
+    brnet->call_iptables is net.bridge.bridge-nf-call-iptables. The per-bridge
+    sysfs bit is BROPT_NF_CALL_IPTABLES. Either one being 1 is enough, so a
+    per-bridge 0 does not disable filtering while the global sysctl is 1.
+    New bridges often show 0 in sysfs in that case.
+
+    Returns "0" only when every value that could be read is 0 and the global
+    sysctl itself was read. Returns None when the result is unknown.
     """
+    global_value = _read_sysctl(Path("/proc/sys/net/bridge/bridge-nf-call-iptables"))
     per_bridge = _read_sysctl(NET_SYS_DIR / bridge / "bridge" / "nf_call_iptables")
-    if per_bridge is not None:
-        return per_bridge
-    return _read_sysctl(Path("/proc/sys/net/bridge/bridge-nf-call-iptables"))
+    if global_value == "1" or per_bridge == "1":
+        return "1"
+    if global_value is None:
+        return None
+    return "0"
 
 
 def read_forward_filter_facts(bridge: str) -> Dict[str, Any]:

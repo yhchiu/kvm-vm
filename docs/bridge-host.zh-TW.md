@@ -101,7 +101,7 @@ sudo kvm-vm-bridge rollback --bridge br0 --yes
 
 `create`（含 `--dry-run`）與 `confirm` 會在「橋接訪客的 IPv4 很可能被宿主機防火牆丟掉」時提出警告。Docker 宿主機很常見：已載入 `br_netfilter`、`net.bridge.bridge-nf-call-iptables` 為 `1`，而且 iptables 的 FORWARD 政策是 DROP，ACCEPT 只放行 Docker 與 libvirt 的 bridge。
 
-警告不會改任何規則，也不會拒絕指令。宿主機仍然可以連到同一座 bridge 上的訪客，因為那條路徑不經過 FORWARD。`kvm-vm create`、`clone` 與 `reinstall` 對已經存在的 bridge 會印出同樣的警告。`kvm-vm validate` 不檢查宿主機。請看[橋接訪客與宿主機防火牆](networking.zh-TW.md#橋接訪客與宿主機防火牆)。
+警告不會改任何規則，也不會拒絕指令。宿主機仍然可以連到同一座 bridge 上的訪客，因為那條路徑不經過 FORWARD。`kvm-vm create`、`clone` 與 `reinstall` 對已經存在的 bridge 會印出同樣的警告。`kvm-vm validate` 不檢查宿主機。該橋的 `nf_call_iptables` 為 0 不會讓警告消失：全域 sysctl 為 1 時，核心仍會過濾這座 bridge。請看[橋接訪客與宿主機防火牆](networking.zh-TW.md#橋接訪客與宿主機防火牆)。
 
 ## 安全
 

@@ -58,13 +58,7 @@ sudo iptables -C FORWARD -o br0 -j ACCEPT 2>/dev/null || sudo iptables -I FORWAR
 
 把 `br0` 換成你的 bridge。這些規則在重開機後會消失，除非用維持 `DROP` 政策的同一套機制存起來（例如 `iptables-persistent`、nftables 規則檔，或 firewalld 的 direct rule）。不要清空 filter 表，也不要關掉整台宿主機的防火牆。
 
-若只要讓 iptables 看不到這一座 bridge 上的橋接訊框，路由轉送的流量維持原狀：
-
-```bash
-echo 0 | sudo tee /sys/class/net/br0/bridge/nf_call_iptables
-```
-
-這個檔案只在 `br_netfilter` 已載入且 bridge 存在時出現，而且數值不會持久保存。若希望宿主機防火牆繼續看得到訪客流量，請優先使用上面的 `FORWARD` 規則。
+把 `/sys/class/net/br0/bridge/nf_call_iptables` 寫成 `0` 不能關掉這個行為。核心在全域 sysctl 或該橋的這個位元任一為 1 時，就把橋接 IPv4 送進 iptables（`br_nf_pre_routing` 只有兩者都關閉才回 `NF_ACCEPT`）。新 bridge 的 sysfs 常常顯示 `0`，但 `net.bridge.bridge-nf-call-iptables` 仍是 `1`，訪客 IPv4 還是會被過濾。`bridge-nf-call-ip6tables` 也是同樣的 OR。把全域 sysctl 清成 0 會影響宿主機上每一座 bridge，包含 Docker 的，因此不是放行某一座 KVM bridge 的做法。請使用上面的 `FORWARD` 規則。
 
 IPv6 有對應的 `net.bridge.bridge-nf-call-ip6tables` sysctl。上述警告針對的是 IPv4，這也是一般 Docker 宿主機上會失敗的路徑。
 

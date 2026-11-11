@@ -2420,6 +2420,63 @@ def test_bridge_forward_warning_when_policy_drops_guest_ipv4():
     assert "policy to ACCEPT" in message
 
 
+def _sysctl_reader(values):
+    def read(path):
+        text = str(path)
+        # Longer suffix first: "nf_call_iptables" is also a suffix of the
+        # global "bridge-nf-call-iptables" path.
+        for suffix, value in sorted(values.items(), key=lambda item: len(item[0]), reverse=True):
+            if text.endswith(suffix):
+                return value
+        return None
+    return read
+
+
+def test_per_bridge_nf_call_iptables_zero_does_not_disable_global(monkeypatch):
+    monkeypatch.setattr(kvm_vm, "_read_sysctl", _sysctl_reader({
+        "bridge-nf-call-iptables": "1",
+        "nf_call_iptables": "0",
+    }))
+    assert kvm_vm.bridge_calls_iptables("br0") == "1"
+
+
+def test_either_iptables_knob_enables_filtering(monkeypatch):
+    monkeypatch.setattr(kvm_vm, "_read_sysctl", _sysctl_reader({
+        "bridge-nf-call-iptables": "0",
+        "nf_call_iptables": "1",
+    }))
+    assert kvm_vm.bridge_calls_iptables("br0") == "1"
+    monkeypatch.setattr(kvm_vm, "_read_sysctl", _sysctl_reader({
+        "bridge-nf-call-iptables": "0",
+        "nf_call_iptables": "0",
+    }))
+    assert kvm_vm.bridge_calls_iptables("br0") == "0"
+    monkeypatch.setattr(kvm_vm, "_read_sysctl", _sysctl_reader({
+        "bridge-nf-call-iptables": None,
+        "nf_call_iptables": "0",
+    }))
+    assert kvm_vm.bridge_calls_iptables("br0") is None
+
+
+def test_existing_bridge_with_per_bridge_zero_still_warns(monkeypatch):
+    monkeypatch.setattr(kvm_vm, "_read_sysctl", _sysctl_reader({
+        "bridge-nf-call-iptables": "1",
+        "nf_call_iptables": "0",
+    }))
+    real_exists = Path.exists
+
+    def exists(self):
+        if self == Path("/sys/module/br_netfilter"):
+            return True
+        return real_exists(self)
+
+    monkeypatch.setattr(Path, "exists", exists)
+    monkeypatch.setattr(kvm_vm, "read_forward_filter_facts", lambda bridge: _forward_facts())
+    message = kvm_vm.bridged_ipv4_forward_warning("br0")
+    assert message is not None
+    assert "likely to be dropped" in message
+
+
 def test_bridge_forward_warning_stays_quiet_when_the_bridge_is_allowed():
     rules = "-P FORWARD DROP\n-A FORWARD -i br0 -j ACCEPT\n-A FORWARD -o br0 -j ACCEPT\n"
     assert kvm_vm.bridged_ipv4_forward_warning("br0", _forward_facts(rules=rules)) is None

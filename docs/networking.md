@@ -84,16 +84,14 @@ save them with the same mechanism that keeps the `DROP` policy (for example
 `iptables-persistent`, an nftables ruleset, or a firewalld direct rule). Do
 not flush the filter table, and do not turn the host firewall off.
 
-To stop iptables from seeing bridged frames on this bridge only, leaving
-routed traffic unchanged:
-
-```bash
-echo 0 | sudo tee /sys/class/net/br0/bridge/nf_call_iptables
-```
-
-That file exists only while `br_netfilter` is loaded and the bridge exists,
-and the value is not persistent. Prefer the `FORWARD` rules above when you
-want the host firewall to keep seeing guest traffic.
+Writing `0` to `/sys/class/net/br0/bridge/nf_call_iptables` does not turn this
+off. The kernel passes a bridged IPv4 frame to iptables when either the
+global sysctl or that per-bridge bit is set (`br_nf_pre_routing` returns
+`NF_ACCEPT` only when both are clear). A new bridge often shows `0` in sysfs
+while `net.bridge.bridge-nf-call-iptables` is still `1`, and guest IPv4 is
+still filtered. The same OR applies to `bridge-nf-call-ip6tables`. Clearing
+the global sysctl would affect every bridge on the host, including Docker's,
+so it is not a way to exempt one KVM bridge. Use the `FORWARD` rules above.
 
 IPv6 has the matching `net.bridge.bridge-nf-call-ip6tables` sysctl. The
 warning is about IPv4, which is the path that fails on a typical Docker host.

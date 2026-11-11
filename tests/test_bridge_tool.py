@@ -381,6 +381,28 @@ def test_forward_warning_when_only_one_direction_is_accepted():
     assert "-o br0" in message
 
 
+def test_per_bridge_zero_does_not_override_global_sysctl(monkeypatch):
+    def read(path):
+        text = str(path)
+        if text.endswith("bridge-nf-call-iptables"):
+            return "1"
+        if text.endswith("nf_call_iptables"):
+            return "0"
+        return None
+
+    monkeypatch.setattr(bridge, "_read_sysctl", read)
+    assert bridge.bridge_calls_iptables("br0") == "1"
+
+    def both_off(path):
+        text = str(path)
+        if text.endswith("bridge-nf-call-iptables") or text.endswith("nf_call_iptables"):
+            return "0"
+        return None
+
+    monkeypatch.setattr(bridge, "_read_sysctl", both_off)
+    assert bridge.bridge_calls_iptables("br0") == "0"
+
+
 def test_no_forward_warning_without_br_netfilter_or_when_policy_accepts():
     assert bridge.bridged_ipv4_warning("br0", _facts(br_netfilter=False)) is None
     assert bridge.bridged_ipv4_warning("br0", _facts(call_iptables="0")) is None

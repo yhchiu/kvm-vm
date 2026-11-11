@@ -135,7 +135,8 @@ The warning does not change any rule and does not refuse the command. The
 host can still reach a guest on the same bridge, because that traffic does
 not use FORWARD. `kvm-vm create`, `clone` and `reinstall` print the same
 warning for a bridge that already exists. `kvm-vm validate` does not inspect
-the host. See
+the host. A per-bridge `nf_call_iptables` of 0 does not hide the warning:
+while the global sysctl is 1, the kernel still filters that bridge. See
 [Bridged guests and the host firewall](networking.md#bridged-guests-and-the-host-firewall).
 
 ## Safety
