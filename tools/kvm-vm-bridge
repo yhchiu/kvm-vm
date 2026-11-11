@@ -21,6 +21,7 @@ import os
 import shutil
 import signal
 import socket
+import struct
 import subprocess
 import sys
 import time
@@ -505,6 +506,7 @@ def write_rollback_script(sdir: Path, meta: Dict[str, Any]) -> Path:
                 break
         lines.append(f'ip route replace default via {_shell_single(str(gw))} dev "$UPLINK"{onlink} || true')
 
+    lines += _announce_shell_lines(meta.get("ipv4") or [], meta.get("ipv6") or [])
     lines += [
         'log "runtime rollback finished"',
         'ip -br addr',
@@ -758,6 +760,210 @@ def apply_runtime(bridge: str, uplink: str, meta: Dict[str, Any]) -> None:
         if r.get("metric") is not None:
             cmd += ["metric", str(r["metric"])]
         run(cmd, check=False)
+
+    # The uplink MAC now lives on the bridge. Tell the switch and the gateway
+    # before we rely on a ping to the previous gateway.
+    announce_moved_addresses(bridge, v4, v6)
+
+
+def gratuitous_arp_frames(mac: bytes, ip: str) -> List[bytes]:
+    """Broadcast Ethernet frames for one gratuitous ARP request and one reply.
+
+    Both use the host IP as sender and target, which is what updates a
+    neighbor cache and a switch MAC table after the address moves.
+    """
+    ip_bytes = socket.inet_aton(ip)
+    frames = []
+    for opcode, target_mac in ((1, b"\x00" * 6), (2, mac)):
+        arp = struct.pack(
+            "!HHBBH6s4s6s4s",
+            1, 0x0800, 6, 4, opcode,
+            mac, ip_bytes, target_mac, ip_bytes,
+        )
+        frames.append(b"\xff" * 6 + mac + struct.pack("!H", 0x0806) + arp)
+    return frames
+
+
+def unsolicited_na_body(mac: bytes, ip: str) -> bytes:
+    """ICMPv6 unsolicited Neighbor Advertisement body, Override set, checksum 0.
+
+    The kernel fills the checksum on an ICMPv6 raw socket. Destination is
+    ff02::1 when the body is sent.
+    """
+    if len(mac) != 6:
+        raise ValueError("MAC must be 6 bytes")
+    target = socket.inet_pton(socket.AF_INET6, ip)
+    return struct.pack("!BBHI", 136, 0, 0, 0x20000000) + target + bytes([2, 1]) + mac
+
+
+def _send_ethernet(dev: str, frame: bytes) -> None:
+    sock = socket.socket(socket.AF_PACKET, socket.SOCK_RAW)
+    try:
+        sock.bind((dev, 0))
+        sock.send(frame)
+    finally:
+        sock.close()
+
+
+def _send_gratuitous_arp(dev: str, ip: str) -> bool:
+    try:
+        mac = bytes.fromhex(interface_mac(dev).replace(":", ""))
+        frames = gratuitous_arp_frames(mac, ip)
+        for _ in range(3):
+            for frame in frames:
+                _send_ethernet(dev, frame)
+        return True
+    except OSError as exc:
+        log(f"python gratuitous ARP for {ip} on {dev} failed: {exc}")
+        return False
+
+
+def _send_unsolicited_na(dev: str, ip: str) -> bool:
+    try:
+        mac = bytes.fromhex(interface_mac(dev).replace(":", ""))
+        body = unsolicited_na_body(mac, ip)
+        sock = socket.socket(socket.AF_INET6, socket.SOCK_RAW, socket.IPPROTO_ICMPV6)
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, dev.encode() + b"\x00")
+            sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS, 255)
+            ifindex = socket.if_nametoindex(dev)
+            for _ in range(3):
+                sock.sendto(body, ("ff02::1", 0, 0, ifindex))
+        finally:
+            sock.close()
+        return True
+    except OSError as exc:
+        log(f"python unsolicited NA for {ip} on {dev} failed: {exc}")
+        return False
+
+
+def announce_ipv4(dev: str, ip: str) -> str:
+    """Send a gratuitous ARP. Prefer arping; otherwise send the frames ourselves.
+
+    arping exiting non-zero because nobody answered is still a send. A usage
+    error on -U is retried as -A. Missing tools do not raise.
+    """
+    if which("arping"):
+        probe = run(["arping", "-c", "3", "-U", "-I", dev, ip], check=False, capture=True)
+        text = ((probe.stderr or "") + (probe.stdout or "")).lower()
+        if probe.returncode != 0 and any(word in text for word in ("invalid", "unrecognized", "unknown option", "usage")):
+            run(["arping", "-c", "3", "-A", "-I", dev, ip], check=False, capture=True)
+        return "arping"
+    if _send_gratuitous_arp(dev, ip):
+        return "python"
+    return "skipped"
+
+
+def announce_ipv6(dev: str, ip: str) -> str:
+    """Send an unsolicited Neighbor Advertisement for one host IPv6 address.
+
+    ndptool sends a real unsolicited NA. ndisc6 only sends a solicitation, so
+    it is used after the packet fallback fails, and the log says so.
+    """
+    if which("ndptool"):
+        run(["ndptool", "-t", "na", "-U", "-i", dev, "-T", ip, "send"], check=False, capture=True)
+        return "ndptool"
+    if _send_unsolicited_na(dev, ip):
+        return "python"
+    if which("ndisc6"):
+        run(["ndisc6", "-1", "-r", "1", dev, ip], check=False, capture=True)
+        return "ndisc6"
+    return "skipped"
+
+
+def announce_moved_addresses(dev: str, ipv4: List[Dict[str, Any]], ipv6: List[Dict[str, Any]]) -> None:
+    """Announce host addresses on dev. Never raises; a failed send is logged."""
+    try:
+        for addr in ipv4 or []:
+            ip = addr.get("local") if isinstance(addr, dict) else str(addr)
+            if not ip:
+                continue
+            log(f"gratuitous ARP for {ip} on {dev}: {announce_ipv4(dev, ip)}")
+        for addr in ipv6 or []:
+            ip = addr.get("local") if isinstance(addr, dict) else str(addr)
+            if not ip:
+                continue
+            log(f"unsolicited neighbor advertisement for {ip} on {dev}: {announce_ipv6(dev, ip)}")
+    except Exception as exc:
+        log(f"address announcement on {dev} failed: {exc}")
+
+
+def _announce_shell_lines(ipv4: List[Dict[str, Any]], ipv6: List[Dict[str, Any]]) -> List[str]:
+    """Bash that announces restored addresses. Safe to run from the watchdog.
+
+    The watchdog executes rollback.sh without importing this program, so the
+    fallback packet sender is inlined. A missing tool or a failed send does
+    not abort the restore (the script does not use set -e).
+    """
+    lines = [
+        "announce_v4() {",
+        '  local dev="$1" ip="$2"',
+        "  if command -v arping >/dev/null 2>&1; then",
+        '    arping -c 3 -U -I "$dev" "$ip" >/dev/null 2>&1 || arping -c 3 -A -I "$dev" "$ip" >/dev/null 2>&1 || true',
+        '    log "gratuitous ARP for $ip on $dev (arping)"',
+        "    return 0",
+        "  fi",
+        '  if python3 - "$dev" "$ip" <<\'PY\'',
+        "import socket, struct, sys",
+        "dev, ip = sys.argv[1], sys.argv[2]",
+        "mac = bytes.fromhex(open('/sys/class/net/%s/address' % dev, encoding='utf-8').read().strip().replace(':', ''))",
+        "ipb = socket.inet_aton(ip)",
+        "sock = socket.socket(socket.AF_PACKET, socket.SOCK_RAW)",
+        "sock.bind((dev, 0))",
+        "for opcode, tha in ((1, b'\\x00' * 6), (2, mac)):",
+        "    arp = struct.pack('!HHBBH6s4s6s4s', 1, 0x0800, 6, 4, opcode, mac, ipb, tha, ipb)",
+        "    frame = b'\\xff' * 6 + mac + struct.pack('!H', 0x0806) + arp",
+        "    for _ in range(3):",
+        "        sock.send(frame)",
+        "sock.close()",
+        "PY",
+        "  then",
+        '    log "gratuitous ARP for $ip on $dev (python)"',
+        "  else",
+        '    log "skipped gratuitous ARP for $ip on $dev"',
+        "  fi",
+        "}",
+        "announce_v6() {",
+        '  local dev="$1" ip="$2"',
+        "  if command -v ndptool >/dev/null 2>&1; then",
+        '    ndptool -t na -U -i "$dev" -T "$ip" send >/dev/null 2>&1 || true',
+        '    log "unsolicited NA for $ip on $dev (ndptool)"',
+        "    return 0",
+        "  fi",
+        '  if python3 - "$dev" "$ip" <<\'PY\'',
+        "import socket, struct, sys",
+        "dev, ip = sys.argv[1], sys.argv[2]",
+        "mac = bytes.fromhex(open('/sys/class/net/%s/address' % dev, encoding='utf-8').read().strip().replace(':', ''))",
+        "body = struct.pack('!BBHI', 136, 0, 0, 0x20000000) + socket.inet_pton(socket.AF_INET6, ip) + bytes([2, 1]) + mac",
+        "sock = socket.socket(socket.AF_INET6, socket.SOCK_RAW, socket.IPPROTO_ICMPV6)",
+        "sock.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, dev.encode() + b'\\x00')",
+        "sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS, 255)",
+        "ifindex = socket.if_nametoindex(dev)",
+        "for _ in range(3):",
+        "    sock.sendto(body, ('ff02::1', 0, 0, ifindex))",
+        "sock.close()",
+        "PY",
+        "  then",
+        '    log "unsolicited NA for $ip on $dev (python)"',
+        "    return 0",
+        "  fi",
+        "  if command -v ndisc6 >/dev/null 2>&1; then",
+        '    ndisc6 -1 -r 1 "$dev" "$ip" >/dev/null 2>&1 || true',
+        '    log "neighbor solicitation for $ip on $dev (ndisc6); not an unsolicited NA"',
+        "    return 0",
+        "  fi",
+        '  log "skipped unsolicited NA for $ip on $dev"',
+        "}",
+    ]
+    for addr in ipv4:
+        ip = addr.get("local") if isinstance(addr, dict) else ""
+        if ip:
+            lines.append(f'announce_v4 "$UPLINK" {_shell_single(ip)}')
+    for addr in ipv6:
+        ip = addr.get("local") if isinstance(addr, dict) else ""
+        if ip:
+            lines.append(f'announce_v6 "$UPLINK" {_shell_single(ip)}')
+    return lines
 
 
 def verify_runtime(bridge: str, uplink: str, meta: Dict[str, Any]) -> None:

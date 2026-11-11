@@ -76,7 +76,10 @@ sudo kvm-vm-bridge rollback --bridge br0 --yes
 3. 建立 bridge 時關閉 **STP**，並把 **forward_delay 設為 0**，避免 bridge 先進入約 30 秒的 listening 狀態。
 4. 把 uplink 的 MAC 複製到 bridge。
 5. 在 bridge 上加入宿主機位址、把 uplink 加入 bridge、從 uplink 刪除那些位址，並移轉預設路由。
-6. Ping 原來的預設 gateway。失敗會立刻還原執行時期的變更。
+6. 為每個搬移的 IPv4 位址送出 gratuitous ARP，並為每個搬移的 IPv6 位址送出未經請求的 Neighbor Advertisement，讓交換器與 gateway 知道宿主機 MAC 現在在 bridge 上。
+7. Ping 原來的預設 gateway。失敗會立刻還原執行時期的變更。
+
+`rollback` 在位址回到 uplink 之後做同樣的宣告。自動還原計時器與明確的 `rollback --yes` 都包含這一步。沒有 `arping` 或 `ndptool` 不會讓還原失敗：工具會自己送這些封包；若仍然失敗，只記下略過並繼續。`ndisc6` 只是 IPv6 的最後手段，它送的是 solicitation，不是未經請求的 advertisement。
 
 `confirm` 會取消計時器，除非加了 `--no-persist`，否則會寫入持久設定。它不會重啟 NetworkManager、ifupdown 或 networkd，因為執行時期的設定已經就位。之後的開機才會使用新檔案。
 

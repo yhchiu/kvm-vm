@@ -93,8 +93,18 @@ That rollback has no second timer. Prefer a console when the host is remote.
 4. Copy the uplink MAC onto the bridge.
 5. Add the host addresses on the bridge, enslave the uplink, remove those
    addresses from the uplink, and move the default route.
-6. Ping the previous default gateway. Failure rolls the runtime change back
+6. Send a gratuitous ARP for each moved IPv4 address, and an unsolicited
+   Neighbor Advertisement for each moved IPv6 address, so the switch and
+   the gateway learn that the host MAC is now on the bridge.
+7. Ping the previous default gateway. Failure rolls the runtime change back
    immediately.
+
+`rollback` does the same announcements after the addresses are back on the
+uplink. That covers the auto-rollback timer and an explicit `rollback --yes`.
+A missing `arping` or `ndptool` does not fail the restore: the tool sends the
+packets itself, and if that also fails it logs the skip and continues.
+`ndisc6` is only a last resort for IPv6, and it sends a solicitation rather
+than an unsolicited advertisement.
 
 `confirm` cancels the timer and, unless `--no-persist`, writes persistent
 configuration. It does not restart NetworkManager, ifupdown or networkd: the

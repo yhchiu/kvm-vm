@@ -163,7 +163,94 @@ def test_rollback_script_restores_uplink_and_deletes_only_the_bridge(tmp_path, m
     assert 'ip link delete dev "$BRIDGE"' in text
     assert "ip link delete dev enp4s0" not in text
     assert "ip link delete dev \"$UPLINK\"" not in text
+    assert "announce_v4" in text
+    assert "arping -c 3 -U -I" in text
+    assert "announce_v6" in text
+    assert "ndptool -t na -U" in text
+    assert 'announce_v4 "$UPLINK" \'203.0.113.10\'' in text
+    assert 'announce_v6 "$UPLINK" \'2001:db8::10\'' in text
+    # Announcements run after the address is back and before the finished log.
+    assert text.index("announce_v4") < text.index('log "runtime rollback finished"')
     subprocess.run(["bash", "-n", str(script)], check=True)
+
+
+def test_gratuitous_arp_frames_use_the_host_address_as_sender_and_target():
+    mac = bytes.fromhex("003048d54172")
+    frames = bridge.gratuitous_arp_frames(mac, "203.0.113.10")
+    assert len(frames) == 2
+    for frame in frames:
+        assert frame[:6] == b"\xff" * 6
+        assert frame[6:12] == mac
+        assert frame[12:14] == b"\x08\x06"
+    request, reply = frames
+    assert request[20:22] == b"\x00\x01"
+    assert reply[20:22] == b"\x00\x02"
+    assert request[28:32] == reply[28:32] == socket_inet_aton("203.0.113.10")
+    assert request[38:42] == reply[38:42] == socket_inet_aton("203.0.113.10")
+
+
+def socket_inet_aton(ip: str) -> bytes:
+    import socket
+    return socket.inet_aton(ip)
+
+
+def test_unsolicited_na_sets_override_and_carries_the_mac():
+    mac = bytes.fromhex("003048d54172")
+    body = bridge.unsolicited_na_body(mac, "2001:db8::10")
+    assert body[0] == 136
+    assert body[4:8] == b"\x20\x00\x00\x00"
+    assert body[-6:] == mac
+
+
+def test_announce_ipv4_prefers_arping(monkeypatch):
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        return _completed(cmd, 1, stderr="no reply")
+
+    monkeypatch.setattr(bridge, "which", lambda name: "/usr/sbin/arping" if name == "arping" else None)
+    monkeypatch.setattr(bridge, "run", fake_run)
+    assert bridge.announce_ipv4("enp4s0", "203.0.113.10") == "arping"
+    assert calls[0][:6] == ["arping", "-c", "3", "-U", "-I", "enp4s0"]
+    assert calls[0][6] == "203.0.113.10"
+
+
+def test_announce_ipv4_falls_back_when_arping_is_missing(monkeypatch):
+    monkeypatch.setattr(bridge, "which", lambda name: None)
+    monkeypatch.setattr(bridge, "_send_gratuitous_arp", lambda dev, ip: dev == "enp4s0" and ip == "203.0.113.10")
+    assert bridge.announce_ipv4("enp4s0", "203.0.113.10") == "python"
+    monkeypatch.setattr(bridge, "_send_gratuitous_arp", lambda dev, ip: False)
+    assert bridge.announce_ipv4("enp4s0", "203.0.113.10") == "skipped"
+
+
+def test_announce_ipv6_prefers_ndptool_then_python(monkeypatch):
+    calls = []
+    monkeypatch.setattr(bridge, "which", lambda name: "/usr/sbin/ndptool" if name == "ndptool" else None)
+    monkeypatch.setattr(bridge, "run", lambda cmd, **kwargs: calls.append(list(cmd)) or _completed(cmd, 0))
+    assert bridge.announce_ipv6("br0", "2001:db8::10") == "ndptool"
+    assert calls[0][:8] == ["ndptool", "-t", "na", "-U", "-i", "br0", "-T", "2001:db8::10"]
+
+    monkeypatch.setattr(bridge, "which", lambda name: None)
+    monkeypatch.setattr(bridge, "_send_unsolicited_na", lambda dev, ip: True)
+    assert bridge.announce_ipv6("br0", "2001:db8::10") == "python"
+
+
+def test_apply_runtime_announces_on_the_bridge(tmp_path, monkeypatch):
+    monkeypatch.setattr(bridge, "STATE_DIR", tmp_path)
+    sdir = tmp_path / "sessions" / "br0"
+    sdir.mkdir(parents=True)
+    (sdir / "ip-route.json").write_text("[]", encoding="utf-8")
+    monkeypatch.setattr(bridge, "run", lambda *args, **kwargs: _completed(args[0] if args else [], 0))
+    seen = {}
+    monkeypatch.setattr(
+        bridge, "announce_moved_addresses",
+        lambda dev, v4, v6: seen.update(dev=dev, v4=v4, v6=v6),
+    )
+    bridge.apply_runtime("br0", "enp4s0", _sample_meta())
+    assert seen["dev"] == "br0"
+    assert seen["v4"][0]["local"] == "203.0.113.10"
+    assert seen["v6"][0]["local"] == "2001:db8::10"
 
 
 def test_archive_script_moves_a_rolled_back_session(tmp_path, monkeypatch):

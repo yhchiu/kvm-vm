@@ -22,6 +22,11 @@ that tool and the remaining fixes.
 - B-006: the kernel ORs `net.bridge.bridge-nf-call-iptables` with the
   per-bridge `nf_call_iptables` bit. A per-bridge 0 does not disable
   filtering, and it is not a documented workaround.
+- After create and after rollback, announce each moved global address
+  (gratuitous ARP, unsolicited Neighbor Advertisement). A missing tool
+  does not fail the restore.
+- `kvm-vm` is stored as mode `100755` so `tests/smoke.sh` runs on a
+  fresh checkout. `tools/kvm-vm-bridge` already was.
 - B-001 keeps the lifecycle lock for `--dry-run`. A user who cannot create
   the lock gets `ERROR:` and exit code 1, with no traceback.
 - B-002 checks `disk_gib` against a base image that is already on disk.
