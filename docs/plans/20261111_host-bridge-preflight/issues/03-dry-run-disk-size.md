@@ -1,6 +1,6 @@
 # 03: Dry-run disk size check and the empty-failure message
 
-**Status:** planned
+**Status:** complete
 
 **Bug:** B-002. `create --dry-run` does not compare `disk_gib` with the base
 image virtual size, so it can report that preflight passed. The real create
@@ -19,8 +19,8 @@ retained.
 virtual size is 3 GiB. Dry-run passes the size check when the cache file is
 absent. A size failure does not log "retained for manual recovery".
 
-- [ ] Share the virtual-size comparison
-- [ ] Call it from create, reinstall and clone dry-run
-- [ ] Fix the empty-failure message
-- [ ] Document the dry-run limit (no download)
-- [ ] Unit tests
+- [x] Share the virtual-size comparison
+- [x] Call it from create, reinstall and clone dry-run
+- [x] Fix the empty-failure message
+- [x] Document the dry-run limit (no download)
+- [x] Unit tests

@@ -709,14 +709,57 @@ def qemu_img_info(path: Path, *, shared: bool = False) -> Dict[str, Any]:
         raise KVMError(f"qemu-img could not inspect {path}: {exc}") from exc
 
 
+def local_base_image(cfg: Dict[str, Any]) -> Optional[Path]:
+    """Return the base image path when it is already on disk. Never downloads."""
+    image = cfg["storage"]["image"]
+    if image.get("distro"):
+        path = BASE_DIR / DISTROS[image["distro"]]["cache"]
+    elif image.get("url"):
+        name = Path(urlparse(str(image["url"])).path).name
+        if not name:
+            name = hashlib.sha256(str(image["url"]).encode()).hexdigest()[:16] + ".qcow2"
+        path = BASE_DIR / name
+    elif image.get("path"):
+        path = resolve_file_path(str(image["path"]))
+    else:
+        return None
+    return path if path.is_file() else None
+
+
+def reject_disk_smaller_than(disk_gib: int, virtual_bytes: int, *, clone: bool = False) -> None:
+    if not virtual_bytes or disk_gib * 1024**3 >= virtual_bytes:
+        return
+    size = f"{virtual_bytes / 1024**3:.1f}"
+    if clone:
+        raise KVMError(f"Clone target disk {disk_gib} GiB is smaller than source virtual size {size} GiB")
+    raise KVMError(f"Requested disk {disk_gib} GiB is smaller than base image virtual size {size} GiB")
+
+
+def check_base_disk_capacity(cfg: Dict[str, Any]) -> None:
+    """Reject a disk smaller than a base image that is already on disk."""
+    disk_gib = cfg["storage"].get("disk_gib")
+    if disk_gib is None:
+        return
+    path = local_base_image(cfg)
+    if path is None:
+        return
+    reject_disk_smaller_than(int(disk_gib), int(qemu_img_info(path).get("virtual-size", 0)))
+
+
+def check_clone_disk_capacity(cfg: Dict[str, Any], source_disk: Path) -> None:
+    disk_gib = cfg["storage"].get("disk_gib")
+    if disk_gib is None or not source_disk.is_file():
+        return
+    reject_disk_smaller_than(int(disk_gib), int(qemu_img_info(source_disk).get("virtual-size", 0)), clone=True)
+
+
 def make_disk_from_base(base: Path, dst: Path, disk_gib: int) -> None:
     if dst.exists():
         raise KVMError(f"Target disk already exists: {dst}")
     info = qemu_img_info(base)
     min_bytes = int(info.get("virtual-size", 0))
     target_bytes = disk_gib * 1024**3
-    if min_bytes and target_bytes < min_bytes:
-        raise KVMError(f"Requested disk {disk_gib} GiB is smaller than base image virtual size {min_bytes / 1024**3:.1f} GiB")
+    reject_disk_smaller_than(disk_gib, min_bytes)
     tmp = dst.with_suffix(dst.suffix + ".tmp")
     try:
         run(["qemu-img", "convert", "-p", "-f", str(info.get("format", "qcow2")), "-O", "qcow2", str(base), str(tmp)])
@@ -733,8 +776,8 @@ def make_disk_from_clone(src: Path, dst: Path, disk_gib: Optional[int]) -> None:
         raise KVMError(f"Target disk already exists: {dst}")
     src_info = qemu_img_info(src)
     src_virtual = int(src_info.get("virtual-size", 0))
-    if disk_gib is not None and disk_gib * 1024**3 < src_virtual:
-        raise KVMError(f"Clone target disk {disk_gib} GiB is smaller than source virtual size {src_virtual / 1024**3:.1f} GiB")
+    if disk_gib is not None:
+        reject_disk_smaller_than(disk_gib, src_virtual, clone=True)
     tmp = dst.with_suffix(dst.suffix + ".tmp")
     try:
         run(["qemu-img", "convert", "-p", "-f", str(src_info.get("format", "qcow2")), "-O", "qcow2", str(src), str(tmp)])
@@ -1282,6 +1325,14 @@ def report_failed_creation(name: str, disk: Path) -> None:
 def cleanup_unpublished_creation(name: str, disk: Path, owned: Dict[Path, os.stat_result]) -> None:
     """Clean only this attempt's files, before any domain definition was attempted."""
     if not owned:
+        disk_tmp = disk.with_suffix(disk.suffix + ".tmp")
+        cloud = CLOUD_DIR / name
+        if not any(path.exists() for path in (disk, disk_tmp, cloud)):
+            log.error(
+                f"Creation failed for {name} before any disk or cloud-init files were created. "
+                "Nothing from this attempt was retained."
+            )
+            return
         report_failed_creation(name, disk)
         return
     try:
@@ -1404,6 +1455,9 @@ def cmd_create(args: argparse.Namespace) -> int:
     if cfg["network"]["mac"] == "auto":
         cfg["network"]["mac"] = generate_mac(exclude=existing_macs())
     resolve_ssh_keys(cfg["cloud_init"]["ssh_authorized_keys"], p.parent)
+    # Measure a base image that is already on disk. Do not download one just
+    # to compare sizes; a later real create still checks after the download.
+    check_base_disk_capacity(cfg)
 
     if args.dry_run:
         print("dry-run: all pre-flight checks passed")
@@ -1490,6 +1544,7 @@ def cmd_clone(args: argparse.Namespace) -> int:
         raise KVMError(f"Clone currently supports regular file-backed system disks only: {src_disk}")
 
     verify_sysprep_compatibility(src_disk)
+    check_clone_disk_capacity(cfg, src_disk)
 
     if args.dry_run:
         print("dry-run: all pre-flight checks passed")
@@ -1807,6 +1862,7 @@ def cmd_reinstall(args: argparse.Namespace) -> int:
     resolve_ssh_keys(cfg["cloud_init"]["ssh_authorized_keys"], source_dir)
     destination = vars(args).get("console_password_file")
     deliver_console_credential(cfg, destination, preview=True)
+    check_base_disk_capacity(cfg)
 
     if args.dry_run:
         print("dry-run: all pre-flight checks passed")

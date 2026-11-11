@@ -2297,3 +2297,104 @@ def test_main_prints_lock_permission_without_a_traceback(monkeypatch, capsys):
     assert "Traceback" not in err
     assert "PermissionError" not in err
 
+
+def _create_args(tmp_path, monkeypatch, raw, *, dry_run=True):
+    for attr in ("VM_DIR", "CLOUD_DIR", "DEF_DIR", "BASE_DIR"):
+        path = tmp_path / attr
+        path.mkdir()
+        monkeypatch.setattr(kvm_vm, attr, path)
+    definition = tmp_path / "vm.yaml"
+    kvm_vm.yaml_dump(definition, raw)
+    for name in ("require_commands", "require_cloud_seed_generator", "ensure_dirs",
+                 "validate_network_attachment"):
+        monkeypatch.setattr(kvm_vm, name, lambda *args, **kwargs: None)
+    monkeypatch.setattr(kvm_vm, "domain_exists", lambda name: False)
+    monkeypatch.setattr(kvm_vm, "existing_macs", lambda: set())
+    monkeypatch.setattr(kvm_vm, "run", lambda *args, **kwargs: subprocess.CompletedProcess([], 0, "", ""))
+    return kvm_vm.build_parser().parse_args(["create", str(definition)] + (["--dry-run"] if dry_run else []))
+
+
+def test_create_dry_run_rejects_disk_smaller_than_cached_image(tmp_path, monkeypatch):
+    raw = _minimal_raw(storage={"image": {"distro": "debian12"}, "disk_gib": 1})
+    args = _create_args(tmp_path, monkeypatch, raw)
+    cached = kvm_vm.BASE_DIR / kvm_vm.DISTROS["debian12"]["cache"]
+    cached.write_bytes(b"cached")
+    monkeypatch.setattr(
+        kvm_vm, "qemu_img_info",
+        lambda path, **kwargs: {"format": "qcow2", "virtual-size": 3 * 1024**3},
+    )
+    with pytest.raises(kvm_vm.KVMError, match="Requested disk 1 GiB is smaller than base image virtual size 3.0 GiB"):
+        kvm_vm.cmd_create(args)
+    assert not (kvm_vm.VM_DIR / "test01.qcow2").exists()
+
+
+def test_create_dry_run_skips_size_check_when_the_image_is_not_cached(tmp_path, monkeypatch, capsys):
+    raw = _minimal_raw(storage={"image": {"distro": "debian12"}, "disk_gib": 1})
+    args = _create_args(tmp_path, monkeypatch, raw)
+
+    def fail_info(path, **kwargs):
+        raise AssertionError("dry-run must not inspect a missing image")
+
+    monkeypatch.setattr(kvm_vm, "qemu_img_info", fail_info)
+    assert kvm_vm.cmd_create(args) == 0
+    assert "dry-run: all pre-flight checks passed" in capsys.readouterr().out
+
+
+def test_creation_failure_with_no_files_does_not_claim_they_were_retained(caplog):
+    caplog.set_level(logging.ERROR)
+    disk = kvm_vm.VM_DIR / "absent.qcow2"
+    kvm_vm.cleanup_unpublished_creation("absent", disk, {})
+    assert "Nothing from this attempt was retained" in caplog.text
+    assert "retained for manual recovery" not in caplog.text
+
+
+def test_reinstall_dry_run_rejects_disk_smaller_than_cached_image(reinstall_machine):
+    definition = kvm_vm.DEF_DIR / "test01.yaml"
+    raw = kvm_vm.yaml_load(definition)
+    raw["storage"]["disk_gib"] = 1
+    kvm_vm.yaml_dump(definition, raw)
+    reinstall_machine["args"].dry_run = True
+    with pytest.raises(kvm_vm.KVMError, match="smaller than base image virtual size 20.0 GiB"):
+        kvm_vm.cmd_reinstall(reinstall_machine["args"])
+    assert reinstall_machine["disk"].read_bytes() == b"original guest data"
+
+
+def test_clone_dry_run_rejects_disk_smaller_than_the_source(reinstall_machine):
+    target = Path(reinstall_machine["args"].definition)
+    raw = kvm_vm.yaml_load(target)
+    raw.setdefault("storage", {})["disk_gib"] = 1
+    kvm_vm.yaml_dump(target, raw)
+    reinstall_machine["args"].dry_run = True
+    with pytest.raises(kvm_vm.KVMError, match="Clone target disk 1 GiB is smaller than source virtual size 20.0 GiB"):
+        kvm_vm.cmd_clone(reinstall_machine["args"])
+
+
+def test_clone_size_failure_does_not_claim_new_files_were_retained(reinstall_machine, caplog):
+    caplog.set_level(logging.ERROR)
+    target = Path(reinstall_machine["args"].definition)
+    raw = kvm_vm.yaml_load(target)
+    raw.setdefault("storage", {})["disk_gib"] = 1
+    kvm_vm.yaml_dump(target, raw)
+    with pytest.raises(kvm_vm.KVMError, match="smaller than source virtual size"):
+        kvm_vm.cmd_clone(reinstall_machine["args"])
+    assert "retained for manual recovery" not in caplog.text
+    assert not (kvm_vm.VM_DIR / "clone01.qcow2").exists()
+
+
+def test_create_size_failure_after_download_does_not_claim_files_were_kept(tmp_path, monkeypatch, caplog):
+    raw = _minimal_raw(storage={"image": {"distro": "debian12"}, "disk_gib": 1})
+    args = _create_args(tmp_path, monkeypatch, raw, dry_run=False)
+    base = tmp_path / "downloaded.qcow2"
+    base.write_bytes(b"image")
+    monkeypatch.setattr(kvm_vm, "acquire_base_image", lambda *a, **k: base)
+    monkeypatch.setattr(
+        kvm_vm, "qemu_img_info",
+        lambda path, **kwargs: {"format": "qcow2", "virtual-size": 3 * 1024**3},
+    )
+    caplog.set_level(logging.ERROR)
+    with pytest.raises(kvm_vm.KVMError, match="smaller than base image virtual size 3.0 GiB"):
+        kvm_vm.cmd_create(args)
+    assert "Nothing from this attempt was retained" in caplog.text
+    assert "retained for manual recovery" not in caplog.text
+    assert not (kvm_vm.VM_DIR / "test01.qcow2").exists()
+

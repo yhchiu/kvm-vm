@@ -37,7 +37,7 @@ Options shared by several commands:
 
 | Option | Commands | Effect |
 |---|---|---|
-| `--dry-run` | `create`, `clone`, `reinstall`, `snapshot create` | Run the checks and stop before changing anything: nothing is downloaded, no disk is changed and no VM is defined. `create`, `clone` and `reinstall` also print the effective definition. |
+| `--dry-run` | `create`, `clone`, `reinstall`, `snapshot create` | Run the checks and stop before changing anything: nothing is downloaded, no disk is changed and no VM is defined. `create`, `clone` and `reinstall` also print the effective definition. When the base image is already on disk, `create` and `reinstall` also reject a `disk_gib` smaller than that image. `clone` rejects a `disk_gib` smaller than the source disk. Dry-run does not download an image in order to measure it. |
 | `--no-start` | `create`, `clone`, `reinstall`, `snapshot rollback` | Leave the VM shut off afterwards, for example to inspect `virsh dumpxml` first. |
 | `--yes` | `reinstall`, `delete`, `snapshot delete`, `snapshot rollback` | Skip the prompt that asks you to type the VM name. Required when there is no terminal, such as in scripts. |
 | `--force` | `reinstall`, `delete`, `snapshot rollback` | Power off a running VM first (`virsh destroy`). Without it, a running VM is refused. |
@@ -88,8 +88,10 @@ ssh admin@<vm-ip> sudo cloud-init status --wait
 ```
 
 If `create` fails before the VM is defined, it removes only the files it created.
-Later failures keep everything for inspection, and a retry refuses to overwrite
-the leftovers. If the VM no longer exists in libvirt and only its kvm-vm state
+When the failure happens before any of those files exist, it says so and does
+not claim that files were kept for recovery. Later failures keep everything
+for inspection, and a retry refuses to overwrite the leftovers. If the VM no
+longer exists in libvirt and only its kvm-vm state
 and definition are left, `create` can reuse the name. Details are in
 [Lifecycle operations around recovery state](lifecycle-recovery-safety.md#sequencing-and-interrupted-operations).
 

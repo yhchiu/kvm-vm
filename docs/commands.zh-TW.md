@@ -35,7 +35,7 @@ kvm-vm backup check <backup-dir> [--until <checkpoint>]
 
 | 選項 | 適用指令 | 作用 |
 |---|---|---|
-| `--dry-run` | `create`、`clone`、`reinstall`、`snapshot create` | 執行檢查後停止，不做任何變更：不下載、不改磁碟、不定義 VM。`create`、`clone`、`reinstall` 另會輸出生效定義檔。 |
+| `--dry-run` | `create`、`clone`、`reinstall`、`snapshot create` | 執行檢查後停止，不做任何變更：不下載、不改磁碟、不定義 VM。`create`、`clone`、`reinstall` 另會輸出生效定義檔。基底映像檔已經在磁碟上時，`create` 與 `reinstall` 也會拒絕小於該映像檔虛擬大小的 `disk_gib`。`clone` 會拒絕小於來源磁碟的 `disk_gib`。dry-run 不會為了量測大小而下載映像檔。 |
 | `--no-start` | `create`、`clone`、`reinstall`、`snapshot rollback` | 完成後讓 VM 保持關機，例如想先檢查 `virsh dumpxml`。 |
 | `--yes` | `reinstall`、`delete`、`snapshot delete`、`snapshot rollback` | 略過要求輸入 VM 名稱的確認提示。沒有終端機時（例如腳本中）必須使用。 |
 | `--force` | `reinstall`、`delete`、`snapshot rollback` | 先強制關閉執行中的 VM（`virsh destroy`）。未指定時，執行中的 VM 會被拒絕。 |
@@ -71,7 +71,7 @@ VM 開機後指令就會結束。之後 cloud-init 會設定 guest，需要一�
 ssh admin@<vm-ip> sudo cloud-init status --wait
 ```
 
-若 `create` 在定義 VM 之前失敗，只會刪除本次建立的檔案。之後的失敗會保留所有檔案供檢查，重試時也不會覆寫殘留檔案。若 libvirt 中已沒有該 VM，只剩 kvm-vm 的狀態與定義檔，`create` 可以重新使用該名稱。詳見 [Lifecycle operations around recovery state](lifecycle-recovery-safety.md#sequencing-and-interrupted-operations)（英文）。
+若 `create` 在定義 VM 之前失敗，只會刪除本次建立的檔案。若失敗發生在任何檔案建立之前，訊息會說明本次沒有留下檔案，不會宣稱檔案已保留供復原。之後的失敗會保留所有檔案供檢查，重試時也不會覆寫殘留檔案。若 libvirt 中已沒有該 VM，只剩 kvm-vm 的狀態與定義檔，`create` 可以重新使用該名稱。詳見 [Lifecycle operations around recovery state](lifecycle-recovery-safety.md#sequencing-and-interrupted-operations)（英文）。
 
 ## list
 
