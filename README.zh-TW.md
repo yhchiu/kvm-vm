@@ -114,6 +114,7 @@ ssh admin@<vm-ip>         # admin 即 cloud_init.user
 |---|---|
 | 撰寫 VM 定義檔：欄位、預設值、映像檔、覆寫 | [VM 定義檔參考](docs/configuration.zh-TW.md) |
 | 在橋接、NAT、Macvtap 之間做選擇 | [網路設定](docs/networking.zh-TW.md) |
+| 建立橋接模式需要的宿主機 bridge | [宿主機 bridge 設定](docs/bridge-host.zh-TW.md) |
 | 查詢指令的作用 | [指令參考](docs/commands.zh-TW.md) |
 | 從主控台登入，或重新取得存取權 | [存取與安全](docs/access.zh-TW.md) |
 | 安全地使用快照 | [Snapshots](docs/snapshots.md)（英文） |
@@ -156,7 +157,9 @@ kvm-vm 管理的是單一宿主機上的 VM。它不會：
 - 為每台 VM 保留超過一個快照，或自行製作備份（它只在還原前檢查備份）；
 - 加入第二張網卡、設定 VLAN tag，或管理資料磁碟（你可以自行掛載資料磁碟，kvm-vm 不會動它們）；
 - 準備 Windows guest；
-- 讓既有 VM 跟著修改後的定義檔變更（不做 drift correction）。
+- 讓既有 VM 跟著修改後的定義檔變更（不做 drift correction）；
+- 建立或修改宿主機 bridge、libvirt 網路或實體網卡。選用的
+  [kvm-vm-bridge](docs/bridge-host.zh-TW.md) 可以在你執行它時建立一座 bridge。
 
 ## 開發
 

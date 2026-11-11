@@ -7,6 +7,7 @@ the same host can use different modes.
 
 - [Choose a mode](#choose-a-mode)
 - [Bridge mode](#bridge-mode)
+  - [Bridged guests and the host firewall](#bridged-guests-and-the-host-firewall)
 - [NAT mode](#nat-mode)
 - [Macvtap mode](#macvtap-mode)
 - [IP addresses](#ip-addresses)
@@ -41,6 +42,59 @@ This is the same as `virt-install --network bridge=br0,model=virtio,mac=...`.
 
 `KVM_VM_BRIDGE=name` selects bridge mode and the bridge at run time. A definition
 that sets only `network.bridge`, without `mode`, also uses bridge mode.
+
+kvm-vm does not create this bridge. When the host address is still on the
+physical NIC, [kvm-vm-bridge](bridge-host.md) can move that NIC into a new
+bridge and roll the change back if you do not confirm it.
+
+### Bridged guests and the host firewall
+
+A Linux bridge normally forwards frames without consulting iptables. When the
+`br_netfilter` module is loaded and `net.bridge.bridge-nf-call-iptables` is
+`1`, bridged IPv4 is sent through the filter `FORWARD` chain. Docker hosts
+often load `br_netfilter` and set the `FORWARD` policy to `DROP`, with
+`ACCEPT` rules only for `docker0` and libvirt's `virbr0`.
+
+What that looks like: the host can ping and SSH to the guest, because that
+traffic stays on the bridge and does not use `FORWARD`. The guest can ARP for
+its gateway, but IPv4 to the gateway is dropped, and other machines cannot
+reach the guest. ARP is not filtered as IPv4.
+
+`kvm-vm-bridge create` (including `--dry-run`) and `confirm` warn when they
+see this combination and the `FORWARD` chain has no `ACCEPT` for traffic
+forwarded in and out of the new bridge. The warning does not change any
+firewall rule, and it does not refuse to create the bridge. The check reads
+the `FORWARD` chain only. It does not follow a jump to `DOCKER-USER` or
+another chain, and it can miss a `DROP` that matches before a later `ACCEPT`.
+Treat it as a hint.
+
+Allow the bridge without changing the `FORWARD` policy to `ACCEPT`. Setting
+the policy to `ACCEPT` would also accept forwarded traffic for every other
+interface.
+
+```bash
+sudo iptables -C FORWARD -i br0 -j ACCEPT 2>/dev/null || sudo iptables -I FORWARD 1 -i br0 -j ACCEPT
+sudo iptables -C FORWARD -o br0 -j ACCEPT 2>/dev/null || sudo iptables -I FORWARD 1 -o br0 -j ACCEPT
+```
+
+Replace `br0` with your bridge. These rules disappear on reboot unless you
+save them with the same mechanism that keeps the `DROP` policy (for example
+`iptables-persistent`, an nftables ruleset, or a firewalld direct rule). Do
+not flush the filter table, and do not turn the host firewall off.
+
+To stop iptables from seeing bridged frames on this bridge only, leaving
+routed traffic unchanged:
+
+```bash
+echo 0 | sudo tee /sys/class/net/br0/bridge/nf_call_iptables
+```
+
+That file exists only while `br_netfilter` is loaded and the bridge exists,
+and the value is not persistent. Prefer the `FORWARD` rules above when you
+want the host firewall to keep seeing guest traffic.
+
+IPv6 has the matching `net.bridge.bridge-nf-call-ip6tables` sysctl. The
+warning is about IPv4, which is the path that fails on a typical Docker host.
 
 ## NAT mode
 

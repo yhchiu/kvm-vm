@@ -22,6 +22,17 @@ The Macvtap forwarding mode that allows guests attached to the same parent in
 this mode to communicate locally. It is distinct from a host Linux bridge.
 _Avoid_: Linux bridge
 
+**Uplink**:
+The host network interface that holds the host address and default route
+before kvm-vm-bridge enslaves it to a new Linux bridge.
+_Avoid_: Parent interface
+
+**Auto-rollback**:
+The timer kvm-vm-bridge arms before it changes the host network. If the
+operator does not confirm in time, it restores the previous runtime
+configuration and archives the bridge session.
+_Avoid_: Snapshot rollback
+
 ### Local management
 
 **Console password login**:

@@ -133,6 +133,7 @@ leaves the VM shut off.
 |---|---|
 | Write a VM definition: fields, defaults, images, overrides | [VM definition reference](docs/configuration.md) |
 | Choose between bridge, NAT and Macvtap | [Networking](docs/networking.md) |
+| Create the host bridge that bridge mode needs | [Host bridge setup](docs/bridge-host.md) |
 | Look up what a command does | [Command reference](docs/commands.md) |
 | Log in on the console, or regain access | [Access and security](docs/access.md) |
 | Use Snapshots safely | [Snapshots](docs/snapshots.md) |
@@ -190,7 +191,10 @@ kvm-vm manages VMs on one host. It does not:
 - add more than one network card, set VLAN tags, or manage data disks (you can
   attach data disks yourself, and kvm-vm leaves them alone);
 - prepare Windows guests;
-- change an existing VM to match an edited definition (no drift correction).
+- change an existing VM to match an edited definition (no drift correction);
+- create or change host bridges, libvirt networks or physical NICs. The
+  optional [kvm-vm-bridge](docs/bridge-host.md) tool can create one bridge
+  when you run it.
 
 ## Development
 

@@ -6,6 +6,7 @@
 
 - [選擇模式](#選擇模式)
 - [橋接模式](#橋接模式)
+  - [橋接訪客與宿主機防火牆](#橋接訪客與宿主機防火牆)
 - [NAT 模式](#nat-模式)
 - [Macvtap 模式](#macvtap-模式)
 - [IP 位址](#ip-位址)
@@ -37,6 +38,35 @@ network:
 等同於 `virt-install --network bridge=br0,model=virtio,mac=...`。
 
 `KVM_VM_BRIDGE=名稱` 可在執行時選用橋接模式與指定 bridge。只設定 `network.bridge` 而沒有 `mode` 的定義檔，也會使用橋接模式。
+
+kvm-vm 不會建立這座 bridge。宿主機位址若還在實體網卡上，[kvm-vm-bridge](bridge-host.zh-TW.md) 可以把該網卡移進新的 bridge；若你沒有確認，變更會被還原。
+
+### 橋接訪客與宿主機防火牆
+
+Linux bridge 轉送訊框時，通常不會詢問 iptables。載入 `br_netfilter` 且 `net.bridge.bridge-nf-call-iptables` 為 `1` 時，橋接的 IPv4 會送進 filter 的 `FORWARD` 鏈。Docker 宿主機常常載入 `br_netfilter`，並把 `FORWARD` 政策設成 `DROP`，`ACCEPT` 只放行 `docker0` 與 libvirt 的 `virbr0`。
+
+看起來會是這樣：宿主機可以 ping 與 SSH 到訪客，因為那段流量留在 bridge 上，不經過 `FORWARD`。訪客可以 ARP 到 gateway，但送到 gateway 的 IPv4 會被丟掉，其他機器也連不到訪客。ARP 不會被當成 IPv4 過濾。
+
+`kvm-vm-bridge create`（含 `--dry-run`）與 `confirm` 在看到這個組合，而且 `FORWARD` 鏈沒有對這座新 bridge 的進、出轉送做 `ACCEPT` 時，會提出警告。警告不會改任何防火牆規則，也不會拒絕建立 bridge。這項檢查只看 `FORWARD` 鏈本身，不會跟著跳進 `DOCKER-USER` 或其他鏈，也可能漏看排在 `ACCEPT` 之前的 `DROP`。請把它當成提示。
+
+放行這座 bridge 時，不要把 `FORWARD` 政策改成 `ACCEPT`。改成 `ACCEPT` 會一併放行其他介面上的轉送流量。
+
+```bash
+sudo iptables -C FORWARD -i br0 -j ACCEPT 2>/dev/null || sudo iptables -I FORWARD 1 -i br0 -j ACCEPT
+sudo iptables -C FORWARD -o br0 -j ACCEPT 2>/dev/null || sudo iptables -I FORWARD 1 -o br0 -j ACCEPT
+```
+
+把 `br0` 換成你的 bridge。這些規則在重開機後會消失，除非用維持 `DROP` 政策的同一套機制存起來（例如 `iptables-persistent`、nftables 規則檔，或 firewalld 的 direct rule）。不要清空 filter 表，也不要關掉整台宿主機的防火牆。
+
+若只要讓 iptables 看不到這一座 bridge 上的橋接訊框，路由轉送的流量維持原狀：
+
+```bash
+echo 0 | sudo tee /sys/class/net/br0/bridge/nf_call_iptables
+```
+
+這個檔案只在 `br_netfilter` 已載入且 bridge 存在時出現，而且數值不會持久保存。若希望宿主機防火牆繼續看得到訪客流量，請優先使用上面的 `FORWARD` 規則。
+
+IPv6 有對應的 `net.bridge.bridge-nf-call-ip6tables` sysctl。上述警告針對的是 IPv4，這也是一般 Docker 宿主機上會失敗的路徑。
 
 ## NAT 模式
 
