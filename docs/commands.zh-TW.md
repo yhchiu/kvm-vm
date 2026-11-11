@@ -50,7 +50,7 @@ kvm-vm validate web01.yaml
 kvm-vm validate --clone web02.yaml     # clone 目標，不需映像檔
 ```
 
-讀取定義檔，套用預設值與[環境變數覆寫](configuration.zh-TW.md#環境變數覆寫)，讀取 SSH 金鑰檔，然後輸出生效定義檔。它不連線 libvirt，因此抓不到宿主機的問題（例如 bridge 不存在）；這類問題請用 `create --dry-run`。
+讀取定義檔，套用預設值與[環境變數覆寫](configuration.zh-TW.md#環境變數覆寫)，讀取 SSH 金鑰檔，然後輸出生效定義檔。它不連線 libvirt，因此抓不到宿主機的問題（例如 bridge 不存在，或 FORWARD 政策會丟掉橋接訪客的 IPv4）；這類問題請用 `create --dry-run`。防火牆警告見[橋接訪客與宿主機防火牆](networking.zh-TW.md#橋接訪客與宿主機防火牆)。
 
 ## create
 

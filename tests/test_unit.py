@@ -2398,3 +2398,62 @@ def test_create_size_failure_after_download_does_not_claim_files_were_kept(tmp_p
     assert "retained for manual recovery" not in caplog.text
     assert not (kvm_vm.VM_DIR / "test01.qcow2").exists()
 
+
+def _forward_facts(**overrides):
+    facts = {
+        "br_netfilter": True,
+        "call_iptables": "1",
+        "readable": True,
+        "format": "iptables",
+        "rules": "-P FORWARD DROP\n-A FORWARD -j DOCKER-USER\n",
+    }
+    facts.update(overrides)
+    return facts
+
+
+def test_bridge_forward_warning_when_policy_drops_guest_ipv4():
+    message = kvm_vm.bridged_ipv4_forward_warning("br0", _forward_facts())
+    assert message is not None
+    assert "likely to be dropped" in message
+    assert "-i br0" in message
+    assert "-o br0" in message
+    assert "policy to ACCEPT" in message
+
+
+def test_bridge_forward_warning_stays_quiet_when_the_bridge_is_allowed():
+    rules = "-P FORWARD DROP\n-A FORWARD -i br0 -j ACCEPT\n-A FORWARD -o br0 -j ACCEPT\n"
+    assert kvm_vm.bridged_ipv4_forward_warning("br0", _forward_facts(rules=rules)) is None
+    assert kvm_vm.bridged_ipv4_forward_warning("br0", _forward_facts(br_netfilter=False)) is None
+    assert kvm_vm.bridged_ipv4_forward_warning("br0", _forward_facts(call_iptables="0")) is None
+    assert kvm_vm.bridged_ipv4_forward_warning("br0", _forward_facts(rules="-P FORWARD ACCEPT\n")) is None
+
+
+def test_bridge_forward_warning_when_only_one_direction_is_accepted():
+    rules = "-P FORWARD DROP\n-A FORWARD -o br0 -j ACCEPT\n"
+    message = kvm_vm.bridged_ipv4_forward_warning("br0", _forward_facts(rules=rules))
+    assert message is not None
+    assert "-i br0" in message
+
+
+def test_validate_bridge_warns_and_still_accepts_an_existing_bridge(monkeypatch, caplog):
+    monkeypatch.setattr(kvm_vm.shutil, "which", lambda name: "/sbin/ip" if name == "ip" else None)
+    monkeypatch.setattr(
+        kvm_vm, "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, "", ""),
+    )
+    monkeypatch.setattr(kvm_vm, "bridged_ipv4_forward_warning", lambda bridge: "guest IPv4 on br0 would be dropped")
+    caplog.set_level(logging.WARNING)
+    kvm_vm.validate_bridge("br0")
+    assert "guest IPv4 on br0 would be dropped" in caplog.text
+
+
+def test_validate_bridge_still_rejects_a_missing_bridge(monkeypatch):
+    monkeypatch.setattr(kvm_vm.shutil, "which", lambda name: "/sbin/ip" if name == "ip" else None)
+
+    def missing(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 1, "", "Device does not exist")
+
+    monkeypatch.setattr(kvm_vm, "run", missing)
+    with pytest.raises(kvm_vm.KVMError, match="Bridge/interface not found: br0"):
+        kvm_vm.validate_bridge("br0")
+

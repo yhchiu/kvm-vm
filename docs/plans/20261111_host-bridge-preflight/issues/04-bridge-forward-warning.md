@@ -1,6 +1,6 @@
 # 04: Warn when the host firewall drops bridged guest IPv4
 
-**Status:** planned
+**Status:** complete
 
 **Bug:** B-005, in kvm-vm. `create` / `validate` succeed, the guest has an
 address, and the host can reach the guest, while guest IPv4 through the
@@ -18,7 +18,7 @@ bridge without setting the policy to ACCEPT, and the per-bridge
 **Tests:** Parser and warning unit tests. `validate_bridge` logs a warning
 and still returns when the bridge exists and the firewall would drop it.
 
-- [ ] Detect br_netfilter, the sysctl and the FORWARD chain
-- [ ] Warn from bridge validation used by create, clone and reinstall
-- [ ] Document the warning and the allow rules in both languages
-- [ ] Unit tests
+- [x] Detect br_netfilter, the sysctl and the FORWARD chain
+- [x] Warn from bridge validation used by create, clone and reinstall
+- [x] Document the warning and the allow rules in both languages
+- [x] Unit tests

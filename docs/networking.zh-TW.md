@@ -47,7 +47,7 @@ Linux bridge 轉送訊框時，通常不會詢問 iptables。載入 `br_netfilte
 
 看起來會是這樣：宿主機可以 ping 與 SSH 到訪客，因為那段流量留在 bridge 上，不經過 `FORWARD`。訪客可以 ARP 到 gateway，但送到 gateway 的 IPv4 會被丟掉，其他機器也連不到訪客。ARP 不會被當成 IPv4 過濾。
 
-`kvm-vm-bridge create`（含 `--dry-run`）與 `confirm` 在看到這個組合，而且 `FORWARD` 鏈沒有對這座新 bridge 的進、出轉送做 `ACCEPT` 時，會提出警告。警告不會改任何防火牆規則，也不會拒絕建立 bridge。這項檢查只看 `FORWARD` 鏈本身，不會跟著跳進 `DOCKER-USER` 或其他鏈，也可能漏看排在 `ACCEPT` 之前的 `DROP`。請把它當成提示。
+`kvm-vm create`、`clone` 與 `reinstall`（含 `--dry-run`）在 VM 使用的 bridge 處於這個狀態時會提出警告。`validate` 不會：它保持離線，不檢查宿主機。`kvm-vm-bridge create`（含 `--dry-run`）與 `confirm` 也會警告；bridge 尚未存在時，它改看全域 sysctl。警告不會改任何防火牆規則，也不會拒絕該指令。這項檢查只看 `FORWARD` 鏈本身，不會跟著跳進 `DOCKER-USER` 或其他鏈，也可能漏看排在 `ACCEPT` 之前的 `DROP`。請把它當成提示。
 
 放行這座 bridge 時，不要把 `FORWARD` 政策改成 `ACCEPT`。改成 `ACCEPT` 會一併放行其他介面上的轉送流量。
 

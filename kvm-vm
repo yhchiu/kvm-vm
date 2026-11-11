@@ -549,6 +549,175 @@ def resolve_ssh_keys(items: List[Any], definition_dir: Path) -> List[str]:
     return result
 
 
+def _read_sysctl(path: Path) -> Optional[str]:
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+
+
+def bridge_calls_iptables(bridge: str) -> Optional[str]:
+    """1 when bridged IPv4 on this bridge is passed to iptables.
+
+    A per-bridge nf_call_iptables value wins over the global sysctl. The
+    per-bridge file exists only after the bridge exists and br_netfilter is
+    loaded.
+    """
+    per_bridge = _read_sysctl(NET_SYS_DIR / bridge / "bridge" / "nf_call_iptables")
+    if per_bridge is not None:
+        return per_bridge
+    return _read_sysctl(Path("/proc/sys/net/bridge/bridge-nf-call-iptables"))
+
+
+def read_forward_filter_facts(bridge: str) -> Dict[str, Any]:
+    """Best-effort look at br_netfilter and the IPv4 FORWARD chain."""
+    facts: Dict[str, Any] = {
+        "br_netfilter": Path("/sys/module/br_netfilter").exists(),
+        "call_iptables": bridge_calls_iptables(bridge),
+        "rules": "",
+        "readable": False,
+        "format": None,
+    }
+    if shutil.which("iptables"):
+        proc = run(["iptables", "-S", "FORWARD"], check=False, capture=True)
+        if proc.returncode == 0:
+            facts["rules"] = proc.stdout
+            facts["readable"] = True
+            facts["format"] = "iptables"
+            return facts
+    if shutil.which("nft"):
+        proc = run(["nft", "list", "chain", "ip", "filter", "FORWARD"], check=False, capture=True)
+        if proc.returncode == 0:
+            facts["rules"] = proc.stdout
+            facts["readable"] = True
+            facts["format"] = "nft"
+            return facts
+    return facts
+
+
+def _forward_accepts_direction(tokens: List[str], bridge: str, direction: str) -> bool:
+    """True when an iptables rule ACCEPTs traffic for direction (-i or -o)."""
+    if "-j" not in tokens:
+        return False
+    jump_at = tokens.index("-j")
+    if jump_at + 1 >= len(tokens) or tokens[jump_at + 1] != "ACCEPT":
+        return False
+    long_opt = "--in-interface" if direction == "-i" else "--out-interface"
+    other = "-o" if direction == "-i" else "-i"
+    other_long = "--out-interface" if direction == "-i" else "--in-interface"
+    iface = None
+    if direction in tokens:
+        at = tokens.index(direction)
+        if at + 1 < len(tokens):
+            iface = tokens[at + 1]
+    elif long_opt in tokens:
+        at = tokens.index(long_opt)
+        if at + 1 < len(tokens):
+            iface = tokens[at + 1]
+    if iface is None:
+        return other not in tokens and other_long not in tokens
+    return iface == bridge
+
+
+def parse_iptables_forward(text: str, bridge: str) -> Tuple[Optional[str], bool, bool]:
+    """Return (policy, accepts_in, accepts_out) from `iptables -S FORWARD`."""
+    policy = None
+    accept_in = False
+    accept_out = False
+    for raw in text.splitlines():
+        tokens = raw.split()
+        if len(tokens) >= 3 and tokens[0] == "-P" and tokens[1] == "FORWARD":
+            policy = tokens[2].upper()
+            continue
+        if len(tokens) < 3 or tokens[0] != "-A" or tokens[1] != "FORWARD":
+            continue
+        body = tokens[2:]
+        if _forward_accepts_direction(body, bridge, "-i"):
+            accept_in = True
+        if _forward_accepts_direction(body, bridge, "-o"):
+            accept_out = True
+    return policy, accept_in, accept_out
+
+
+def parse_nft_forward(text: str, bridge: str) -> Tuple[Optional[str], bool, bool]:
+    """Return (policy, accepts_in, accepts_out) from nft's ip filter FORWARD chain."""
+    policy = None
+    accept_in = False
+    accept_out = False
+    quoted = '"' + bridge + '"'
+    for raw in text.splitlines():
+        line = " ".join(raw.strip().rstrip(";").split())
+        if "policy " in line:
+            policy = line.split("policy", 1)[1].strip().split()[0].upper()
+        if not line.endswith(" accept") and " accept " not in (" " + line + " "):
+            continue
+        has_in = f"iifname {quoted}" in line or f"iif {quoted}" in line
+        has_out = f"oifname {quoted}" in line or f"oif {quoted}" in line
+        if has_in:
+            accept_in = True
+        if has_out:
+            accept_out = True
+        if not has_in and not has_out and "iifname" not in line and "oifname" not in line and "iif " not in line and "oif " not in line:
+            if line == "accept" or line.endswith(" accept"):
+                accept_in = True
+                accept_out = True
+    return policy, accept_in, accept_out
+
+
+def bridged_ipv4_forward_warning(bridge: str, facts: Optional[Dict[str, Any]] = None) -> Optional[str]:
+    """Warn when br_netfilter would drop bridged guest IPv4. Does not refuse.
+
+    Host SSH to a guest on the same bridge does not use FORWARD, so the guest
+    can look reachable from the host while it still cannot reach its gateway.
+    The check looks only at the FORWARD chain. A jump to another chain is not
+    followed. See docs/networking.md.
+    """
+    if facts is None:
+        # Do not run iptables unless this host is actually in the suspect state.
+        if not Path("/sys/module/br_netfilter").exists():
+            return None
+        if str(bridge_calls_iptables(bridge)) != "1":
+            return None
+        facts = read_forward_filter_facts(bridge)
+    if not facts.get("br_netfilter"):
+        return None
+    if str(facts.get("call_iptables")) != "1":
+        return None
+    if not facts.get("readable"):
+        return (
+            f"br_netfilter is loaded and net.bridge.bridge-nf-call-iptables=1, "
+            f"but the IPv4 FORWARD policy could not be read. Guests bridged on {bridge} "
+            f"may have no IPv4 connectivity if FORWARD drops their traffic. "
+            f"Allow it without setting the FORWARD policy to ACCEPT: "
+            f"iptables -I FORWARD 1 -i {bridge} -j ACCEPT && "
+            f"iptables -I FORWARD 1 -o {bridge} -j ACCEPT. "
+            "See docs/networking.md#bridged-guests-and-the-host-firewall."
+        )
+    if facts.get("format") == "nft":
+        policy, accept_in, accept_out = parse_nft_forward(str(facts.get("rules") or ""), bridge)
+    else:
+        policy, accept_in, accept_out = parse_iptables_forward(str(facts.get("rules") or ""), bridge)
+    if policy not in {"DROP", "REJECT"}:
+        return None
+    if accept_in and accept_out:
+        return None
+    missing = []
+    if not accept_in:
+        missing.append(f"traffic forwarded from {bridge} (-i {bridge})")
+    if not accept_out:
+        missing.append(f"traffic forwarded to {bridge} (-o {bridge})")
+    return (
+        f"Bridged guest IPv4 on {bridge} is likely to be dropped. "
+        f"br_netfilter is loaded, net.bridge.bridge-nf-call-iptables=1, and the IPv4 "
+        f"FORWARD policy is {policy}, with no ACCEPT for " + " or ".join(missing) + ". "
+        "The host can still reach a guest on the same bridge; that path does not use FORWARD. "
+        f"Allow FORWARD for {bridge} without setting the policy to ACCEPT: "
+        f"iptables -I FORWARD 1 -i {bridge} -j ACCEPT && "
+        f"iptables -I FORWARD 1 -o {bridge} -j ACCEPT. "
+        "See docs/networking.md#bridged-guests-and-the-host-firewall."
+    )
+
+
 def validate_bridge(bridge: str) -> None:
     # A libvirt bridge may exist even if /sys/class/net isn't visible in unusual namespaces,
     # so only fail when ip is available and explicitly says it is missing.
@@ -556,6 +725,12 @@ def validate_bridge(bridge: str) -> None:
         p = run(["ip", "link", "show", "dev", bridge], check=False, capture=True)
         if p.returncode != 0:
             raise KVMError(f"Bridge/interface not found: {bridge}")
+    # Warn only. A FORWARD drop does not stop host-to-guest traffic on the
+    # same bridge, and refusing would block a host the operator can fix.
+    # validate stays offline and does not call this function.
+    message = bridged_ipv4_forward_warning(bridge)
+    if message:
+        log.warning(message)
 
 
 def validate_nat_network(network_name: str) -> None:

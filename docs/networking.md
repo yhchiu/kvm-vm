@@ -60,10 +60,12 @@ traffic stays on the bridge and does not use `FORWARD`. The guest can ARP for
 its gateway, but IPv4 to the gateway is dropped, and other machines cannot
 reach the guest. ARP is not filtered as IPv4.
 
-`kvm-vm-bridge create` (including `--dry-run`) and `confirm` warn when they
-see this combination and the `FORWARD` chain has no `ACCEPT` for traffic
-forwarded in and out of the new bridge. The warning does not change any
-firewall rule, and it does not refuse to create the bridge. The check reads
+`kvm-vm create`, `clone` and `reinstall` (including `--dry-run`) warn when
+the VM's bridge is in this state. `validate` does not: it stays offline and
+does not inspect the host. `kvm-vm-bridge create` (including `--dry-run`) and
+`confirm` warn as well, including before the bridge exists, using the global
+sysctl. The warning does not change any firewall rule, and it does not refuse
+the command. The check reads
 the `FORWARD` chain only. It does not follow a jump to `DOCKER-USER` or
 another chain, and it can miss a `DROP` that matches before a later `ACCEPT`.
 Treat it as a hint.

@@ -61,8 +61,10 @@ kvm-vm validate --clone web02.yaml     # a clone target: no image needed
 
 Reads the definition, applies defaults and [environment overrides](configuration.md#environment-overrides),
 reads the SSH key files, and prints the effective definition. It does not contact
-libvirt, so it cannot catch host problems such as a missing bridge; use
-`create --dry-run` for that.
+libvirt, so it cannot catch host problems such as a missing bridge or a
+FORWARD policy that would drop bridged guest IPv4; use `create --dry-run`
+for that. The firewall warning is described in
+[Bridged guests and the host firewall](networking.md#bridged-guests-and-the-host-firewall).
 
 ## create
 

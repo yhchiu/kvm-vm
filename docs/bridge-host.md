@@ -131,8 +131,11 @@ is likely to be dropped by the host firewall. This is common on Docker hosts:
 the iptables FORWARD policy is DROP, with ACCEPT rules only for Docker and
 libvirt bridges.
 
-The warning does not change any rule. The host can still reach a guest on
-the same bridge, because that traffic does not use FORWARD. See
+The warning does not change any rule and does not refuse the command. The
+host can still reach a guest on the same bridge, because that traffic does
+not use FORWARD. `kvm-vm create`, `clone` and `reinstall` print the same
+warning for a bridge that already exists. `kvm-vm validate` does not inspect
+the host. See
 [Bridged guests and the host firewall](networking.md#bridged-guests-and-the-host-firewall).
 
 ## Safety
