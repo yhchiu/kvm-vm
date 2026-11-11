@@ -2268,6 +2268,14 @@ def _deny_state_dir_mkdir(monkeypatch):
     monkeypatch.setattr(Path, "mkdir", denied)
 
 
+def test_shipped_commands_are_executable():
+    root = Path(__file__).resolve().parent.parent
+    for name in ("kvm-vm", "tools/kvm-vm-bridge"):
+        path = root / name
+        assert path.is_file()
+        assert path.stat().st_mode & 0o111, f"{name} must be executable so a fresh checkout can run it"
+
+
 def test_lifecycle_lock_permission_is_a_clear_error(monkeypatch):
     _deny_state_dir_mkdir(monkeypatch)
     with pytest.raises(kvm_vm.KVMError, match="Cannot create the lifecycle lock") as caught:
