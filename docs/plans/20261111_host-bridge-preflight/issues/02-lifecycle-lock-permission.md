@@ -1,6 +1,6 @@
 # 02: Clear error when the lifecycle lock cannot be created
 
-**Status:** planned
+**Status:** complete
 
 **Bug:** B-001. Non-root `create --dry-run` raises an uncaught
 `PermissionError` on `/var/lib/kvm-vm/state/.lifecycle-lock`.
@@ -12,6 +12,6 @@ traceback.
 **Tests:** Unit test that a denied `mkdir` becomes `KVMError`, and that
 `main` prints `ERROR:` without a traceback.
 
-- [ ] Catch `PermissionError` around lock creation
-- [ ] Document that `--dry-run` still takes the lock
-- [ ] Unit test
+- [x] Catch `PermissionError` around lock creation
+- [x] Document that `--dry-run` still takes the lock
+- [x] Unit test

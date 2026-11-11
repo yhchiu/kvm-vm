@@ -1350,18 +1350,33 @@ def lifecycle_exclusive(command):
     """Serialize local lifecycle commands sharing STATE_DIR; stale locks fail closed."""
     @functools.wraps(command)
     def invoke(args):
-        STATE_DIR.mkdir(parents=True, exist_ok=True)
         lock = STATE_DIR / ".lifecycle-lock"
         try:
-            lock.mkdir()
-        except FileExistsError as exc:
+            STATE_DIR.mkdir(parents=True, exist_ok=True)
+            try:
+                lock.mkdir()
+            except FileExistsError as exc:
+                raise KVMError(
+                    f"Another lifecycle operation or interrupted attempt owns {lock}. "
+                    "Check its owner and domain/storage state; remove the lock only after "
+                    "confirming no operation is running and recovery is complete."
+                ) from exc
+        except PermissionError as exc:
+            detail = exc.strerror or str(exc)
             raise KVMError(
-                f"Another lifecycle operation or interrupted attempt owns {lock}. "
-                "Check its owner and domain/storage state; remove the lock only after "
-                "confirming no operation is running and recovery is complete."
+                f"Cannot create the lifecycle lock at {lock} ({detail}). "
+                "Lifecycle commands need a writable state directory; run kvm-vm as root. "
+                "--dry-run takes this lock too."
             ) from exc
         try:
-            (lock / "owner").write_text(f"pid={os.getpid()} command={command.__name__}\n", encoding="utf-8")
+            try:
+                (lock / "owner").write_text(f"pid={os.getpid()} command={command.__name__}\n", encoding="utf-8")
+            except PermissionError as exc:
+                detail = exc.strerror or str(exc)
+                raise KVMError(
+                    f"Cannot write the lifecycle lock at {lock} ({detail}). "
+                    "Lifecycle commands need a writable state directory; run kvm-vm as root."
+                ) from exc
             return command(args)
         finally:
             try:

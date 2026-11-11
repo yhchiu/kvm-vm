@@ -48,7 +48,9 @@ something take a lock, `/var/lib/kvm-vm/state/.lifecycle-lock`, so only one runs
 at a time. A command that finds the lock stops at once. If an earlier run was
 interrupted, the lock stays; see
 [Sequencing and interrupted operations](lifecycle-recovery-safety.md#sequencing-and-interrupted-operations)
-before you remove it.
+before you remove it. `--dry-run` takes this lock as well: it is still a
+lifecycle command. If the state directory is not writable, the command stops
+with `ERROR:` and does not print a Python traceback. Run it as root.
 
 ## validate
 

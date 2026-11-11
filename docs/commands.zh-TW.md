@@ -41,7 +41,7 @@ kvm-vm backup check <backup-dir> [--until <checkpoint>]
 | `--force` | `reinstall`、`delete`、`snapshot rollback` | 先強制關閉執行中的 VM（`virsh destroy`）。未指定時，執行中的 VM 會被拒絕。 |
 | `--console-password-file` | `create`、`clone`、`reinstall` | 新 Console 密碼的寫入位置。定義檔設定 `console_password: true` 時必填，否則指定會報錯。詳見[存取與安全](access.zh-TW.md#console-密碼登入)。 |
 
-`create`、`clone`、`reinstall`、`delete` 以及會變更狀態的 `snapshot` 指令會取得鎖 `/var/lib/kvm-vm/state/.lifecycle-lock`，同一時間只會有一個在執行。遇到鎖的指令會立即停止。若先前的執行被中斷，鎖會留著；移除前請先閱讀 [Sequencing and interrupted operations](lifecycle-recovery-safety.md#sequencing-and-interrupted-operations)（英文）。
+`create`、`clone`、`reinstall`、`delete` 以及會變更狀態的 `snapshot` 指令會取得鎖 `/var/lib/kvm-vm/state/.lifecycle-lock`，同一時間只會有一個在執行。遇到鎖的指令會立即停止。若先前的執行被中斷，鎖會留著；移除前請先閱讀 [Sequencing and interrupted operations](lifecycle-recovery-safety.md#sequencing-and-interrupted-operations)（英文）。`--dry-run` 同樣會取得這把鎖，因為它仍是生命週期指令。狀態目錄無法寫入時，指令以 `ERROR:` 結束，不會印出 Python traceback。請以 root 執行。
 
 ## validate
 

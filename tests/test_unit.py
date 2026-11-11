@@ -2256,3 +2256,44 @@ class TestGetIpsAndCmdList:
         assert lines[4].startswith("db01")
         assert lines[4][ip_col:].strip() == "-"
 
+
+def _deny_state_dir_mkdir(monkeypatch):
+    real_mkdir = Path.mkdir
+
+    def denied(self, *args, **kwargs):
+        if self == kvm_vm.STATE_DIR or self.name == ".lifecycle-lock":
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_mkdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", denied)
+
+
+def test_lifecycle_lock_permission_is_a_clear_error(monkeypatch):
+    _deny_state_dir_mkdir(monkeypatch)
+    with pytest.raises(kvm_vm.KVMError, match="Cannot create the lifecycle lock") as caught:
+        kvm_vm.cmd_create(MagicMock())
+    assert "Permission denied" in str(caught.value)
+    assert "dry-run" in str(caught.value)
+    assert not (kvm_vm.STATE_DIR / ".lifecycle-lock").exists()
+
+
+def test_main_prints_lock_permission_without_a_traceback(monkeypatch, capsys):
+    _deny_state_dir_mkdir(monkeypatch)
+    monkeypatch.setattr(sys, "argv", ["kvm-vm", "create", "missing.yaml", "--dry-run"])
+    # pytest already configured logging, so basicConfig in main() is a no-op.
+    # Attach the same stderr format a normal run uses and read that.
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
+    root = logging.getLogger()
+    root.addHandler(handler)
+    try:
+        code = kvm_vm.main()
+    finally:
+        root.removeHandler(handler)
+    assert code == 1
+    err = stream.getvalue() + capsys.readouterr().err
+    assert "ERROR: Cannot create the lifecycle lock" in err
+    assert "Traceback" not in err
+    assert "PermissionError" not in err
+
