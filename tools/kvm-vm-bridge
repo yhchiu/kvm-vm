@@ -1,0 +1,1527 @@
+#!/usr/bin/env python3
+"""kvm-vm-bridge: create a Linux bridge on a host uplink with automatic rollback.
+
+Designed for a single KVM host whose management address lives on the uplink
+that must join the bridge.  A rollback timer is armed *before* any network
+change.  If the operator does not confirm in time, or if the change severs
+management access, the previous runtime configuration is restored.
+
+Persistent configuration is written only at confirm time, so a reboot during
+the trial window brings the host back on its previous ifupdown, systemd-networkd
+or NetworkManager settings.
+
+No third-party Python packages are required.
+"""
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import os
+import shutil
+import signal
+import socket
+import subprocess
+import sys
+import time
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+VERSION = "1.0.0"
+STATE_DIR = Path(os.environ.get("KVM_VM_BRIDGE_STATE_DIR", "/var/lib/kvm-vm-bridge"))
+LOG_FILE = Path(os.environ.get("KVM_VM_BRIDGE_LOG", "/var/log/kvm-vm-bridge.log"))
+DEFAULT_TIMEOUT = 120
+DEFAULT_BRIDGE = "br0"
+WATCHDOG_UNIT_PREFIX = "kvm-vm-bridge-rollback-"
+
+
+def etc_path(*parts: str) -> Path:
+    """Host configuration root. Tests set KVM_VM_BRIDGE_ETC to a temporary directory."""
+    root = Path(os.environ.get("KVM_VM_BRIDGE_ETC", "/etc"))
+    return root.joinpath(*parts) if parts else root
+
+
+def sys_net(name: str = "") -> Path:
+    """sysfs network class. Tests set KVM_VM_BRIDGE_SYS_NET to a temporary tree."""
+    root = Path(os.environ.get("KVM_VM_BRIDGE_SYS_NET", "/sys/class/net"))
+    return root / name if name else root
+
+
+class BridgeError(RuntimeError):
+    pass
+
+
+def utc_now() -> str:
+    return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def eprint(*args: Any) -> None:
+    print(*args, file=sys.stderr)
+
+
+def log(msg: str) -> None:
+    line = f"{utc_now()} {msg}"
+    print(line)
+    try:
+        LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with LOG_FILE.open("a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+    except OSError:
+        pass
+
+
+def run(cmd: List[str], *, check: bool = True, capture: bool = False,
+        input_text: Optional[str] = None) -> subprocess.CompletedProcess:
+    env = os.environ.copy()
+    env["LC_ALL"] = "C"
+    if capture:
+        return subprocess.run(
+            cmd, check=check, text=True, input=input_text,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env,
+        )
+    return subprocess.run(cmd, check=check, text=True, input=input_text, env=env)
+
+
+def output(cmd: List[str], *, check: bool = True) -> str:
+    return run(cmd, check=check, capture=True).stdout.strip()
+
+
+def which(name: str) -> Optional[str]:
+    return shutil.which(name)
+
+
+def require_root() -> None:
+    if os.geteuid() != 0:
+        raise BridgeError("kvm-vm-bridge must run as root")
+
+
+def require_commands(names: List[str]) -> None:
+    missing = [n for n in names if which(n) is None]
+    if missing:
+        raise BridgeError("Missing required command(s): " + ", ".join(missing))
+
+
+def systemd_is_active(unit: str) -> bool:
+    if which("systemctl") is None:
+        return False
+    p = run(["systemctl", "is-active", "--quiet", unit], check=False, capture=True)
+    return p.returncode == 0
+
+
+def service_enabled_or_active(unit: str) -> bool:
+    if which("systemctl") is None:
+        return False
+    return (
+        run(["systemctl", "is-active", "--quiet", unit], check=False, capture=True).returncode == 0
+        or run(["systemctl", "is-enabled", "--quiet", unit], check=False, capture=True).returncode == 0
+    )
+
+
+def ip_json(args: List[str]) -> Any:
+    raw = output(["ip", "-j"] + args, check=True)
+    return json.loads(raw) if raw else []
+
+
+def link_exists(name: str) -> bool:
+    return sys_net(name).exists()
+
+
+def link_is_up(name: str) -> bool:
+    oper = sys_net(name) / "operstate"
+    if not oper.exists():
+        return False
+    state = oper.read_text(encoding="utf-8").strip()
+    if state in {"up", "unknown"}:
+        return True
+    # carrier may still be valid when operstate is "dormant"
+    carrier = sys_net(name) / "carrier"
+    try:
+        return carrier.read_text(encoding="utf-8").strip() == "1"
+    except OSError:
+        return False
+
+
+def link_info(name: str) -> Dict[str, Any]:
+    data = ip_json(["-d", "link", "show", "dev", name])
+    if not data:
+        raise BridgeError(f"Interface not found: {name}")
+    return data[0]
+
+
+def is_bridge(name: str) -> bool:
+    return (sys_net(name) / "bridge").exists()
+
+
+def is_enslaved(name: str) -> Optional[str]:
+    master = sys_net(name) / "master"
+    if master.exists() or master.is_symlink():
+        try:
+            return Path(os.readlink(str(master))).name
+        except OSError:
+            return master.resolve().name
+    info = link_info(name)
+    return info.get("master")
+
+
+def interface_mac(name: str) -> str:
+    return (sys_net(name) / "address").read_text(encoding="utf-8").strip()
+
+
+def interface_addrs(name: str) -> List[Dict[str, Any]]:
+    data = ip_json(["addr", "show", "dev", name])
+    if not data:
+        return []
+    return list(data[0].get("addr_info") or [])
+
+
+def global_ipv4(name: str) -> List[Dict[str, Any]]:
+    return [
+        a for a in interface_addrs(name)
+        if a.get("family") == "inet" and a.get("scope") == "global"
+    ]
+
+
+def global_ipv6(name: str) -> List[Dict[str, Any]]:
+    return [
+        a for a in interface_addrs(name)
+        if a.get("family") == "inet6" and a.get("scope") == "global"
+    ]
+
+
+def default_routes_for(dev: str) -> List[Dict[str, Any]]:
+    routes = ip_json(["route", "show", "default"])
+    return [r for r in routes if r.get("dev") == dev]
+
+
+def all_routes_for(dev: str) -> List[Dict[str, Any]]:
+    routes = ip_json(["route", "show"])
+    return [r for r in routes if r.get("dev") == dev]
+
+
+# ---------------------------------------------------------------------------
+# Backend detection
+# ---------------------------------------------------------------------------
+
+def nm_device_connection(uplink: str) -> Optional[str]:
+    if which("nmcli") is None:
+        return None
+    p = run(
+        ["nmcli", "-t", "-f", "GENERAL.CONNECTION", "device", "show", uplink],
+        check=False, capture=True,
+    )
+    if p.returncode != 0:
+        return None
+    for line in p.stdout.splitlines():
+        if ":" in line:
+            value = line.split(":", 1)[1].strip()
+            return value or None
+    return None
+
+
+def nm_device_managed(uplink: str) -> bool:
+    if which("nmcli") is None:
+        return False
+    p = run(
+        ["nmcli", "-t", "-f", "GENERAL.STATE", "device", "show", uplink],
+        check=False, capture=True,
+    )
+    if p.returncode != 0:
+        return False
+    # "100 (connected)" etc. If NM knows the device at all, treat as managed
+    # unless it says unmanaged.
+    p2 = run(
+        ["nmcli", "-t", "-f", "GENERAL.NM-MANAGED", "device", "show", uplink],
+        check=False, capture=True,
+    )
+    text = (p2.stdout or "") + (p.stdout or "")
+    if "unmanaged" in text.lower() or text.strip().endswith(":no"):
+        return False
+    return "GENERAL.NM-MANAGED:yes" in p2.stdout.replace(" ", "") or "connected" in p.stdout.lower() or bool(nm_device_connection(uplink))
+
+
+def networkd_manages(uplink: str) -> bool:
+    netdir = etc_path("systemd", "network")
+    if not netdir.exists():
+        return False
+    for path in list(netdir.glob("*.network")):
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if uplink in text:
+            return True
+    if which("networkctl"):
+        p = run(["networkctl", "status", uplink], check=False, capture=True)
+        if p.returncode == 0 and "Network File:" in p.stdout:
+            return True
+    return False
+
+
+def ifupdown_mentions(uplink: str) -> bool:
+    paths = [etc_path("network", "interfaces")]
+    extra = etc_path("network", "interfaces.d")
+    if extra.is_dir():
+        paths.extend(sorted(p for p in extra.iterdir() if p.is_file()))
+    for path in paths:
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if uplink in text:
+            return True
+    return False
+
+
+def detect_backend(uplink: str) -> str:
+    """Return 'networkmanager', 'networkd', 'ifupdown', or 'runtime'."""
+    nm_active = systemd_is_active("NetworkManager")
+    networkd_active = systemd_is_active("systemd-networkd")
+    networking_active = service_enabled_or_active("networking")
+
+    if nm_active and nm_device_managed(uplink):
+        return "networkmanager"
+    if networkd_active and networkd_manages(uplink):
+        return "networkd"
+    if (networking_active or etc_path("network", "interfaces").exists()) and (
+        ifupdown_mentions(uplink) or networking_active
+    ):
+        return "ifupdown"
+    if nm_active:
+        return "networkmanager"
+    if networkd_active:
+        return "networkd"
+    if etc_path("network", "interfaces").exists():
+        return "ifupdown"
+    return "runtime"
+
+
+def backend_label(backend: str) -> str:
+    return {
+        "networkmanager": "NetworkManager",
+        "networkd": "systemd-networkd",
+        "ifupdown": "ifupdown",
+        "runtime": "runtime only (no persistent network manager detected)",
+    }[backend]
+
+
+# ---------------------------------------------------------------------------
+# State
+# ---------------------------------------------------------------------------
+
+def session_dir(bridge: str) -> Path:
+    return STATE_DIR / "sessions" / bridge
+
+
+def load_meta(bridge: str) -> Dict[str, Any]:
+    path = session_dir(bridge) / "meta.json"
+    if not path.exists():
+        raise BridgeError(f"No kvm-vm-bridge session found for {bridge} under {STATE_DIR}")
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise BridgeError(f"Invalid session metadata {path}: {exc}") from exc
+
+
+def save_json(path: Path, data: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
+def copy_if_exists(src: Path, dest: Path) -> Optional[str]:
+    if not src.exists():
+        return None
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if src.is_dir():
+        if dest.exists():
+            shutil.rmtree(dest)
+        shutil.copytree(src, dest)
+        return str(dest)
+    shutil.copy2(src, dest)
+    return str(dest)
+
+
+# ---------------------------------------------------------------------------
+# Snapshot and generated rollback script
+# ---------------------------------------------------------------------------
+
+def snapshot_system(bridge: str, uplink: str, backend: str, timeout: int) -> Path:
+    sdir = session_dir(bridge)
+    if sdir.exists():
+        raise BridgeError(
+            f"A session for {bridge} already exists at {sdir}. "
+            "Run 'kvm-vm-bridge status' and confirm or roll back first."
+        )
+    sdir.mkdir(parents=True, exist_ok=True)
+    (sdir / "files").mkdir(exist_ok=True)
+
+    addr = ip_json(["addr"])
+    link = ip_json(["-d", "link"])
+    route = ip_json(["route"])
+    try:
+        rule = ip_json(["rule"])
+    except Exception:
+        rule = []
+
+    save_json(sdir / "ip-addr.json", addr)
+    save_json(sdir / "ip-link.json", link)
+    save_json(sdir / "ip-route.json", route)
+    save_json(sdir / "ip-rule.json", rule)
+
+    copied: Dict[str, str] = {}
+    mapping = {
+        "interfaces": etc_path("network", "interfaces"),
+        "interfaces.d": etc_path("network", "interfaces.d"),
+        "systemd-network": etc_path("systemd", "network"),
+        "NetworkManager-system-connections": etc_path("NetworkManager", "system-connections"),
+        "resolv.conf": etc_path("resolv.conf"),
+    }
+    for key, src in mapping.items():
+        dest = sdir / "files" / key
+        stored = copy_if_exists(src, dest)
+        if stored:
+            copied[key] = stored
+
+    v4 = global_ipv4(uplink)
+    v6 = global_ipv6(uplink)
+    defaults = default_routes_for(uplink)
+    gw = None
+    if defaults:
+        gw = defaults[0].get("gateway")
+
+    meta = {
+        "bridge": bridge,
+        "uplink": uplink,
+        "backend": backend,
+        "timeout_seconds": timeout,
+        "created_at": utc_now(),
+        "hostname": socket.gethostname(),
+        "uplink_mac": interface_mac(uplink),
+        "ipv4": v4,
+        "ipv6": v6,
+        "default_routes": defaults,
+        "gateway": gw,
+        "copied_files": copied,
+        "confirmed": False,
+        "persist_written": False,
+        "watchdog": None,
+        "status": "snapshot",
+    }
+    save_json(sdir / "meta.json", meta)
+    write_rollback_script(sdir, meta)
+    write_archive_script(sdir)
+    return sdir
+
+
+def cidr_of(addr: Dict[str, Any]) -> str:
+    return f"{addr['local']}/{addr['prefixlen']}"
+
+
+def write_rollback_script(sdir: Path, meta: Dict[str, Any]) -> Path:
+    """Write a bash script that can restore runtime networking without Python."""
+    bridge = meta["bridge"]
+    uplink = meta["uplink"]
+    lines = [
+        "#!/bin/bash",
+        "# Generated by kvm-vm-bridge. Restores the pre-bridge runtime configuration.",
+        "set -u",
+        f"LOG={_shell_single(str(LOG_FILE))}",
+        f"BRIDGE={_shell_single(bridge)}",
+        f"UPLINK={_shell_single(uplink)}",
+        "ts() { date -u +%Y-%m-%dT%H:%M:%SZ; }",
+        'log() { echo "$(ts) rollback: $*" | tee -a "$LOG"; }',
+        'log "starting rollback of $BRIDGE (uplink $UPLINK)"',
+        "export LC_ALL=C",
+        'if [[ -d /sys/class/net/$UPLINK ]]; then',
+        '  ip link set "$UPLINK" nomaster 2>/dev/null || true',
+        '  ip link set "$UPLINK" up || true',
+        "fi",
+        'if [[ -d /sys/class/net/$BRIDGE ]]; then',
+        '  ip addr flush dev "$BRIDGE" 2>/dev/null || true',
+        '  ip link set "$BRIDGE" down 2>/dev/null || true',
+        '  ip link delete dev "$BRIDGE" type bridge 2>/dev/null || ip link delete dev "$BRIDGE" 2>/dev/null || true',
+        "fi",
+    ]
+    # Restore IPv4/IPv6 that were on the uplink. Flush first to drop leftovers.
+    lines.append('if [[ -d /sys/class/net/$UPLINK ]]; then')
+    lines.append('  ip addr flush dev "$UPLINK" || true')
+    for addr in meta.get("ipv4") or []:
+        lines.append(f'  ip addr add {_shell_single(cidr_of(addr))} dev "$UPLINK" || true')
+        if addr.get("broadcast"):
+            # broadcast is set automatically from prefix in most cases
+            pass
+    for addr in meta.get("ipv6") or []:
+        lines.append(f'  ip -6 addr add {_shell_single(cidr_of(addr))} dev "$UPLINK" || true')
+    lines.append("fi")
+
+    # Restore routes that used the uplink. Default first, then others from snapshot file.
+    lines.append(f"ROUTE_JSON={_shell_single(str(sdir / 'ip-route.json'))}")
+    lines += [
+        'if command -v python3 >/dev/null 2>&1 && [[ -f $ROUTE_JSON ]]; then',
+        "  python3 - \"$UPLINK\" \"$ROUTE_JSON\" <<'PY'",
+        "import json, sys, subprocess",
+        "uplink, path = sys.argv[1], sys.argv[2]",
+        "routes = json.loads(open(path, encoding='utf-8').read())",
+        # defaults first
+        "def key(r):",
+        "    dst = r.get('dst') or ''",
+        "    return (0 if dst == 'default' else 1, dst)",
+        "for r in sorted(routes, key=key):",
+        "    if r.get('dev') != uplink:",
+        "        continue",
+        "    if r.get('type') in ('anycast', 'broadcast', 'local', 'nat', 'throw', 'unreachable', 'prohibit', 'blackhole'):",
+        "        continue",
+        "    if r.get('protocol') == 'kernel' and r.get('dst') not in (None, 'default'):",
+        "        # kernel connected routes return when the address is added",
+        "        if r.get('dst') != 'default':",
+        "            continue",
+        "    cmd = ['ip']",
+        "    if r.get('family') == 'inet6':",
+        "        cmd.append('-6')",
+        "    cmd.append('route')",
+        "    cmd.append('replace')",
+        "    dst = r.get('dst') or 'default'",
+        "    cmd.append(dst)",
+        "    if r.get('gateway'):",
+        "        cmd += ['via', r['gateway']]",
+        "    cmd += ['dev', uplink]",
+        "    if r.get('metric') is not None:",
+        "        cmd += ['metric', str(r['metric'])]",
+        "    if r.get('onlink') or (isinstance(r.get('flags'), list) and 'onlink' in r['flags']):",
+        "        cmd.append('onlink')",
+        "    subprocess.run(cmd, check=False)",
+        "PY",
+        "fi",
+    ]
+    # Fallback default route if python is unavailable
+    gw = meta.get("gateway")
+    if gw:
+        onlink = ""
+        for r in meta.get("default_routes") or []:
+            flags = r.get("flags") or []
+            if r.get("onlink") or "onlink" in flags:
+                onlink = " onlink"
+                break
+        lines.append(f'ip route replace default via {_shell_single(str(gw))} dev "$UPLINK"{onlink} || true')
+
+    lines += [
+        'log "runtime rollback finished"',
+        'ip -br addr',
+        'ip route show',
+    ]
+    path = sdir / "rollback.sh"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    path.chmod(0o750)
+    return path
+
+
+def _shell_single(value: str) -> str:
+    return "'" + value.replace("'", "'\"'\"'") + "'"
+
+
+def write_archive_script(sdir: Path) -> Path:
+    """Archive the session after a successful rollback.
+
+    The auto-rollback watchdog must do this itself. Calling
+    ``kvm-vm-bridge rollback`` from inside the watchdog unit would stop that
+    same unit and could kill the rollback before the session is archived.
+    An explicit ``rollback --yes`` still archives in Python; this script is
+    the path the watchdog uses. A failed create runs rollback.sh only and
+    then moves the session to failed/, so it does not call this script.
+    """
+    bridge = sdir.name
+    lines = [
+        "#!/bin/bash",
+        "# Generated by kvm-vm-bridge. Archives this session after rollback.sh succeeds.",
+        "set -u",
+        f"LOG={_shell_single(str(LOG_FILE))}",
+        f"SESSION={_shell_single(str(sdir))}",
+        f"STATE={_shell_single(str(STATE_DIR))}",
+        f"BRIDGE={_shell_single(bridge)}",
+        "ts() { date -u +%Y-%m-%dT%H:%M:%SZ; }",
+        'log() { echo "$(ts) rollback: $*" | tee -a "$LOG"; }',
+        'if [[ ! -d "$SESSION" ]]; then',
+        '  log "session already archived"',
+        "  exit 0",
+        "fi",
+        'if ! python3 - "$SESSION" <<\'PY\'',
+        "import json, sys",
+        "from datetime import datetime, timezone",
+        "from pathlib import Path",
+        "session = Path(sys.argv[1])",
+        "meta_path = session / 'meta.json'",
+        "if meta_path.is_file():",
+        "    meta = json.loads(meta_path.read_text(encoding='utf-8'))",
+        "    meta['status'] = 'rolled-back'",
+        "    meta['rolled_back_at'] = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')",
+        "    meta['confirmed'] = False",
+        "    meta_path.write_text(json.dumps(meta, indent=2, sort_keys=True) + '\\n', encoding='utf-8')",
+        "PY",
+        "then",
+        '  log "could not update session metadata; leaving the session in place"',
+        "  exit 1",
+        "fi",
+        'stamp="$(date -u +%Y%m%dT%H%M%S)"',
+        'dest="$STATE/archived/${BRIDGE}-${stamp}"',
+        'mkdir -p "$STATE/archived"',
+        'if [[ -e "$dest" ]]; then dest="${dest}-$$"; fi',
+        'mv "$SESSION" "$dest"',
+        'log "archived session to $dest"',
+        "exit 0",
+    ]
+    path = sdir / "archive.sh"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    path.chmod(0o750)
+    return path
+
+
+# ---------------------------------------------------------------------------
+# Watchdog
+# ---------------------------------------------------------------------------
+
+def watchdog_unit(bridge: str) -> str:
+    return f"{WATCHDOG_UNIT_PREFIX}{bridge}.service"
+
+
+def arm_watchdog(bridge: str, timeout: int, sdir: Path) -> Dict[str, Any]:
+    rollback = sdir / "rollback.sh"
+    if timeout <= 0:
+        raise BridgeError("--timeout must be a positive number of seconds")
+    info: Dict[str, Any] = {"method": None, "timeout": timeout}
+
+    if which("systemd-run") and which("systemctl"):
+        unit = watchdog_unit(bridge)
+        run(["systemctl", "stop", unit], check=False, capture=True)
+        run(["systemctl", "reset-failed", unit], check=False, capture=True)
+        # A transient service that waits, then rolls back unless a stamp exists.
+        script = sdir / "watchdog.sh"
+        confirmed = sdir / "CONFIRMED"
+        archive = write_archive_script(sdir)
+        # Do not exec rollback.sh: the process must continue and archive the
+        # session, or the next create is blocked by the leftover directory.
+        script.write_text(
+            "\n".join([
+                "#!/bin/bash",
+                "set -u",
+                f"sleep {int(timeout)}",
+                f"if [[ -f {_shell_single(str(confirmed))} ]]; then",
+                "  exit 0",
+                "fi",
+                f"/bin/bash {_shell_single(str(rollback))}",
+                "rc=$?",
+                "if [[ $rc -ne 0 ]]; then",
+                "  exit $rc",
+                "fi",
+                f"exec /bin/bash {_shell_single(str(archive))}",
+            ]) + "\n",
+            encoding="utf-8",
+        )
+        script.chmod(0o750)
+        # --remain-after-exit is a flag with no argument. Passing "=no" makes
+        # systemd-run reject the command on current systemd (Debian 13 / EL9).
+        p = run(
+            [
+                "systemd-run",
+                f"--unit={unit}",
+                f"--description=kvm-vm-bridge auto-rollback for {bridge}",
+                "--collect",
+                "--no-block",
+                "--service-type=oneshot",
+                "/bin/bash", str(script),
+            ],
+            check=False, capture=True,
+        )
+        if p.returncode == 0:
+            info["method"] = "systemd-run"
+            info["unit"] = unit
+            log(f"armed systemd watchdog {unit} for {timeout}s")
+            return info
+        log(f"systemd-run failed ({p.stderr.strip() or p.stdout.strip()}); falling back to a background process")
+
+    # Fallback: detached process, immune to the calling SSH session.
+    confirmed = sdir / "CONFIRMED"
+    pid_path = sdir / "watchdog.pid"
+    archive = write_archive_script(sdir)
+    # setsid starts a new session so the timer is not in the caller's process
+    # group (SSH SIGHUP). A parent systemd unit with KillMode=control-group
+    # can still reap it, which is why systemd-run is preferred.
+    # Archive only after rollback.sh succeeds, matching the systemd watchdog.
+    inner = (
+        f"sleep {int(timeout)}; "
+        f"if [ ! -f {confirmed} ]; then "
+        f"/bin/bash {rollback} && /bin/bash {archive}; "
+        f"fi"
+    )
+    cmd = (
+        f"setsid -f nohup /bin/bash -c {_shell_single(inner)}"
+        f" </dev/null >>{_shell_single(str(LOG_FILE))} 2>&1 & echo $!"
+    )
+    p = run(["bash", "-lc", cmd], check=True, capture=True)
+    pid = p.stdout.strip().splitlines()[-1].strip()
+    pid_path.write_text(pid + "\n", encoding="utf-8")
+    info["method"] = "nohup"
+    info["pid"] = int(pid)
+    log(f"armed nohup watchdog pid={pid} for {timeout}s")
+    return info
+
+
+def cancel_watchdog(meta: Dict[str, Any]) -> None:
+    wd = meta.get("watchdog") or {}
+    if wd.get("method") == "systemd-run" and wd.get("unit"):
+        run(["systemctl", "stop", wd["unit"]], check=False, capture=True)
+        run(["systemctl", "reset-failed", wd["unit"]], check=False, capture=True)
+        log(f"stopped systemd watchdog {wd['unit']}")
+    if wd.get("method") == "nohup" and wd.get("pid"):
+        pid = int(wd["pid"])
+        try:
+            os.kill(pid, signal.SIGTERM)
+            log(f"sent SIGTERM to watchdog pid={pid}")
+        except ProcessLookupError:
+            pass
+    # Also stop any leftover unit with the well-known name
+    if which("systemctl"):
+        run(["systemctl", "stop", watchdog_unit(meta["bridge"])], check=False, capture=True)
+
+
+# ---------------------------------------------------------------------------
+# Runtime apply
+# ---------------------------------------------------------------------------
+
+def apply_runtime(bridge: str, uplink: str, meta: Dict[str, Any]) -> None:
+    mac = meta["uplink_mac"]
+    v4 = meta.get("ipv4") or []
+    v6 = meta.get("ipv6") or []
+    if not v4 and not v6:
+        raise BridgeError(f"Uplink {uplink} has no global IPv4 or IPv6 address to migrate")
+
+    log(f"creating bridge {bridge} (stp off, forward_delay 0, mac={mac})")
+    run(["ip", "link", "add", "name", bridge, "type", "bridge", "stp_state", "0", "forward_delay", "0"])
+    # Some iproute2 versions want a second call for attributes
+    run(["ip", "link", "set", "dev", bridge, "type", "bridge", "stp_state", "0", "forward_delay", "0"], check=False)
+    run(["ip", "link", "set", "dev", bridge, "address", mac], check=False)
+    run(["ip", "link", "set", "dev", bridge, "up"])
+
+    log(f"moving addresses from {uplink} to {bridge}")
+    for addr in v4:
+        run(["ip", "addr", "add", cidr_of(addr), "dev", bridge], check=False)
+    for addr in v6:
+        run(["ip", "-6", "addr", "add", cidr_of(addr), "dev", bridge], check=False)
+
+    log(f"enslaving {uplink} to {bridge}")
+    run(["ip", "link", "set", "dev", uplink, "master", bridge])
+    # Keep the uplink up; addresses on the slave are ignored for routing
+    for addr in v4:
+        run(["ip", "addr", "del", cidr_of(addr), "dev", uplink], check=False)
+    for addr in v6:
+        run(["ip", "-6", "addr", "del", cidr_of(addr), "dev", uplink], check=False)
+
+    log("installing routes on the bridge")
+    # Connected routes appear from the addresses. Replace default and host routes.
+    for r in meta.get("default_routes") or []:
+        cmd = ["ip"]
+        if r.get("family") == "inet6":
+            cmd.append("-6")
+        cmd += ["route", "replace", "default"]
+        if r.get("gateway"):
+            cmd += ["via", str(r["gateway"])]
+        cmd += ["dev", bridge]
+        if r.get("metric") is not None:
+            cmd += ["metric", str(r["metric"])]
+        flags = r.get("flags") or []
+        if r.get("onlink") or "onlink" in flags:
+            cmd.append("onlink")
+        run(cmd, check=False)
+
+    # Re-home non-kernel unicast routes that pointed at the uplink
+    try:
+        routes = json.loads((session_dir(bridge) / "ip-route.json").read_text(encoding="utf-8"))
+    except Exception:
+        routes = []
+    for r in routes:
+        if r.get("dev") != uplink:
+            continue
+        dst = r.get("dst") or "default"
+        if dst == "default":
+            continue
+        if r.get("protocol") == "kernel":
+            continue
+        if r.get("type") and r.get("type") != "unicast":
+            continue
+        cmd = ["ip"]
+        if r.get("family") == "inet6":
+            cmd.append("-6")
+        cmd += ["route", "replace", dst]
+        if r.get("gateway"):
+            cmd += ["via", str(r["gateway"])]
+        cmd += ["dev", bridge]
+        if r.get("metric") is not None:
+            cmd += ["metric", str(r["metric"])]
+        run(cmd, check=False)
+
+
+def verify_runtime(bridge: str, uplink: str, meta: Dict[str, Any]) -> None:
+    if not is_bridge(bridge):
+        raise BridgeError(f"Bridge {bridge} was not created")
+    master = is_enslaved(uplink)
+    if master != bridge:
+        raise BridgeError(f"Uplink {uplink} is not enslaved to {bridge} (master={master})")
+    if not global_ipv4(bridge) and not global_ipv6(bridge):
+        raise BridgeError(f"Bridge {bridge} has no global address")
+    defaults = ip_json(["route", "show", "default"])
+    if not any(r.get("dev") == bridge for r in defaults):
+        raise BridgeError(f"Default route is not on {bridge}: {defaults}")
+    gw = meta.get("gateway")
+    if gw:
+        p = run(["ping", "-c", "1", "-W", "3", str(gw)], check=False, capture=True)
+        if p.returncode != 0:
+            raise BridgeError(f"Gateway {gw} did not answer ping after the change")
+        log(f"gateway {gw} is reachable")
+
+
+# ---------------------------------------------------------------------------
+# Persistent configuration (written only on confirm)
+# ---------------------------------------------------------------------------
+
+def write_persistent(meta: Dict[str, Any]) -> List[str]:
+    backend = meta["backend"]
+    if backend == "ifupdown":
+        return persist_ifupdown(meta)
+    if backend == "networkmanager":
+        return persist_networkmanager(meta)
+    if backend == "networkd":
+        return persist_networkd(meta)
+    log("backend is runtime-only; skipping persistent configuration")
+    return []
+
+
+def persist_ifupdown(meta: Dict[str, Any]) -> List[str]:
+    uplink = meta["uplink"]
+    bridge = meta["bridge"]
+    v4 = meta.get("ipv4") or []
+    if not v4:
+        raise BridgeError("ifupdown persist currently requires a global IPv4 address on the uplink")
+    primary = v4[0]
+    address = cidr_of(primary)
+    gw = meta.get("gateway")
+    dns, search = _ifupdown_dns()
+
+    written: List[str] = []
+    conf_dir = etc_path("network", "interfaces.d")
+    conf_dir.mkdir(parents=True, exist_ok=True)
+    # Comment the original uplink stanza so ifupdown does not configure it twice.
+    _comment_ifupdown_iface(uplink, backup_note="disabled by kvm-vm-bridge")
+
+    path = conf_dir / f"kvm-vm-bridge-{bridge}.conf"
+    parts = [
+        f"# Written by kvm-vm-bridge on {utc_now()}. Removed on rollback.",
+        f"auto {uplink}",
+        f"iface {uplink} inet manual",
+        "",
+        f"auto {bridge}",
+        f"iface {bridge} inet static",
+        f"    address {address}",
+    ]
+    if gw:
+        parts.append(f"    gateway {gw}")
+    if dns:
+        parts.append("    dns-nameservers " + " ".join(dns))
+    if search:
+        parts.append("    dns-search " + " ".join(search))
+    # Prefer native bridge_ports when the hook exists; always include iproute2 pre-up
+    # so persist works without the bridge-utils package.
+    parts += [
+        f"    pre-up ip link add name {bridge} type bridge 2>/dev/null || true",
+        f"    pre-up ip link set dev {bridge} type bridge stp_state 0 forward_delay 0",
+        f"    pre-up ip link set dev {bridge} address {meta['uplink_mac']}",
+        f"    pre-up ip link set dev {uplink} up",
+        f"    pre-up ip link set dev {uplink} master {bridge}",
+        f"    pre-up ip link set dev {bridge} up",
+        f"    post-down ip link set dev {uplink} nomaster 2>/dev/null || true",
+        f"    post-down ip link set dev {bridge} down 2>/dev/null || true",
+        f"    post-down ip link delete dev {bridge} 2>/dev/null || true",
+        "",
+    ]
+    path.write_text("\n".join(parts), encoding="utf-8")
+    os.chmod(path, 0o644)
+    written.append(str(path))
+    log(f"wrote ifupdown config {path}")
+    return written
+
+
+def _ifupdown_dns() -> Tuple[List[str], List[str]]:
+    dns: List[str] = []
+    search: List[str] = []
+    path = etc_path("network", "interfaces")
+    if path.exists():
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            s = line.strip()
+            if s.startswith("dns-nameservers"):
+                dns = s.split()[1:]
+            elif s.startswith("dns-search"):
+                search = s.split()[1:]
+    if not dns:
+        resolv = etc_path("resolv.conf")
+        if resolv.exists():
+            for line in resolv.read_text(encoding="utf-8", errors="replace").splitlines():
+                parts = line.split()
+                if len(parts) >= 2 and parts[0] == "nameserver":
+                    dns.append(parts[1])
+                elif len(parts) >= 2 and parts[0] == "search":
+                    search = parts[1:]
+    return dns, search
+
+
+def _comment_ifupdown_iface(iface: str, backup_note: str) -> None:
+    """Comment out auto/allow-hotplug/iface stanzas for iface in interfaces (not interfaces.d)."""
+    path = etc_path("network", "interfaces")
+    if not path.exists():
+        return
+    original = path.read_text(encoding="utf-8", errors="replace")
+    lines = original.splitlines()
+    out: List[str] = []
+    i = 0
+    changed = False
+    while i < len(lines):
+        stripped = lines[i].strip()
+        tokens = stripped.split()
+        if tokens and tokens[0] in {"auto", "allow-hotplug", "allow-auto"} and iface in tokens[1:]:
+            out.append(f"# kvm-vm-bridge: {backup_note}")
+            out.append("# " + lines[i])
+            changed = True
+            i += 1
+            continue
+        if tokens and tokens[0] == "iface" and len(tokens) >= 2 and tokens[1] == iface:
+            out.append(f"# kvm-vm-bridge: {backup_note}")
+            out.append("# " + lines[i])
+            i += 1
+            while i < len(lines):
+                nxt = lines[i]
+                if nxt.strip() and not nxt.startswith((" ", "\t", "#")):
+                    break
+                out.append("# " + nxt if nxt else "#")
+                i += 1
+            changed = True
+            continue
+        out.append(lines[i])
+        i += 1
+    if changed:
+        path.write_text("\n".join(out) + "\n", encoding="utf-8")
+        log(f"commented original ifupdown stanza for {iface} in {path}")
+
+
+def persist_networkmanager(meta: Dict[str, Any]) -> List[str]:
+    if which("nmcli") is None:
+        raise BridgeError("NetworkManager persist requires nmcli")
+    uplink = meta["uplink"]
+    bridge = meta["bridge"]
+    v4 = meta.get("ipv4") or []
+    if not v4:
+        raise BridgeError("NetworkManager persist currently requires a global IPv4 address")
+    address = cidr_of(v4[0])
+    gw = meta.get("gateway")
+    br_con = f"kvm-vm-bridge-{bridge}"
+    sl_con = f"kvm-vm-bridge-{bridge}-slave"
+    # Delete leftovers from a previous attempt
+    run(["nmcli", "connection", "delete", br_con], check=False, capture=True)
+    run(["nmcli", "connection", "delete", sl_con], check=False, capture=True)
+
+    add_br = [
+        "nmcli", "connection", "add", "type", "bridge", "ifname", bridge,
+        "con-name", br_con,
+        "connection.autoconnect", "yes",
+        "bridge.stp", "no",
+        "bridge.forward-delay", "0",
+        "ipv4.method", "manual",
+        "ipv4.addresses", address,
+        "ipv6.method", "ignore",
+    ]
+    if gw:
+        add_br += ["ipv4.gateway", str(gw)]
+    dns, _search = _ifupdown_dns()
+    if dns:
+        add_br += ["ipv4.dns", ",".join(dns)]
+    run(add_br)
+    run([
+        "nmcli", "connection", "add", "type", "ethernet", "ifname", uplink,
+        "con-name", sl_con, "master", br_con,
+        "connection.autoconnect", "yes",
+    ])
+    # Leave the previous uplink connection in place but do not autoconnect it.
+    old = nm_device_connection(uplink)
+    if old and old not in {br_con, sl_con}:
+        run(["nmcli", "connection", "modify", old, "connection.autoconnect", "no"], check=False)
+        meta["nm_old_connection"] = old
+        meta["nm_old_autoconnect_disabled"] = True
+    log(f"created NetworkManager connections {br_con} and {sl_con} (not downing the live device)")
+    # Do not nmcli con up here: runtime is already correct; bouncing can drop SSH.
+    return [br_con, sl_con]
+
+
+def persist_networkd(meta: Dict[str, Any]) -> List[str]:
+    uplink = meta["uplink"]
+    bridge = meta["bridge"]
+    v4 = meta.get("ipv4") or []
+    if not v4:
+        raise BridgeError("systemd-networkd persist currently requires a global IPv4 address")
+    netdir = etc_path("systemd", "network")
+    netdir.mkdir(parents=True, exist_ok=True)
+    netdev = netdir / f"10-kvm-vm-bridge-{bridge}.netdev"
+    brnet = netdir / f"10-kvm-vm-bridge-{bridge}.network"
+    slnet = netdir / f"10-kvm-vm-bridge-{uplink}.network"
+    address = cidr_of(v4[0])
+    gw = meta.get("gateway")
+    netdev.write_text(
+        "\n".join([
+            f"# Written by kvm-vm-bridge on {utc_now()}.",
+            "[NetDev]",
+            f"Name={bridge}",
+            "Kind=bridge",
+            f"MACAddress={meta['uplink_mac']}",
+            "[Bridge]",
+            "STP=no",
+            "ForwardDelaySec=0",
+            "",
+        ]),
+        encoding="utf-8",
+    )
+    br_lines = [
+        f"# Written by kvm-vm-bridge on {utc_now()}.",
+        "[Match]",
+        f"Name={bridge}",
+        "[Network]",
+        f"Address={address}",
+    ]
+    if gw:
+        br_lines.append(f"Gateway={gw}")
+    dns, search = _ifupdown_dns()
+    for d in dns:
+        br_lines.append(f"DNS={d}")
+    if search:
+        br_lines.append("Domains=" + " ".join(search))
+    br_lines.append("")
+    brnet.write_text("\n".join(br_lines), encoding="utf-8")
+    slnet.write_text(
+        "\n".join([
+            f"# Written by kvm-vm-bridge on {utc_now()}.",
+            "[Match]",
+            f"Name={uplink}",
+            "[Network]",
+            f"Bridge={bridge}",
+            "",
+        ]),
+        encoding="utf-8",
+    )
+    log(f"wrote systemd-networkd files {netdev}, {brnet}, {slnet} (not reloaded)")
+    return [str(netdev), str(brnet), str(slnet)]
+
+
+def remove_persistent(meta: Dict[str, Any]) -> None:
+    if not meta.get("persist_written"):
+        return
+    backend = meta["backend"]
+    written = meta.get("persist_paths") or []
+    if backend == "ifupdown":
+        for path in written:
+            p = Path(path)
+            if p.exists() and "kvm-vm-bridge-" in p.name:
+                p.unlink()
+                log(f"removed {p}")
+        # Restore original interfaces file from the snapshot
+        snap = session_dir(meta["bridge"]) / "files" / "interfaces"
+        dest = etc_path("network", "interfaces")
+        if snap.exists():
+            shutil.copy2(snap, dest)
+            log(f"restored {dest} from the snapshot")
+        idest = etc_path("network", "interfaces.d")
+        isnap = session_dir(meta["bridge"]) / "files" / "interfaces.d"
+        if isnap.exists() and idest.exists():
+            # remove only our file; other files already restored if we copied the tree
+            pass
+    elif backend == "networkmanager":
+        for name in written:
+            run(["nmcli", "connection", "delete", name], check=False, capture=True)
+            log(f"deleted NetworkManager connection {name}")
+        old = meta.get("nm_old_connection")
+        if old and meta.get("nm_old_autoconnect_disabled"):
+            run(["nmcli", "connection", "modify", old, "connection.autoconnect", "yes"], check=False)
+            log(f"re-enabled autoconnect on {old}")
+    elif backend == "networkd":
+        for path in written:
+            p = Path(path)
+            if p.exists() and "kvm-vm-bridge-" in p.name:
+                p.unlink()
+                log(f"removed {p}")
+
+
+# ---------------------------------------------------------------------------
+# Commands
+# ---------------------------------------------------------------------------
+
+def plan_text(bridge: str, uplink: str, backend: str, timeout: int) -> str:
+    v4 = global_ipv4(uplink)
+    v6 = global_ipv6(uplink)
+    defaults = default_routes_for(uplink)
+    addrs = ", ".join(cidr_of(a) for a in v4 + v6) or "(none)"
+    gw = defaults[0].get("gateway") if defaults else None
+    lines = [
+        f"backend:          {backend_label(backend)}",
+        f"uplink:            {uplink}  mac={interface_mac(uplink)}  operstate={(sys_net(uplink) / 'operstate').read_text(encoding='utf-8').strip()}",
+        f"bridge to create:  {bridge}",
+        f"addresses to move: {addrs}",
+        f"default gateway:   {gw}",
+        f"rollback timeout:  {timeout} seconds",
+        f"state directory:   {session_dir(bridge)}",
+        f"log file:          {LOG_FILE}",
+        "",
+        "create will:",
+        "  1. snapshot the current addresses, routes and network config files",
+        "  2. arm a rollback timer that restores the snapshot unless you confirm",
+        "  3. create the bridge with STP off and forward_delay 0 (no 30s blocking)",
+        "  4. copy the uplink MAC onto the bridge, move addresses and the default route",
+        "  5. enslave the uplink",
+        "Persistent configuration is NOT written until:  kvm-vm-bridge confirm",
+        "A reboot during the trial window therefore returns the previous config.",
+        "Confirm with:  kvm-vm-bridge confirm --bridge " + bridge,
+        "Roll back with: kvm-vm-bridge rollback --bridge " + bridge + " --yes",
+    ]
+    return "\n".join(lines)
+
+
+def _read_sysctl(path: Path) -> Optional[str]:
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+
+
+def bridge_calls_iptables(bridge: str) -> Optional[str]:
+    """1 when bridged IPv4 on this bridge is passed to iptables.
+
+    A per-bridge nf_call_iptables wins over the global sysctl. The per-bridge
+    file exists only after the bridge is created and br_netfilter is loaded.
+    """
+    per_bridge = _read_sysctl(sys_net(bridge) / "bridge" / "nf_call_iptables")
+    if per_bridge is not None:
+        return per_bridge
+    return _read_sysctl(Path("/proc/sys/net/bridge/bridge-nf-call-iptables"))
+
+
+def read_filter_facts(bridge: str) -> Dict[str, Any]:
+    """Best-effort look at br_netfilter and the IPv4 FORWARD chain."""
+    facts: Dict[str, Any] = {
+        "br_netfilter": Path("/sys/module/br_netfilter").exists(),
+        "call_iptables": bridge_calls_iptables(bridge),
+        "rules": "",
+        "readable": False,
+        "format": None,
+    }
+    if which("iptables"):
+        proc = run(["iptables", "-S", "FORWARD"], check=False, capture=True)
+        if proc.returncode == 0:
+            facts["rules"] = proc.stdout
+            facts["readable"] = True
+            facts["format"] = "iptables"
+            return facts
+    if which("nft"):
+        proc = run(["nft", "list", "chain", "ip", "filter", "FORWARD"], check=False, capture=True)
+        if proc.returncode == 0:
+            facts["rules"] = proc.stdout
+            facts["readable"] = True
+            facts["format"] = "nft"
+            return facts
+    return facts
+
+
+def _accepts_direction(tokens: List[str], bridge: str, direction: str) -> bool:
+    """True when an iptables rule ACCEPTs traffic for direction (-i or -o)."""
+    if "-j" not in tokens:
+        return False
+    jump_at = tokens.index("-j")
+    if jump_at + 1 >= len(tokens) or tokens[jump_at + 1] != "ACCEPT":
+        return False
+    long_opt = "--in-interface" if direction == "-i" else "--out-interface"
+    other = "-o" if direction == "-i" else "-i"
+    other_long = "--out-interface" if direction == "-i" else "--in-interface"
+    iface = None
+    if direction in tokens:
+        at = tokens.index(direction)
+        if at + 1 < len(tokens):
+            iface = tokens[at + 1]
+    elif long_opt in tokens:
+        at = tokens.index(long_opt)
+        if at + 1 < len(tokens):
+            iface = tokens[at + 1]
+    if iface is None:
+        # No match on this direction. A rule with no interface match at all
+        # accepts every forwarded packet. A rule that names only the other
+        # direction does not.
+        return other not in tokens and other_long not in tokens
+    return iface == bridge
+
+
+def parse_iptables_forward(text: str, bridge: str) -> Tuple[Optional[str], bool, bool]:
+    """Return (policy, accepts_in, accepts_out) from `iptables -S FORWARD`."""
+    policy = None
+    accept_in = False
+    accept_out = False
+    for raw in text.splitlines():
+        tokens = raw.split()
+        if len(tokens) >= 3 and tokens[0] == "-P" and tokens[1] == "FORWARD":
+            policy = tokens[2].upper()
+            continue
+        if len(tokens) < 3 or tokens[0] != "-A" or tokens[1] != "FORWARD":
+            continue
+        body = tokens[2:]
+        if _accepts_direction(body, bridge, "-i"):
+            accept_in = True
+        if _accepts_direction(body, bridge, "-o"):
+            accept_out = True
+    return policy, accept_in, accept_out
+
+
+def parse_nft_forward(text: str, bridge: str) -> Tuple[Optional[str], bool, bool]:
+    """Return (policy, accepts_in, accepts_out) from `nft list chain ip filter FORWARD`."""
+    policy = None
+    accept_in = False
+    accept_out = False
+    quoted = '"' + bridge + '"'
+    for raw in text.splitlines():
+        line = " ".join(raw.strip().rstrip(";").split())
+        if "policy " in line:
+            policy = line.split("policy", 1)[1].strip().split()[0].upper()
+        if not line.endswith(" accept") and " accept " not in (" " + line + " "):
+            continue
+        has_in = f"iifname {quoted}" in line or f"iif {quoted}" in line
+        has_out = f"oifname {quoted}" in line or f"oif {quoted}" in line
+        if has_in:
+            accept_in = True
+        if has_out:
+            accept_out = True
+        if not has_in and not has_out and "iifname" not in line and "oifname" not in line and "iif " not in line and "oif " not in line:
+            if line == "accept" or line.endswith(" accept"):
+                accept_in = True
+                accept_out = True
+    return policy, accept_in, accept_out
+
+
+def bridged_ipv4_warning(bridge: str, facts: Optional[Dict[str, Any]] = None) -> Optional[str]:
+    """Warn when br_netfilter would drop bridged guest IPv4.
+
+    This is a hint, not a refusal. Host SSH to a guest on the same bridge
+    does not use the FORWARD chain, so the bridge can look healthy while
+    guests still cannot reach their gateway. The check looks only at the
+    FORWARD chain itself; a jump to another chain that would ACCEPT is not
+    followed.
+    """
+    facts = read_filter_facts(bridge) if facts is None else facts
+    if not facts.get("br_netfilter"):
+        return None
+    if str(facts.get("call_iptables")) != "1":
+        return None
+    if not facts.get("readable"):
+        return (
+            f"br_netfilter is loaded and net.bridge.bridge-nf-call-iptables=1, "
+            f"but the IPv4 FORWARD policy could not be read. Guests bridged on {bridge} "
+            f"may have no IPv4 connectivity if FORWARD drops their traffic. "
+            f"To allow it without setting the FORWARD policy to ACCEPT: "
+            f"iptables -I FORWARD 1 -i {bridge} -j ACCEPT && "
+            f"iptables -I FORWARD 1 -o {bridge} -j ACCEPT. "
+            "See docs/networking.md#bridged-guests-and-the-host-firewall."
+        )
+    if facts.get("format") == "nft":
+        policy, accept_in, accept_out = parse_nft_forward(str(facts.get("rules") or ""), bridge)
+    else:
+        policy, accept_in, accept_out = parse_iptables_forward(str(facts.get("rules") or ""), bridge)
+    if policy not in {"DROP", "REJECT"}:
+        return None
+    if accept_in and accept_out:
+        return None
+    missing = []
+    if not accept_in:
+        missing.append(f"traffic forwarded from {bridge} (-i {bridge})")
+    if not accept_out:
+        missing.append(f"traffic forwarded to {bridge} (-o {bridge})")
+    return (
+        f"Bridged guest IPv4 on {bridge} is likely to be dropped. "
+        f"br_netfilter is loaded, net.bridge.bridge-nf-call-iptables=1, and the IPv4 "
+        f"FORWARD policy is {policy}, with no ACCEPT for " + " or ".join(missing) + ". "
+        "The host can still reach a guest on the same bridge; that path does not use FORWARD. "
+        f"Allow FORWARD for {bridge} without setting the policy to ACCEPT: "
+        f"iptables -I FORWARD 1 -i {bridge} -j ACCEPT && "
+        f"iptables -I FORWARD 1 -o {bridge} -j ACCEPT. "
+        "See docs/networking.md#bridged-guests-and-the-host-firewall."
+    )
+
+
+def emit_forward_warning(bridge: str) -> None:
+    message = bridged_ipv4_warning(bridge)
+    if not message:
+        return
+    eprint("WARNING: " + message)
+    try:
+        LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with LOG_FILE.open("a", encoding="utf-8") as fh:
+            fh.write(f"{utc_now()} WARNING: {message}\n")
+    except OSError:
+        pass
+
+
+def preflight(bridge: str, uplink: str) -> None:
+    require_commands(["ip"])
+    if not link_exists(uplink):
+        raise BridgeError(f"Uplink not found: {uplink}")
+    if not link_is_up(uplink):
+        raise BridgeError(f"Uplink {uplink} is not up; bring it up before creating a bridge")
+    if is_bridge(uplink):
+        raise BridgeError(f"{uplink} is already a bridge")
+    master = is_enslaved(uplink)
+    if master:
+        raise BridgeError(f"{uplink} is already enslaved to {master}")
+    if link_exists(bridge):
+        raise BridgeError(f"Bridge {bridge} already exists; choose another name or delete it first")
+    if not global_ipv4(uplink) and not global_ipv6(uplink):
+        raise BridgeError(f"Uplink {uplink} has no global IP address to migrate")
+    if not default_routes_for(uplink):
+        eprint(f"WARNING: no default route currently uses {uplink}")
+
+
+def cmd_create(args: argparse.Namespace) -> int:
+    require_root()
+    bridge = args.bridge
+    uplink = args.uplink
+    timeout = int(args.timeout)
+    preflight(bridge, uplink)
+    emit_forward_warning(bridge)
+    backend = detect_backend(uplink)
+    log(f"create requested: bridge={bridge} uplink={uplink} backend={backend} timeout={timeout} dry_run={args.dry_run}")
+    print(plan_text(bridge, uplink, backend, timeout))
+    if args.dry_run:
+        print("dry-run: no changes made")
+        return 0
+
+    sdir = snapshot_system(bridge, uplink, backend, timeout)
+    meta = load_meta(bridge)
+    try:
+        wd = arm_watchdog(bridge, timeout, sdir)
+        meta["watchdog"] = wd
+        meta["status"] = "armed"
+        save_json(sdir / "meta.json", meta)
+        apply_runtime(bridge, uplink, meta)
+        verify_runtime(bridge, uplink, meta)
+        meta["status"] = "pending-confirm"
+        save_json(sdir / "meta.json", meta)
+    except Exception as exc:
+        log(f"create failed, rolling back immediately: {exc}")
+        try:
+            run(["/bin/bash", str(sdir / "rollback.sh")], check=False)
+        finally:
+            # Keep the watchdog running only if we may have lost access mid-change.
+            # If we still have a usable default route on the original uplink, cancel it.
+            try:
+                if default_routes_for(uplink) and not link_exists(bridge):
+                    cancel_watchdog(meta)
+                    # leave snapshot for inspection? On failure after snapshot,
+                    # rename the session so a retry can proceed.
+                    failed = STATE_DIR / "failed" / f"{bridge}-{time.strftime('%Y%m%dT%H%M%S')}"
+                    failed.parent.mkdir(parents=True, exist_ok=True)
+                    if sdir.exists():
+                        shutil.move(str(sdir), str(failed))
+                    log(f"moved failed session to {failed}")
+            except Exception as exc2:
+                log(f"could not tidy the failed session: {exc2}")
+        raise
+
+    print()
+    print(f"Bridge {bridge} is up. Confirm within {timeout} seconds or it will be rolled back:")
+    print(f"  kvm-vm-bridge confirm --bridge {bridge}")
+    print("To roll back now:")
+    print(f"  kvm-vm-bridge rollback --bridge {bridge} --yes")
+    return 0
+
+
+def cmd_confirm(args: argparse.Namespace) -> int:
+    require_root()
+    bridge = args.bridge
+    meta = load_meta(bridge)
+    if meta.get("confirmed"):
+        print(f"{bridge} is already confirmed")
+        return 0
+    if meta.get("status") not in {"pending-confirm", "armed"}:
+        raise BridgeError(f"Session for {bridge} is not waiting for confirm (status={meta.get('status')})")
+    # Verify the bridge is still healthy before cancelling the watchdog.
+    # Warn before confirm as well: create may have been non-interactive, and
+    # the per-bridge nf_call_iptables value exists only once the bridge does.
+    verify_runtime(bridge, meta["uplink"], meta)
+    emit_forward_warning(bridge)
+    sdir = session_dir(bridge)
+    (sdir / "CONFIRMED").write_text(utc_now() + "\n", encoding="utf-8")
+    cancel_watchdog(meta)
+    written: List[str] = []
+    if not args.no_persist:
+        written = write_persistent(meta)
+        meta["persist_written"] = True
+        meta["persist_paths"] = written
+    else:
+        log("confirm --no-persist: timer cancelled, persistent config not written")
+    meta["confirmed"] = True
+    meta["confirmed_at"] = utc_now()
+    meta["status"] = "confirmed"
+    save_json(sdir / "meta.json", meta)
+    # rewrite rollback script still valid for later explicit rollback
+    print(f"Confirmed. Auto-rollback for {bridge} is cancelled.")
+    if written:
+        print("Persistent configuration written (takes effect on reboot or a later network service restart):")
+        for w in written:
+            print(f"  {w}")
+    print(f"To restore the previous configuration later: kvm-vm-bridge rollback --bridge {bridge} --yes")
+    return 0
+
+
+def cmd_rollback(args: argparse.Namespace) -> int:
+    bridge = args.bridge
+    if not args.yes:
+        raise BridgeError("Refusing to roll back without --yes")
+    require_root()
+    # Rollback must work even if meta is half-written: prefer the generated script.
+    sdir = session_dir(bridge)
+    script = sdir / "rollback.sh"
+    if not script.exists():
+        raise BridgeError(f"No rollback script at {script}")
+    meta: Dict[str, Any]
+    try:
+        meta = load_meta(bridge)
+    except BridgeError:
+        meta = {"bridge": bridge, "backend": "runtime", "persist_written": False, "watchdog": {"method": "systemd-run", "unit": watchdog_unit(bridge)}}
+    log(f"explicit rollback of {bridge} requested")
+    (sdir / "CONFIRMED").write_text("rollback\n", encoding="utf-8")  # stop watchdog even if we are racing
+    cancel_watchdog(meta)
+    try:
+        remove_persistent(meta)
+    except Exception as exc:
+        log(f"persistent cleanup reported: {exc}")
+    p = run(["/bin/bash", str(script)], check=False)
+    if p.returncode != 0:
+        raise BridgeError(f"rollback.sh exited {p.returncode}; inspect {LOG_FILE}")
+    meta["status"] = "rolled-back"
+    meta["rolled_back_at"] = utc_now()
+    try:
+        save_json(sdir / "meta.json", meta)
+        archived = STATE_DIR / "archived" / f"{bridge}-{time.strftime('%Y%m%dT%H%M%S')}"
+        archived.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(sdir), str(archived))
+        log(f"archived session to {archived}")
+    except Exception as exc:
+        log(f"could not archive session: {exc}")
+    print(f"Rolled back {bridge}.")
+    return 0
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    if args.bridge:
+        bridges = [args.bridge]
+    else:
+        root = STATE_DIR / "sessions"
+        bridges = sorted(p.name for p in root.iterdir()) if root.exists() else []
+        if not bridges:
+            print("No kvm-vm-bridge sessions.")
+            return 0
+    rc = 0
+    for bridge in bridges:
+        try:
+            meta = load_meta(bridge)
+        except BridgeError as exc:
+            eprint(str(exc))
+            rc = 1
+            continue
+        print(f"bridge:     {bridge}")
+        print(f"uplink:     {meta.get('uplink')}")
+        print(f"backend:   {backend_label(meta.get('backend') or 'runtime')}")
+        print(f"status:     {meta.get('status')}")
+        print(f"confirmed:  {meta.get('confirmed')}")
+        print(f"persist:    {meta.get('persist_written')}")
+        print(f"created:    {meta.get('created_at')}")
+        print(f"timeout:    {meta.get('timeout_seconds')}s")
+        print(f"watchdog:   {meta.get('watchdog')}")
+        exists = link_exists(bridge)
+        print(f"present:    {exists}")
+        if exists:
+            print(f"addresses:  {', '.join(cidr_of(a) for a in global_ipv4(bridge) + global_ipv6(bridge))}")
+            print(f"members:    {output(['ls', str(sys_net(bridge) / 'brif')], check=False)}")
+        print(f"session:    {session_dir(bridge)}")
+        print()
+    return rc
+
+
+def cmd_detect(args: argparse.Namespace) -> int:
+    uplink = args.uplink
+    if not link_exists(uplink):
+        raise BridgeError(f"Interface not found: {uplink}")
+    backend = detect_backend(uplink)
+    print(f"uplink:  {uplink}")
+    print(f"backend: {backend_label(backend)}")
+    print(f"mac:     {interface_mac(uplink)}")
+    print(f"up:      {link_is_up(uplink)}")
+    print(f"addrs:   {', '.join(cidr_of(a) for a in global_ipv4(uplink) + global_ipv6(uplink))}")
+    defaults = default_routes_for(uplink)
+    print(f"gateway: {defaults[0].get('gateway') if defaults else None}")
+    master = is_enslaved(uplink)
+    if master:
+        print(f"master:  {master}")
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="kvm-vm-bridge",
+        description="Create a Linux bridge on a host uplink, with automatic rollback until confirmed.",
+    )
+    p.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
+    sp = p.add_subparsers(dest="command", required=True)
+
+    c = sp.add_parser("create", help="Create a bridge, move the uplink into it, and arm auto-rollback")
+    c.add_argument("--uplink", required=True, help="Existing physical interface that holds the host address")
+    c.add_argument("--bridge", default=DEFAULT_BRIDGE, help=f"Bridge name to create (default: {DEFAULT_BRIDGE})")
+    c.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT,
+                   help=f"Seconds to wait for confirm before rolling back (default: {DEFAULT_TIMEOUT})")
+    c.add_argument("--dry-run", action="store_true", help="Print the plan and detected backend without changing anything")
+    c.set_defaults(func=cmd_create)
+
+    c = sp.add_parser("confirm", help="Keep the bridge and cancel auto-rollback; write persistent config")
+    c.add_argument("--bridge", default=DEFAULT_BRIDGE)
+    c.add_argument("--no-persist", action="store_true",
+                   help="Cancel the timer but do not write ifupdown/NetworkManager/networkd configuration")
+    c.set_defaults(func=cmd_confirm)
+
+    c = sp.add_parser("rollback", help="Restore the snapshot and remove a kvm-vm-bridge bridge")
+    c.add_argument("--bridge", default=DEFAULT_BRIDGE)
+    c.add_argument("--yes", action="store_true", help="Required. Perform the rollback.")
+    c.set_defaults(func=cmd_rollback)
+
+    c = sp.add_parser("status", help="Show the session for one bridge, or all sessions")
+    c.add_argument("--bridge", default=None)
+    c.set_defaults(func=cmd_status)
+
+    c = sp.add_parser("detect", help="Show which network backend would manage an uplink")
+    c.add_argument("--uplink", required=True)
+    c.set_defaults(func=cmd_detect)
+
+    return p
+
+
+def main() -> int:
+    parser = build_parser()
+    args = parser.parse_args()
+    try:
+        return int(args.func(args) or 0)
+    except BridgeError as exc:
+        eprint(f"ERROR: {exc}")
+        try:
+            log(f"ERROR: {exc}")
+        except Exception:
+            pass
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -10,6 +10,11 @@ if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
 fi
 
 install -Dm0755 "$(dirname "$0")/kvm-vm" "$DEST"
+BRIDGE_SRC="$(dirname "$0")/tools/kvm-vm-bridge"
+BRIDGE_DEST="${BRIDGE_DEST:-$PREFIX/sbin/kvm-vm-bridge}"
+if [[ -f "$BRIDGE_SRC" ]]; then
+  install -Dm0755 "$BRIDGE_SRC" "$BRIDGE_DEST"
+fi
 install -d -m0755 /etc/kvm-vm/definitions
 install -d -m0755 /var/lib/kvm-vm/state
 install -d -m0755 /var/lib/libvirt/images/base
@@ -21,4 +26,10 @@ if command -v restorecon >/dev/null 2>&1; then
 fi
 
 echo "Installed: $DEST"
-echo "Run: kvm-vm --help"
+if [[ -f "$BRIDGE_SRC" ]]; then
+  echo "Installed: $BRIDGE_DEST"
+  echo "Run: kvm-vm --help"
+  echo "Run: kvm-vm-bridge --help"
+else
+  echo "Run: kvm-vm --help"
+fi
