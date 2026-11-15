@@ -18,6 +18,8 @@ See [What kvm-vm does not do](#what-kvm-vm-does-not-do).
 - [Requirements](#requirements)
 - [What kvm-vm does not do](#what-kvm-vm-does-not-do)
 
+**One-command Prometheus + Grafana monitoring:** `sudo ./tools/setup-monitoring.sh` (requires Docker Engine + Compose v2). See [Docker local VM monitoring](docs/monitoring-stack.md).
+
 ## Quick start
 
 These steps create a first VM on libvirt's `default` NAT network, which needs no

@@ -110,6 +110,8 @@ ssh admin@<vm-ip>         # admin 即 cloud_init.user
 
 Prometheus metrics endpoint、systemd、PromQL 與安全設定請見 [Prometheus 指標輸出](docs/prometheus.zh-TW.md)。
 
+**快速建立 Prometheus + Grafana Dashboard：** `sudo ./tools/setup-monitoring.sh`（需已安裝 Docker Engine + Compose v2）；請見 [Docker 本機 VM 監控](docs/monitoring-stack.zh-TW.md)。
+
 常用選項：`--dry-run` 只檢查不變更，`--yes` 略過確認提示（用於腳本），`--force` 先強制關閉執行中的 VM，`--no-start` 讓 VM 保持關機。
 
 ## 文件導覽
