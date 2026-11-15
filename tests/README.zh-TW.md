@@ -22,6 +22,9 @@ python3 -m pytest tests -q
 
 會執行所有測試檔。需要實體 KVM 宿主機的測試，除非以 root 在具備 `/dev/kvm` 與可用 libvirt 連線的 Linux 上執行，否則會自動略過。需要 POSIX 檔案權限的測試在 Windows 上會略過。
 
+`tests/test_prometheus_exporter.py` 測試 Prometheus 格式、Counter、缺失值、
+收集器失敗復原、HTTP endpoint，以及使用模擬 `virsh` 的 CLI 子程序測試。
+
 `tests/test_bridge_tool.py` 檢查選用的宿主機 bridge 工具，不會改動真實介面。它的實機 dry-run 預設略過，除非在可犧牲的宿主機上設定 `KVM_VM_BRIDGE_LIVE=1` 與 `KVM_VM_BRIDGE_LIVE_UPLINK`。
 
 > [!WARNING]

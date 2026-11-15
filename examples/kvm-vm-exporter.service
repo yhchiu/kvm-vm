@@ -1,0 +1,24 @@
+# Optional systemd service. Review settings and install manually; install.sh does
+# not enable or start this exporter.
+[Unit]
+Description=kvm-vm Prometheus exporter (read-only libvirt statistics)
+After=network.target
+
+[Service]
+Type=simple
+# The local libvirt socket and /var/lib/kvm-vm/state may require root access.
+# For production, a dedicated account with suitable libvirt read-only access
+# is preferable where supported by your deployment.
+ExecStart=/usr/local/sbin/kvm-vm exporter --managed --listen 127.0.0.1 --port 9179 --interval 5 --timeout 10
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+
+[Install]
+WantedBy=multi-user.target

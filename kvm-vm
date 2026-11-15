@@ -12,6 +12,9 @@ import datetime as dt
 import functools
 import hashlib
 import ipaddress
+import math
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 import logging
 import os
@@ -124,12 +127,16 @@ def eprint(*args: Any) -> None:
     print(*args, file=sys.stderr)
 
 
-def run(cmd: List[str], *, check: bool = True, capture: bool = False, input_text: Optional[str] = None) -> subprocess.CompletedProcess:
+def run(cmd: List[str], *, check: bool = True, capture: bool = False, input_text: Optional[str] = None,
+        timeout: Optional[float] = None) -> subprocess.CompletedProcess:
     env = os.environ.copy()
     env["LC_ALL"] = "C"
+    kwargs: Dict[str, Any] = {"check": check, "text": True, "input": input_text, "env": env}
+    if timeout is not None:
+        kwargs["timeout"] = timeout
     if capture:
-        return subprocess.run(cmd, check=check, text=True, input=input_text, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
-    return subprocess.run(cmd, check=check, text=True, input=input_text, env=env)
+        kwargs.update(stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    return subprocess.run(cmd, **kwargs)
 
 
 def output(cmd: List[str], *, check: bool = True) -> str:
@@ -3124,11 +3131,11 @@ def parse_domstats(text: str) -> Dict[str, Dict[str, str]]:
     return domains
 
 
-def read_domstats(name: Optional[str] = None) -> Dict[str, Dict[str, str]]:
+def read_domstats(name: Optional[str] = None, *, timeout: Optional[float] = None) -> Dict[str, Dict[str, str]]:
     cmd = ["virsh", "-c", LIBVIRT_URI, "domstats", *MONITOR_STATS_FLAGS]
     if name is not None:
         cmd.append(name)
-    p = run(cmd, check=False, capture=True)
+    p = run(cmd, check=False, capture=True, timeout=timeout)
     if p.returncode:
         raise KVMError(f"Cannot read VM resource statistics: {p.stderr.strip() or p.stdout.strip()}")
     result = parse_domstats(p.stdout)
@@ -3310,6 +3317,216 @@ def cmd_monitor(args: argparse.Namespace) -> int:
     return 0
 
 
+# --- Prometheus exporter (stdlib HTTP; in-process, read-only libvirt polling) ---
+
+PROMETHEUS_METRICS = {
+    "kvm_vm_collector_success": ("gauge", "Whether the last libvirt collection succeeded (1=yes, 0=no)."),
+    "kvm_vm_collector_duration_seconds": ("gauge", "Duration of the most recent libvirt collection in seconds."),
+    "kvm_vm_collector_last_success_timestamp_seconds": ("gauge", "Unix timestamp of the most recent successful libvirt collection; zero before any success."),
+    "kvm_vm_domain_state": ("gauge", "Current VM state; the one observed state has value 1."),
+    "kvm_vm_domain_vcpus": ("gauge", "Current number of virtual CPUs assigned to the VM."),
+    "kvm_vm_domain_cpu_time_seconds_total": ("counter", "Cumulative VM CPU time in seconds from libvirt (resets may occur on VM restart)."),
+    "kvm_vm_domain_cpu_used_cores": ("gauge", "CPU cores used by the VM over the latest two successful samples; 1 is one full core."),
+    "kvm_vm_domain_cpu_usage_ratio": ("gauge", "CPU usage divided by the VM's current vCPU count (1 is 100 percent)."),
+    "kvm_vm_domain_memory_assigned_bytes": ("gauge", "Current balloon-assigned VM memory in bytes; not guest used memory."),
+    "kvm_vm_domain_memory_guest_used_bytes": ("gauge", "Estimated non-reclaimable guest memory in bytes (only with fresh balloon stats)."),
+    "kvm_vm_domain_memory_rss_bytes": ("gauge", "Host-side QEMU resident set size in bytes (not guest memory usage)."),
+    "kvm_vm_domain_disk_capacity_bytes": ("gauge", "Logical size of the libvirt disk source in bytes."),
+    "kvm_vm_domain_disk_physical_bytes": ("gauge", "Physical size of the libvirt disk source in bytes; excludes backing chains."),
+    "kvm_vm_domain_disk_read_bytes_total": ("counter", "Cumulative bytes read by the VM from this disk."),
+    "kvm_vm_domain_disk_write_bytes_total": ("counter", "Cumulative bytes written by the VM to this disk."),
+    "kvm_vm_domain_network_receive_bytes_total": ("counter", "Cumulative network bytes received by the guest on this interface."),
+    "kvm_vm_domain_network_transmit_bytes_total": ("counter", "Cumulative network bytes transmitted by the guest on this interface."),
+}
+
+
+def prometheus_label_value(value: str) -> str:
+    """Prometheus 0.0.4 escaping for label values; data cannot inject samples."""
+    return value.replace("\\", "\\\\").replace("\n", "\\n").replace('"', '\\"')
+
+
+def prometheus_text(domains: Dict[str, Dict[str, str]],
+                    previous: Optional[Dict[str, Dict[str, str]]],
+                    elapsed: float, wall_time: float, *,
+                    managed: bool, success: bool, duration: float,
+                    last_success: float) -> str:
+    """Render deterministic, valid Prometheus text format with raw device counters."""
+    samples: Dict[str, List[str]] = {key: [] for key in PROMETHEUS_METRICS}
+
+    def emit(metric: str, value: Optional[float], **labels: str) -> None:
+        if value is None or not math.isfinite(float(value)):
+            return
+        label_text = ("{" + ",".join(f'{key}="{prometheus_label_value(val)}"'
+                                    for key, val in sorted(labels.items())) + "}") if labels else ""
+        samples[metric].append(f"{metric}{label_text} {format(value, '.15g') if isinstance(value, float) else value}")
+
+    emit("kvm_vm_collector_success", int(success))
+    emit("kvm_vm_collector_duration_seconds", duration)
+    emit("kvm_vm_collector_last_success_timestamp_seconds", last_success)
+    if success:
+        for name in sorted(domains):
+            if managed and not load_state(name):
+                continue
+            data = domains[name]
+            prior = previous.get(name) if previous else None
+            vm = monitor_resources(name, data, prior, elapsed, wall_time)
+            labels = {"vm": name}
+            emit("kvm_vm_domain_state", 1, state=vm["state"], **labels)
+            emit("kvm_vm_domain_vcpus", vm["vcpus"], **labels)
+            # Raw counters are directly usable with PromQL rate(), without relying
+            # on the exporter's own sampling period or accumulated deltas.
+            cpu_ns = monitor_int(data, "cpu.time")
+            if vm["state"] in ("running", "blocked") and cpu_ns is not None:
+                emit("kvm_vm_domain_cpu_time_seconds_total", cpu_ns / 1e9, **labels)
+                old_ns = monitor_int(prior, "cpu.time") if prior else None
+                cores = counter_rate(old_ns, cpu_ns, elapsed * 1e9)
+                emit("kvm_vm_domain_cpu_used_cores", cores, **labels)
+                if cores is not None and vm["vcpus"]:
+                    emit("kvm_vm_domain_cpu_usage_ratio", cores / vm["vcpus"], **labels)
+            for metric, key in (
+                ("kvm_vm_domain_memory_assigned_bytes", "memory_assigned_bytes"),
+                ("kvm_vm_domain_memory_guest_used_bytes", "memory_guest_used_bytes"),
+                ("kvm_vm_domain_memory_rss_bytes", "memory_rss_bytes"),
+            ):
+                emit(metric, vm[key], **labels)
+            for disk, stats in sorted(vm["disks"].items()):
+                disk_labels = {"vm": name, "disk": disk}
+                emit("kvm_vm_domain_disk_capacity_bytes", stats["capacity"], **disk_labels)
+                emit("kvm_vm_domain_disk_physical_bytes", stats["physical"], **disk_labels)
+                if vm["state"] in ("running", "blocked"):
+                    emit("kvm_vm_domain_disk_read_bytes_total", stats["rd.bytes"], **disk_labels)
+                    emit("kvm_vm_domain_disk_write_bytes_total", stats["wr.bytes"], **disk_labels)
+            if vm["state"] in ("running", "blocked"):
+                for nic, stats in sorted(vm["interfaces"].items()):
+                    nic_labels = {"vm": name, "interface": nic}
+                    emit("kvm_vm_domain_network_receive_bytes_total", stats["rx.bytes"], **nic_labels)
+                    emit("kvm_vm_domain_network_transmit_bytes_total", stats["tx.bytes"], **nic_labels)
+
+    result = []
+    for name, (metric_type, description) in PROMETHEUS_METRICS.items():
+        result.extend((f"# HELP {name} {description}", f"# TYPE {name} {metric_type}"))
+        result.extend(samples[name])
+    return "\n".join(result) + "\n"
+
+
+class PrometheusVMCollector:
+    """Serialize virsh collections; serve an atomically cached snapshot to scrapers."""
+
+    def __init__(self, name: Optional[str], managed: bool, timeout: float):
+        self.name = name
+        self.managed = managed
+        self.timeout = timeout
+        self.previous: Optional[Dict[str, Dict[str, str]]] = None
+        self.previous_at: Optional[float] = None
+        self.last_success = 0.0
+        self.success = False
+        self.lock = threading.Lock()
+        self.body = prometheus_text({}, None, 0, 0, managed=managed,
+                                    success=False, duration=0, last_success=0)
+
+    def collect(self) -> bool:
+        start = time.monotonic()
+        try:
+            current = read_domstats(self.name, timeout=self.timeout)
+            now = time.monotonic()
+            wall_time = time.time()
+            elapsed = now - self.previous_at if self.previous_at is not None else 0.0
+            duration = now - start
+            rendered = prometheus_text(current, self.previous, elapsed, wall_time,
+                                       managed=self.managed, success=True,
+                                       duration=duration, last_success=wall_time)
+        except Exception as exc:
+            # Report failure explicitly and clear stale domain series. On recovery,
+            # restart the comparison baseline instead of calculating across gaps.
+            duration = time.monotonic() - start
+            log.warning("VM statistics collection failed: %s", exc)
+            self.previous = None
+            self.previous_at = None
+            with self.lock:
+                self.success = False
+                self.body = prometheus_text({}, None, 0, 0, managed=self.managed,
+                                            success=False, duration=duration,
+                                            last_success=self.last_success)
+            return False
+        self.previous = current
+        self.previous_at = now
+        self.last_success = wall_time
+        with self.lock:
+            self.success = True
+            self.body = rendered
+        return True
+
+    def snapshot(self) -> Tuple[bool, bytes]:
+        with self.lock:
+            return self.success, self.body.encode("utf-8")
+
+
+def make_prometheus_handler(collector: PrometheusVMCollector) -> type:
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            if self.path not in ("/metrics", "/healthz"):
+                self.send_error(404, "Not Found")
+                return
+            successful, body = collector.snapshot()
+            if self.path == "/healthz":
+                body = b"ok\n" if successful else b"collector unavailable\n"
+                code = 200 if successful else 503
+                content_type = "text/plain; charset=utf-8"
+            else:
+                code = 200
+                content_type = "text/plain; version=0.0.4; charset=utf-8"
+            self.send_response(code)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, fmt: str, *args: Any) -> None:
+            log.debug("exporter HTTP: " + fmt, *args)
+    return Handler
+
+
+def cmd_exporter(args: argparse.Namespace) -> int:
+    require_commands(["virsh"])
+    if args.name is not None and not NAME_RE.fullmatch(args.name):
+        raise KVMError("Invalid domain name")
+    try:
+        address = ipaddress.ip_address(args.listen)
+        if address.version != 4:
+            raise ValueError("IPv6 not supported")
+    except ValueError as exc:
+        raise KVMError("--listen must be a numeric IPv4 address") from exc
+    if not 1 <= args.port <= 65535:
+        raise KVMError("--port must be between 1 and 65535")
+    if not math.isfinite(args.interval) or not 0.5 <= args.interval <= 3600:
+        raise KVMError("--interval must be between 0.5 and 3600 seconds")
+    if not math.isfinite(args.timeout) or not 0.1 <= args.timeout <= 120:
+        raise KVMError("--timeout must be between 0.1 and 120 seconds")
+
+    collector = PrometheusVMCollector(args.name, args.managed, args.timeout)
+    try:
+        server = HTTPServer((str(address), args.port), make_prometheus_handler(collector))
+    except OSError as exc:
+        raise KVMError(f"Cannot listen on {address}:{args.port}: {exc}") from exc
+    stopped = threading.Event()
+
+    def poll() -> None:
+        while not stopped.wait(args.interval):
+            collector.collect()
+
+    try:
+        collector.collect()
+        thread = threading.Thread(target=poll, name="kvm-vm-poller", daemon=True)
+        thread.start()
+        log.info("Prometheus exporter listening on http://%s:%s/metrics", address, server.server_port)
+        server.serve_forever(poll_interval=0.25)
+    finally:
+        stopped.set()
+        server.server_close()
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="kvm-vm", description="Declarative KVM/libvirt VM manager")
     p.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
@@ -3360,6 +3577,19 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Number of samples (0: continuous; default: 1)")
     q.add_argument("--json", action="store_true", help="Output one JSON object per sample (NDJSON)")
     q.set_defaults(func=cmd_monitor)
+
+    q = sp.add_parser("exporter", help="Serve read-only VM metrics for Prometheus over HTTP")
+    q.add_argument("name", nargs="?", help="VM name (default: all libvirt domains)")
+    q.add_argument("--managed", action="store_true", help="Expose only kvm-vm managed domains")
+    q.add_argument("--listen", default="127.0.0.1", metavar="IPV4",
+                   help="IPv4 bind address (default: 127.0.0.1; do not expose publicly)")
+    q.add_argument("--port", type=int, default=9179, metavar="PORT",
+                   help="HTTP port (default: 9179)")
+    q.add_argument("--interval", type=float, default=5.0, metavar="SECONDS",
+                   help="Background collection interval (0.5-3600; default: 5)")
+    q.add_argument("--timeout", type=float, default=10.0, metavar="SECONDS",
+                   help="Timeout for each virsh collection (0.1-120; default: 10)")
+    q.set_defaults(func=cmd_exporter)
 
     q = sp.add_parser("status", help="Show detailed VM status")
     q.add_argument("name")

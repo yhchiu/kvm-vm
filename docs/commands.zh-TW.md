@@ -8,6 +8,7 @@ kvm-vm create <vm.yaml> [--console-password-file <path>] [--refresh-image] [--no
 kvm-vm list [--managed] [--ips]
 kvm-vm status <vm>
 kvm-vm monitor [<vm>] [--managed] [--interval <seconds>] [--count <n>] [--json]
+kvm-vm exporter [<vm>] [--managed] [--listen <ipv4>] [--port <port>] [--interval <seconds>] [--timeout <seconds>]
 kvm-vm console <vm>
 kvm-vm reinstall <vm> [--os <alias|url|path> | --image-url <url> | --image-path <path>] [--os-variant <variant>]
                       [--console-password-file <path>] [--refresh-image] [--no-start] [--dry-run] [--yes] [--force]
@@ -23,7 +24,7 @@ kvm-vm backup check <backup-dir> [--until <checkpoint>]
 `kvm-vm --help` 與 `kvm-vm 指令 --help` 會列出相同的選項。
 
 - [開始之前](#開始之前)
-- [validate](#validate) · [create](#create) · [list](#list) · [status](#status) · [monitor](#monitor) · [console](#console)
+- [validate](#validate) · [create](#create) · [list](#list) · [status](#status) · [monitor](#monitor) · [exporter](#exporter) · [console](#console)
 - [reinstall](#reinstall) · [clone](#clone) · [delete](#delete)
 - [snapshot](#snapshot) · [backup check](#backup-check)
 - [指令拒絕執行時](#指令拒絕執行時)
@@ -130,6 +131,16 @@ CPU 與 I/O 是累積計數器，需要在兩次採樣之間計算差值。
 但此指令會改變執行中的 domain 設定，**`monitor` 不會自動執行**。
 CPU、磁碟與網路統計不需要 Guest Agent。此功能只提供即時採樣，
 不包含歷史儲存、告警、Guest 檔案系統使用量或宿主機整體監控。
+
+## exporter
+
+```sh
+sudo kvm-vm exporter --managed
+curl http://127.0.0.1:9179/metrics
+```
+
+提供 Prometheus 相容 VM 指標，背景定期使用 libvirt 唯讀採樣，不需要額外
+Python 相依或預設啟用的服務。請見 [Prometheus 指標輸出](prometheus.zh-TW.md)。
 
 ## console
 

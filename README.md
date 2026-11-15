@@ -114,6 +114,7 @@ option, and the [command reference](docs/commands.md) explains them.
 | List VMs with their addresses | `kvm-vm list --ips` |
 | Show one VM in detail | `kvm-vm status web01` |
 | Sample VM CPU, memory and I/O | `kvm-vm monitor web01` |
+| Prometheus VM metrics | `kvm-vm exporter --managed` |
 | Open the serial console (leave with `Ctrl+]`) | `kvm-vm console web01` |
 | Reinstall the OS, keeping the settings | `kvm-vm reinstall web01 [--os debian13]` |
 | Clone a shut-off VM | `kvm-vm clone web01 web02.yaml` |
@@ -123,6 +124,8 @@ option, and the [command reference](docs/commands.md) explains them.
 | Keep the change | `kvm-vm snapshot delete web01 --yes` |
 | Undo the change | `kvm-vm snapshot rollback web01 --yes --force` |
 | Check a Backup before a Restore | `kvm-vm backup check /backups/web01` |
+
+For Prometheus (metrics endpoint, service configuration, PromQL and security), see [Prometheus exporter](docs/prometheus.md).
 
 Common options: `--dry-run` checks without changing anything, `--yes` skips the
 prompt (for scripts), `--force` powers off a running VM first, and `--no-start`
@@ -136,6 +139,7 @@ leaves the VM shut off.
 | Choose between bridge, NAT and Macvtap | [Networking](docs/networking.md) |
 | Create the host bridge that bridge mode needs | [Host bridge setup](docs/bridge-host.md) |
 | Look up what a command does | [Command reference](docs/commands.md) |
+| Configure Prometheus metrics | [Prometheus exporter](docs/prometheus.md) |
 | Log in on the console, or regain access | [Access and security](docs/access.md) |
 | Use Snapshots safely | [Snapshots](docs/snapshots.md) |
 | Back up a VM and restore it on another host | [Backup and Restore](docs/full-backup-restore.md) |

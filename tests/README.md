@@ -24,6 +24,9 @@ This runs every test file. Tests that need a real KVM host skip themselves unles
 they run as root on Linux with `/dev/kvm` and a working libvirt connection. Tests
 that need POSIX file permissions skip on Windows.
 
+`tests/test_prometheus_exporter.py` covers metric types, raw counters, missing values,
+collector recovery, HTTP paths and a real exporter subprocess using a fake `virsh`.
+
 `tests/test_bridge_tool.py` checks the optional host-bridge tool without
 changing a real interface. Its live dry-run stays skipped unless
 `KVM_VM_BRIDGE_LIVE=1` and `KVM_VM_BRIDGE_LIVE_UPLINK` are set on a disposable

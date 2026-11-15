@@ -11,7 +11,7 @@ python3 -m py_compile "$ROOT/tests/console_acceptance.py" "$ROOT/tests/serial_au
 "$ROOT/tools/kvm-vm-bridge" --version >/dev/null
 
 if python3 -m pytest --version >/dev/null 2>&1; then
-  python3 -m pytest "$ROOT/tests/test_unit.py" "$ROOT/tests/test_monitor.py" "$ROOT/tests/test_bridge_tool.py" "$ROOT/tests/test_macvtap.py" "$ROOT/tests/test_console_password.py" "$ROOT/tests/test_macvtap_acceptance.py" "$ROOT/tests/test_serial_auth_probe.py" "$ROOT/tests/test_console_acceptance.py" -q
+  python3 -m pytest "$ROOT/tests/test_unit.py" "$ROOT/tests/test_monitor.py" "$ROOT/tests/test_prometheus_exporter.py" "$ROOT/tests/test_bridge_tool.py" "$ROOT/tests/test_macvtap.py" "$ROOT/tests/test_console_password.py" "$ROOT/tests/test_macvtap_acceptance.py" "$ROOT/tests/test_serial_auth_probe.py" "$ROOT/tests/test_console_acceptance.py" -q
 fi
 
 tmp="$(mktemp -d)"

@@ -1,0 +1,7 @@
+# Merge the following job into prometheus.yml under scrape_configs:
+scrape_configs:
+  - job_name: kvm-vm
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    static_configs:
+      - targets: ['127.0.0.1:9179']  # Only if Prometheus is on the KVM host.

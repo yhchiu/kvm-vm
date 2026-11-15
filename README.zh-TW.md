@@ -97,6 +97,7 @@ ssh admin@<vm-ip>         # admin 即 cloud_init.user
 | 列出 VM 與位址 | `kvm-vm list --ips` |
 | 查看單台 VM 詳細資訊 | `kvm-vm status web01` |
 | 查看 VM CPU、記憶體和 I/O 資源 | `kvm-vm monitor web01` |
+| Prometheus VM 監控指標 | `kvm-vm exporter --managed` |
 | 開啟序列主控台（按 `Ctrl+]` 離開） | `kvm-vm console web01` |
 | 重灌作業系統並保留設定 | `kvm-vm reinstall web01 [--os debian13]` |
 | 複製一台已關機的 VM | `kvm-vm clone web01 web02.yaml` |
@@ -106,6 +107,8 @@ ssh admin@<vm-ip>         # admin 即 cloud_init.user
 | 保留變更 | `kvm-vm snapshot delete web01 --yes` |
 | 撤銷變更 | `kvm-vm snapshot rollback web01 --yes --force` |
 | 還原前檢查備份 | `kvm-vm backup check /backups/web01` |
+
+Prometheus metrics endpoint、systemd、PromQL 與安全設定請見 [Prometheus 指標輸出](docs/prometheus.zh-TW.md)。
 
 常用選項：`--dry-run` 只檢查不變更，`--yes` 略過確認提示（用於腳本），`--force` 先強制關閉執行中的 VM，`--no-start` 讓 VM 保持關機。
 
@@ -117,6 +120,7 @@ ssh admin@<vm-ip>         # admin 即 cloud_init.user
 | 在橋接、NAT、Macvtap 之間做選擇 | [網路設定](docs/networking.zh-TW.md) |
 | 建立橋接模式需要的宿主機 bridge | [宿主機 bridge 設定](docs/bridge-host.zh-TW.md) |
 | 查詢指令的作用 | [指令參考](docs/commands.zh-TW.md) |
+| 整合 Prometheus 監控 | [Prometheus 指標輸出](docs/prometheus.zh-TW.md) |
 | 從主控台登入，或重新取得存取權 | [存取與安全](docs/access.zh-TW.md) |
 | 安全地使用快照 | [Snapshots](docs/snapshots.md)（英文） |
 | 備份 VM 並在另一台宿主機還原 | [Backup and Restore](docs/full-backup-restore.md)（英文） |

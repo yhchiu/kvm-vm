@@ -8,6 +8,7 @@ kvm-vm create <vm.yaml> [--console-password-file <path>] [--refresh-image] [--no
 kvm-vm list [--managed] [--ips]
 kvm-vm status <vm>
 kvm-vm monitor [<vm>] [--managed] [--interval <seconds>] [--count <n>] [--json]
+kvm-vm exporter [<vm>] [--managed] [--listen <ipv4>] [--port <port>] [--interval <seconds>] [--timeout <seconds>]
 kvm-vm console <vm>
 kvm-vm reinstall <vm> [--os <alias|url|path> | --image-url <url> | --image-path <path>] [--os-variant <variant>]
                       [--console-password-file <path>] [--refresh-image] [--no-start] [--dry-run] [--yes] [--force]
@@ -23,7 +24,7 @@ kvm-vm backup check <backup-dir> [--until <checkpoint>]
 `kvm-vm --help` and `kvm-vm COMMAND --help` show the same options.
 
 - [Before you start](#before-you-start)
-- [validate](#validate) · [create](#create) · [list](#list) · [status](#status) · [monitor](#monitor) · [console](#console)
+- [validate](#validate) · [create](#create) · [list](#list) · [status](#status) · [monitor](#monitor) · [exporter](#exporter) · [console](#console)
 - [reinstall](#reinstall) · [clone](#clone) · [delete](#delete)
 - [snapshot](#snapshot) · [backup check](#backup-check)
 - [When a command refuses to run](#when-a-command-refuses-to-run)
@@ -164,6 +165,17 @@ on the VM definition, guest drivers and libvirt. No guest-agent is required for
 CPU, disk I/O or network counters. This command is for live sampling, not
 historical storage, alerting, in-guest filesystem usage, or host-wide
 monitoring.
+
+## exporter
+
+```sh
+sudo kvm-vm exporter --managed
+curl http://127.0.0.1:9179/metrics
+```
+
+Serves Prometheus-compatible VM metrics and starts a read-only background sampler.
+No extra Python dependencies or automatically installed service are needed.
+See [Prometheus exporter](prometheus.md) for metrics, security, PromQL and systemd examples.
 
 ## console
 
