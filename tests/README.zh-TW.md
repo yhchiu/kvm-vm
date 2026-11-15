@@ -98,3 +98,7 @@ sudo python3 -m pytest tests/test_recovery_e2e.py -v
 ## 備份驗收
 
 [docs/full-backup-acceptance.md](../docs/full-backup-acceptance.md)（英文）說明雙宿主機的備份與還原演練，會用到本目錄中的 `prepare_*.py` 與 `restore_recovery_point.py`。
+
+## 中央監控 KVM/NAT Lab
+
+請參考[獨立多層 NAT E2E Lab](e2e/README.zh-TW.md) 與 [English](e2e/README.md)。需於可操作的 KVM 實機明確啟用，會建立五台測試 VM。

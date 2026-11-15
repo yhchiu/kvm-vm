@@ -135,3 +135,7 @@ These opt-in workflows drive a real KVM host from a separate controller machine:
 [docs/full-backup-acceptance.md](../docs/full-backup-acceptance.md) describes the
 two-host Backup and Restore exercise. It uses the `prepare_*.py` and
 `restore_recovery_point.py` helpers in this directory.
+
+## Central monitoring KVM/NAT Lab
+
+See [the isolated multi-NAT E2E Lab](e2e/README.md) and [繁體中文說明](e2e/README.zh-TW.md). It provisions five disposable VMs and must be explicitly enabled on a KVM host.
