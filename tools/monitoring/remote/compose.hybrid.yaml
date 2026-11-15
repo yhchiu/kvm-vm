@@ -1,0 +1,6 @@
+# Overlay the existing local Prometheus mount; keep Grafana and named volumes.
+services:
+  prometheus:
+    volumes:
+      - ./prometheus-hybrid.yml:/etc/prometheus/prometheus.yml:ro
+      - ./remote-password:/etc/prometheus/remote-password:ro

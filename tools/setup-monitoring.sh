@@ -209,7 +209,32 @@ up() {
   echo 'Remote access: use an SSH tunnel or an authenticated HTTPS reverse proxy.'
 }
 
+# Route only explicitly selected remote modes to the separate installer.
+# Keep the original no-argument local bootstrap behavior untouched.
+mode=local
+args=()
+while (($#)); do
+  case "$1" in
+    --mode)
+      (($# >= 2)) || die '--mode needs local, agent or hybrid'
+      mode="$2"; shift 2 ;;
+    *) args+=("$1"); shift ;;
+  esac
+done
+[[ $mode == local || $mode == agent || $mode == hybrid ]] || die "Unknown mode: $mode"
+if [[ $mode != local ]]; then
+  exec "$ROOT/tools/setup-remote-monitoring.sh" "$mode" "${args[@]}"
+fi
+set -- "${args[@]}"
 COMMAND="${1:-up}"
+if [[ -f "$CONFIG_DIR/.mode" ]]; then
+  active_mode="$(cat "$CONFIG_DIR/.mode")"
+  case "$COMMAND" in
+    up|install|start|update|down|stop|render)
+      die "Monitoring is configured as $active_mode. Use --mode $active_mode, or stop that mode before using local." ;;
+  esac
+fi
+
 case "$COMMAND" in
   -h|--help|help) usage ;;
   render)

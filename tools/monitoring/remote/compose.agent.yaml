@@ -1,0 +1,22 @@
+name: kvm-vm-agent
+services:
+  vmagent:
+    image: victoriametrics/vmagent:v1.154.1
+    restart: unless-stopped
+    network_mode: host  # Reach 127.0.0.1:9179, without exposing an inbound port.
+    command:
+      - -promscrape.config=/etc/vmagent/scrape.yml
+      - -remoteWrite.url=${REMOTE_WRITE_URL:?Set remote-write HTTPS URL}
+      - -remoteWrite.basicAuth.username=${REMOTE_WRITE_USERNAME:?Set remote-write username}
+      - -remoteWrite.basicAuth.passwordFile=/etc/vmagent/remote-password
+      - -remoteWrite.tmpDataPath=/vmagent-queue
+      - -remoteWrite.maxDiskUsagePerURL=${REMOTE_DISK_QUEUE_LIMIT:-2147483648}
+      - -httpListenAddr=127.0.0.1:8429
+    volumes:
+      - ./vmagent-scrape.yml:/etc/vmagent/scrape.yml:ro
+      - ./remote-password:/etc/vmagent/remote-password:ro
+      - vmagent_queue:/vmagent-queue
+    security_opt:
+      - no-new-privileges:true
+volumes:
+  vmagent_queue:
