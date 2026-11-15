@@ -182,3 +182,5 @@ bash tests/smoke.sh
 GPL-3.0，詳見 [LICENSE](LICENSE)。
 
 中央監控：[中央監控（Agent／Hybrid）](docs/central-monitoring.zh-TW.md)
+
+中央監控亦支援持久化 Host Inventory、主機完全失聯告警、node_exporter 宿主機資源指標，以及使用機密檔案的 Email／Webhook 通知（詳見[中央監控說明](docs/central-monitoring.zh-TW.md)）。

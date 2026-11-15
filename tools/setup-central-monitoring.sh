@@ -21,16 +21,27 @@ get_setting() { sed -n "s/^${1}=//p" "$CONFIG_DIR/.env" | head -n 1; }
 seed_config() {
   [[ ! -L "$CONFIG_DIR" ]] || fail 'Refusing symlink configuration directory'
   install -d -m 0700 "$CONFIG_DIR"
+  [[ ! -L "$CONFIG_DIR/inventory" && ! -L "$CONFIG_DIR/alertmanager/secrets" ]] || fail 'Refusing symlink inventory/secrets directory'
   local file
   for file in compose.yaml nginx-remote-write.example.conf \
       grafana/provisioning/datasources/victoriametrics.yml \
       grafana/provisioning/dashboards/dashboards.yml \
       rules/rules.yml alertmanager/alertmanager.yml \
-      grafana/dashboards/fleet.json grafana/dashboards/vms.json; do
+      grafana/dashboards/fleet.json grafana/dashboards/vms.json \
+      grafana/dashboards/hosts.json inventory/scrape.yml inventory/inventory.py; do
+    [[ ! -L "$CONFIG_DIR/$file" ]] || fail "Refusing symlink: $file"
     if [[ ! -e $CONFIG_DIR/$file ]]; then
       install -Dm0644 "$TEMPLATES/$file" "$CONFIG_DIR/$file"
     fi
   done
+  # Host inventory is data, not a replaceable template. Never truncate it.
+  [[ ! -L "$CONFIG_DIR/inventory" && ! -L "$CONFIG_DIR/inventory/hosts.json" ]] || fail 'Refusing symlink inventory'
+  install -d -m 0755 "$CONFIG_DIR/inventory"
+  install -d -m 0755 "$CONFIG_DIR/alertmanager/secrets"
+  if [[ ! -e "$CONFIG_DIR/inventory/hosts.json" ]]; then
+    printf '[]\n' > "$CONFIG_DIR/inventory/hosts.json"
+    chmod 0644 "$CONFIG_DIR/inventory/hosts.json"
+  fi
   if [[ ! -e "$CONFIG_DIR/.env" ]]; then
     local gp vp retention password
     gp="${GRAFANA_PORT:-3000}"
@@ -64,7 +75,11 @@ compose() { docker compose --project-directory "$CONFIG_DIR" -f "$CONFIG_DIR/com
 case "$COMMAND" in
   help|--help|-h)
     cat <<'HELP'
-Usage: sudo ./tools/setup-central-monitoring.sh [up|status|logs|update|down|credentials|enroll HOST]
+Usage: sudo ./tools/setup-central-monitoring.sh [up|reload|status|logs|update|down|credentials|enroll HOST]
+       sudo ./tools/setup-central-monitoring.sh inventory [list|add UUID HOST SITE|disable UUID|enable UUID|remove UUID]
+       sudo ./tools/setup-central-monitoring.sh notifications webhook URL_FILE
+       sudo ./tools/setup-central-monitoring.sh notifications email TO SMTP_HOST:PORT FROM SMTP_USER PASSWORD_FILE
+       sudo ./tools/setup-central-monitoring.sh sync-templates  # reviewed refresh of bundled stack templates
        ./tools/setup-central-monitoring.sh render DIRECTORY
 This installs a LOCALHOST-ONLY VictoriaMetrics + Grafana + vmalert + Alertmanager.
 Remote hosts require a separately installed TLS + Basic Auth ingress (see docs).
@@ -87,6 +102,12 @@ HELP
     echo "VictoriaMetrics API (LOOPBACK ONLY): http://127.0.0.1:$(get_setting VM_PORT)"
     echo 'Remote write requires a separate authenticated HTTPS ingress. See docs/central-monitoring.md.'
     ;;
+  reload)
+    require_root; require_config; check_docker
+    # Recreate containers after a bind-mounted config file was atomically
+    # replaced (Docker retains the old inode for an individual file mount).
+    compose up -d --force-recreate
+    ;;
   status)
     require_root; require_config; check_docker
     compose ps
@@ -103,6 +124,34 @@ HELP
   down|stop)
     require_root; require_config; check_docker
     compose down # Explicitly no -v: retain named volumes.
+    ;;
+  inventory)
+    require_root; require_config
+    shift
+    [[ $# -gt 0 ]] || fail 'inventory requires a subcommand'
+    python3 "$TEMPLATES/inventory/inventory.py" --file "$CONFIG_DIR/inventory/hosts.json" "$@"
+    ;;
+  notifications)
+    require_root; require_config
+    shift
+    python3 "$TEMPLATES/configure-notifications.py" "$CONFIG_DIR" "$@"
+    ;;
+  sync-templates)
+    require_root; require_config
+    seed_config  # Seed new inventory files before enabling mounts in compose.
+    # Explicit migration: preserve locally modified settings and secrets.
+    # Create backup BEFORE overwriting any template. Run up afterwards.
+    backup="$CONFIG_DIR/backups/$(date -u +%Y%m%dT%H%M%SZ)-$$"
+    install -d -m 0700 "$backup"
+    for file in compose.yaml rules/rules.yml grafana/dashboards/fleet.json \
+        grafana/dashboards/hosts.json inventory/inventory.py inventory/scrape.yml; do
+      [[ ! -L "$CONFIG_DIR/$file" ]] || fail "Refusing symlink: $file"
+      if [[ -f "$CONFIG_DIR/$file" ]]; then
+        install -Dm0600 "$CONFIG_DIR/$file" "$backup/$file"
+      fi
+      install -Dm0644 "$TEMPLATES/$file" "$CONFIG_DIR/$file"
+    done
+    echo "Refreshed stack templates (backup: $backup). Run reload to apply."
     ;;
   credentials)
     require_root; require_config

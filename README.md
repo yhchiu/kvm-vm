@@ -217,3 +217,5 @@ See [Testing](tests/README.md) for the real-host tests.
 GPL-3.0. See [LICENSE](LICENSE).
 
 Central monitoring: [Central monitoring (Agent / Hybrid)](docs/central-monitoring.md)
+
+Central monitoring also supports persistent expected-host inventory, offline alerts, host node_exporter metrics, and secret-file-based Email/Webhook notifications (see [Central monitoring](docs/central-monitoring.md)).

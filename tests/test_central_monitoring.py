@@ -16,12 +16,13 @@ def call(tool,*args,env=None):
 
 def test_central_stack_not_public_by_default():
     compose=yaml.safe_load((CENTRAL_TEMPLATES/'compose.yaml').read_text())
-    assert set(compose['services'])=={'victoriametrics','grafana','vmalert','alertmanager'}
+    assert set(compose['services'])=={'victoriametrics','grafana','vmalert','alertmanager','inventory'}
     assert set(compose['volumes'])=={'vm_data','grafana_data'}
     for name in ('grafana','victoriametrics'):
         assert all(p.startswith('127.0.0.1:') for p in compose['services'][name]['ports'])
     assert 'ports' not in compose['services']['vmalert']
     assert 'ports' not in compose['services']['alertmanager']
+    assert compose['services']['alertmanager']['image'] == 'prom/alertmanager:v0.34.2'
     ingress=(CENTRAL_TEMPLATES/'nginx-remote-write.example.conf').read_text()
     assert 'auth_basic_user_file' in ingress
     assert 'limit_except POST' in ingress
@@ -107,6 +108,8 @@ exit 0
     assert 'Password (shown once):' not in (cfg/'htpasswd').read_text()
     assert call(CENTRAL,'enroll','kvm-tpe-01',env=env).returncode!=0
     assert call(CENTRAL,'update',env=env).returncode==0
+    assert call(CENTRAL,'reload',env=env).returncode==0
+    assert '--force-recreate' in log.read_text()
     assert call(CENTRAL,'down',env=env).returncode==0
     assert (cfg/'.env').read_text()==first
     assert ' down' in log.read_text()

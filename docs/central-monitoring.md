@@ -139,3 +139,82 @@ At the Central query API verify `kvm_vm_collector_success{host_id="..."}` exists
 ## Limitations and deployment validation
 
 The scripts and YAML can be tested without Docker/virsh; a real KVM host and public TLS ingress are required to verify actual scraping, ingest, Grafana panels and alert delivery. A single VictoriaMetrics instance is **not high availability**: back up its volumes and test restore. Restrict retention and queue storage budgets, monitor disk usage, and avoid leaving the Central API publicly accessible. The central endpoint remains intentionally inaccessible from remote hosts **until you finish the authenticated HTTPS ingress setup**.
+
+## 6. Expected-host inventory and offline alerts (Phase 5 extension)
+
+The central stack now runs a private, read-only **inventory exporter** (Docker internal port 9187; no published port), which reads `/etc/kvm-vm/central/inventory/hosts.json`. VictoriaMetrics Single scrapes it every 30 seconds and creates `kvm_vm_host_expected{host_id,host,site} 1` for enabled hosts. `KvmVmHostOffline` checks this persistent expected-host series against remote VM collector reports seen during the last five minutes, with an additional five-minute alert `for` duration. It therefore detects **complete host disappearance** (unlike `up == 0` on a remote writer). A missing collector is not necessarily a powered-off host: network failure, exporter failure and remote-write failure may also cause it.
+
+**Important:** HTTP ingestion enrollment and expected-host inventory are intentionally separate. After installing Agent/Hybrid, copy the UUID from the **Host** (`/etc/kvm-vm/monitoring/remote.json`) and register it on the **Central Server**:
+
+```bash
+sudo ./tools/setup-central-monitoring.sh inventory add \
+  eb90c4d9-7b0e-4f4f-a4bb-9490124c85ae kvm-tpe-01 taipei
+sudo ./tools/setup-central-monitoring.sh inventory list
+# During a planned maintenance window:
+sudo ./tools/setup-central-monitoring.sh inventory disable eb90c4d9-7b0e-4f4f-a4bb-9490124c85ae
+# Re-enable after maintenance:
+sudo ./tools/setup-central-monitoring.sh inventory enable eb90c4d9-7b0e-4f4f-a4bb-9490124c85ae
+# Permanent decommission (does NOT revoke HTTP credentials):
+sudo ./tools/setup-central-monitoring.sh inventory remove eb90c4d9-7b0e-4f4f-a4bb-9490124c85ae
+```
+
+Register only hosts that **should** report, using exactly the same `host_id` as the Remote Writer. Otherwise a false-offline alarm is expected. Stale data may remain queryable after decommission until retention expires. Disabling inventory prevents offline alarms, but **does not revoke authentication**; revoke the NGINX Basic Auth credential separately when retiring a Host. Registry data survives stack upgrades, `down`, and restarts.
+
+On a newly enrolled host that has not yet uploaded metrics, offline alerts start after the configured window. The Central `KvmVmInventoryScrapeFailed` alert catches an inventory exporter failure; `KvmVmHostOffline` cannot be evaluated reliably if the central inventory service is not healthy.
+
+## 7. Host-level CPU/memory/disk and network metrics
+
+Agent and Hybrid now include a localhost-only **node_exporter** container (pinned `v1.12.1`) bound to `127.0.0.1:9100` on the KVM host. The containers use Linux host networking, PID namespace and a read-only `/:/host` mount so that they monitor the **host**, not just the Docker container. `node_exporter` provides host CPU, memory, filesystem and network metrics without entering any VM.
+
+Agent `vmagent-scrape.yml` or Hybrid `prometheus-hybrid.yml` collects node_exporter at 15-second intervals, with the same host identity as VM metrics. The **KVM Hosts Overview** central Dashboard correlates expected/online hosts with Host CPU, available RAM, storage and network activity. Some virtual filesystems are excluded from disk alerts. All node_exporter connections remain local to the KVM host, with no new WAN port.
+
+**Existing Agent/Hybrid installations:** configuration copies are deliberately preserved during normal `up`. To use node_exporter, back up custom scrape/Compose files and explicitly regenerate/recreate the deployment:
+
+```bash
+sudo env KVM_VM_REMOTE_RECONFIGURE=1 \
+  ./tools/setup-monitoring.sh up --mode agent
+# or: ... --mode hybrid
+```
+
+This opt-in update will overwrite generated Agent/Hybrid scrape and Compose templates (but not `remote.json`, authentication secrets, or stored metrics). Review any extra scrape jobs first. If port 9100 is already occupied by an existing node_exporter, reconcile it before starting the new container; do not run two collectors on the same port.
+
+## 8. Email and Webhook alert notifications
+
+Alertmanager v0.34.2 (for file-backed Webhook URLs and implicit SMTP TLS configuration) starts with the `unconfigured` receiver, intentionally sending nothing until an administrator supplies a destination. Both methods keep secret material **out of the Compose environment and Alertmanager YAML** by using read-only secret-file mounts. Alertmanager config remains private to the Central Host; no public Alertmanager port is opened.
+
+```bash
+# File contains the full HTTPS webhook URL, one line, including any token.
+sudo ./tools/setup-central-monitoring.sh notifications webhook /root/alert-webhook-url
+# or: SMTP password in one line of a readable file (587 = STARTTLS; 465 = implicit TLS).
+sudo ./tools/setup-central-monitoring.sh notifications email \
+  admin@example.com smtp.example.com:587 monitor@example.com \
+  monitor@example.com /root/smtp-password
+
+# Configuration files are bind-mounted; recreate containers to pick up updates.
+sudo ./tools/setup-central-monitoring.sh reload
+```
+
+No test message is sent automatically; confirm delivery using a controlled test alert before trusting the notification channel. For HTTP Webhooks, the destination must accept the [Alertmanager generic JSON webhook schema](https://prometheus.io/docs/alerting/latest/configuration/#webhook_config), not an arbitrary Slack/Discord JSON format. SMTP credentials must be provisioned by the operator. The secret file within Central is world-readable only **inside** an administrator-only (`0700`) parent directory on the host so that the non-root Alertmanager process can read its container mount. Root and Docker administrators can still read these secrets.
+
+## 9. Updating a previously deployed Central stack
+
+Initial `up` and subsequent restarts never overwrite customized template files. To adopt the new Inventory exporter, scrape configuration, rules and Host dashboard, explicitly run:
+
+```bash
+sudo ./tools/setup-central-monitoring.sh sync-templates
+sudo ./tools/setup-central-monitoring.sh reload
+```
+
+`sync-templates` creates a dated backup under `/etc/kvm-vm/central/backups/`, then replaces the bundled **Compose, inventory exporter, scrape, fleet Dashboard and alerting rules**. It **preserves** inventory `hosts.json`, `.env`, Grafana history, VictoriaMetrics volumes, authentication credentials, and the customized Alertmanager receiver. Review modified Compose/alerting rules before running it. `reload` uses Docker Compose `up -d --force-recreate`; containers briefly restart, but named volumes are kept. Running `up` alone might not reload an atomically replaced bind-mounted file.
+
+### Operational validation
+
+After configuring NGINX TLS/authentication and deploying a Host, verify:
+
+1. Central inventory endpoint (`docker compose ... logs inventory`) is healthy, and VictoriaMetrics has `up{job="kvm-vm-inventory"} == 1`.
+2. `kvm_vm_host_expected{host_id="..."}` and `kvm_vm_collector_success{host_id="..."}` both exist with the *same* UUID.
+3. `node_memory_MemAvailable_bytes{host_id="..."}` and other Host metrics exist.
+4. Temporarily stop Agent/Hybrid uploads and validate `KvmVmHostOffline` after roughly 10 minutes, then verify it resolves when uploads resume.
+5. Trigger a controlled test alert to validate email/Webhook delivery and Alertmanager routing; do not mistake a configured receiver for verified delivery.
+
+All regression tests supplied with this project are offline/mocked. **Real KVM Host, authenticated HTTPS ingress, Docker engine, dashboards and alert delivery still require an end-to-end deployment test.**

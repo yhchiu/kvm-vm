@@ -7,12 +7,36 @@ services:
       - -storageDataPath=/storage
       - -retentionPeriod=${VM_RETENTION:-30d}
       - -httpListenAddr=:8428
+      - -promscrape.config=/etc/victoriametrics/scrape.yml
     ports:
       - 127.0.0.1:${VM_PORT:-8428}:8428
     volumes:
       - vm_data:/storage
+      - ./inventory/scrape.yml:/etc/victoriametrics/scrape.yml:ro
     security_opt:
       - no-new-privileges:true
+
+  inventory:
+    image: python:3.13-alpine
+    restart: unless-stopped
+    user: "65534:65534"
+    command:
+      - python3
+      - /inventory/inventory.py
+      - --file
+      - /inventory/hosts.json
+      - serve
+      - --bind
+      - 0.0.0.0
+      - --port
+      - "9187"
+    volumes:
+      - ./inventory:/inventory:ro
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
 
   grafana:
     image: grafana/grafana:13.3.1
@@ -55,12 +79,13 @@ services:
       - no-new-privileges:true
 
   alertmanager:
-    image: prom/alertmanager:v0.28.1
+    image: prom/alertmanager:v0.34.2
     restart: unless-stopped
     command:
       - --config.file=/etc/alertmanager/alertmanager.yml
     volumes:
       - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - ./alertmanager/secrets:/etc/alertmanager/secrets:ro
     security_opt:
       - no-new-privileges:true
 

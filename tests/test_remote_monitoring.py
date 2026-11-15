@@ -44,7 +44,7 @@ def test_remote_config_has_stable_host_id_and_no_plaintext_secret(tmp_path):
     agent = yaml.safe_load((config / 'vmagent-scrape.yml').read_text())
     labels = agent['scrape_configs'][0]['static_configs'][0]['labels']
     assert labels == {'host_id': state['host_id'], 'host': 'host-taipei-01', 'site': 'taipei'}
-    assert {x['job_name'] for x in agent['scrape_configs']} == {'kvm-vm', 'vmagent'}
+    assert {x['job_name'] for x in agent['scrape_configs']} == {'kvm-vm', 'vmagent', 'node-exporter'}
     hybrid = yaml.safe_load((config / 'prometheus-hybrid.yml').read_text())
     assert hybrid['global']['external_labels'] == labels
     assert hybrid['remote_write'][0]['basic_auth']['password_file'] == '/etc/prometheus/remote-password'
@@ -91,7 +91,7 @@ def test_remote_rejects_credential_change_and_id_change(tmp_path):
 def test_remote_compose_security():
     remote = ROOT / 'tools/monitoring/remote'
     agent = yaml.safe_load((remote / 'compose.agent.yaml').read_text())
-    assert list(agent['services']) == ['vmagent']
+    assert set(agent['services']) == {'vmagent', 'node_exporter'}
     service = agent['services']['vmagent']
     assert service['network_mode'] == 'host' and 'ports' not in service
     args = ' '.join(service['command'])
@@ -101,7 +101,7 @@ def test_remote_compose_security():
     assert 'tlsInsecureSkipVerify' not in args
     assert 'vmagent_queue' in agent['volumes']
     hybrid = yaml.safe_load((remote / 'compose.hybrid.yaml').read_text())
-    assert list(hybrid['services']) == ['prometheus']
+    assert set(hybrid['services']) == {'prometheus', 'node_exporter'}
     mounts = hybrid['services']['prometheus']['volumes']
     assert any('prometheus-hybrid.yml' in m and '/etc/prometheus/prometheus.yml:ro' in m for m in mounts)
 

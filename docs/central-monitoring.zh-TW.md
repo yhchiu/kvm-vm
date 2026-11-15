@@ -128,3 +128,61 @@ sudo ./tools/setup-central-monitoring.sh logs
 ```
 
 確認中央可查詢 `kvm_vm_collector_success{host_id="..."}`。完整 E2E 仍需真實 KVM Host、Docker，以及有效 TLS 入口測試。VictoriaMetrics Single 並非高可用，正式使用需備份／還原演練；此外，**中央 Remote Write 在你建立 HTTPS 認證入口前不會被外部 Host 存取**，這是刻意的安全預設。
+
+## 後續擴充：Host Inventory、失聯告警、Host 資源監控
+
+中央端新增唯讀 Inventory Exporter（Docker 內部 9187，不對外開 Port），將 `/etc/kvm-vm/central/inventory/hosts.json` 內啟用的主機轉為 `kvm_vm_host_expected{host_id,host,site} 1`。VictoriaMetrics 每 30 秒抓取一次，`KvmVmHostOffline` 會比對最近五分鐘收到的 VM Collector 資料；另外等待五分鐘後才發出告警，因此能辨識**完全停止上報**的主機。失聯不等於斷電，也可能是網路或上報程式異常。
+
+**Remote Write 帳號註冊與 Host Inventory 是兩個不同動作。** 在 Host 的 `/etc/kvm-vm/monitoring/remote.json` 查出 UUID，回到中央伺服器登錄：
+
+```bash
+sudo ./tools/setup-central-monitoring.sh inventory add \
+  eb90c4d9-7b0e-4f4f-a4bb-9490124c85ae kvm-tpe-01 taipei
+sudo ./tools/setup-central-monitoring.sh inventory list
+# 預定維護期間暫停失聯告警
+sudo ./tools/setup-central-monitoring.sh inventory disable eb90c4d9-7b0e-4f4f-a4bb-9490124c85ae
+sudo ./tools/setup-central-monitoring.sh inventory enable eb90c4d9-7b0e-4f4f-a4bb-9490124c85ae
+# 永久移除，不會自動撤銷 NGINX 帳密
+sudo ./tools/setup-central-monitoring.sh inventory remove eb90c4d9-7b0e-4f4f-a4bb-9490124c85ae
+```
+
+Agent／Hybrid 預設新增 `node_exporter`（127.0.0.1:9100），使用 Host Networking、Host PID Namespace 和唯讀 Host Rootfs Mount，提供宿主機 CPU、記憶體、磁碟、網卡指標，並加入中央 **KVM Hosts Overview** Dashboard。不需要在 VM 內安裝 Agent，也不新增對外 Port。若宿主機既有 9100 服務，請先檢查連接埠衝突。
+
+已部署舊版 Agent／Hybrid 時，為避免覆蓋自訂設定，請先備份並明確重新產生：
+
+```bash
+sudo env KVM_VM_REMOTE_RECONFIGURE=1 \
+  ./tools/setup-monitoring.sh up --mode agent
+# 也可指定 --mode hybrid
+```
+
+此操作會覆寫產生的 Scrape/Compose 設定檔，**不會**更換 Host UUID、遠端認證密碼或刪除既有 metrics volumes。
+
+## 告警 Email / Webhook 通知
+
+告警接收者預設未設定，不會寄送通知。管理員可選擇 SMTP 或 HTTPS Webhook，敏感資訊由檔案讀取，不放入 Docker Compose 的環境變數或指令參數：
+
+```bash
+# 檔案內是一整行 HTTPS Webhook URL（可含 Token）
+sudo ./tools/setup-central-monitoring.sh notifications webhook /root/alert-webhook-url
+# 或者設定 SMTP（密碼放入 /root/smtp-password）
+sudo ./tools/setup-central-monitoring.sh notifications email \
+  admin@example.com smtp.example.com:587 monitor@example.com \
+  monitor@example.com /root/smtp-password
+sudo ./tools/setup-central-monitoring.sh reload
+```
+
+Webhook 接收端必須支援 Alertmanager 標準 JSON payload。設定完成**不代表已確認送達**，必須在實機觸發測試告警驗證。通知設定及密碼儲存在管理員私有目錄；Docker/root 管理員仍有權讀取。
+
+## 已部署的中央端如何升級
+
+新安裝會包含 Inventory 和 Host Dashboard；既有安裝預設不覆蓋自訂 Compose、規則及 Dashboard，請明確執行：
+
+```bash
+sudo ./tools/setup-central-monitoring.sh sync-templates
+sudo ./tools/setup-central-monitoring.sh reload
+```
+
+`sync-templates` 會先備份舊版可修改的模板，並保留 `.env`、Inventory 資料、認證設定、Alertmanager 接收者以及所有 Docker 資料 volumes；更新前請先檢查原本有無自行修改。`reload` 會短暫重建容器，確保 bind-mounted 設定生效，不清除歷史資料。
+
+**待實機驗證：** Docker 實際啟動、跨 NAT 的 TLS Remote Write、Inventory 查詢、Host 斷線及恢復的告警、SMTP／Webhook 實際發送、Grafana 圖表。離線測試通過不代表以上端到端功能已驗證。

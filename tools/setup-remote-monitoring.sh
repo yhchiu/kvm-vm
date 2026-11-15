@@ -75,7 +75,11 @@ case "$COMMAND" in
     else
       "$ROOT/tools/monitoring/ensure-exporter.sh"
     fi
-    remote_compose up -d
+    if [[ ${KVM_VM_REMOTE_RECONFIGURE:-0} == 1 ]]; then
+      remote_compose up -d --force-recreate
+    else
+      remote_compose up -d
+    fi
     printf '%s\n' "$MODE" > "$CONFIG_DIR/.mode"
     chmod 0600 "$CONFIG_DIR/.mode"
     echo "Running in $MODE mode; host identity is stored in $CONFIG_DIR/remote.json."

@@ -3,7 +3,7 @@ services:
   vmagent:
     image: victoriametrics/vmagent:v1.154.1
     restart: unless-stopped
-    network_mode: host  # Reach 127.0.0.1:9179, without exposing an inbound port.
+    network_mode: host  # Reach 127.0.0.1:9179 without any inbound port.
     command:
       - -promscrape.config=/etc/vmagent/scrape.yml
       - -remoteWrite.url=${REMOTE_WRITE_URL:?Set remote-write HTTPS URL}
@@ -16,6 +16,18 @@ services:
       - ./vmagent-scrape.yml:/etc/vmagent/scrape.yml:ro
       - ./remote-password:/etc/vmagent/remote-password:ro
       - vmagent_queue:/vmagent-queue
+    security_opt:
+      - no-new-privileges:true
+  node_exporter:
+    image: quay.io/prometheus/node-exporter:v1.12.1
+    restart: unless-stopped
+    network_mode: host
+    pid: host
+    command:
+      - --path.rootfs=/host
+      - --web.listen-address=127.0.0.1:9100
+    volumes:
+      - /:/host:ro,rslave
     security_opt:
       - no-new-privileges:true
 volumes:

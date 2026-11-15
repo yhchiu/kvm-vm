@@ -127,6 +127,7 @@ def remote_config(args):
 def scrape_config(state, agent=False):
     labels = {k: state[k] for k in ('host_id', 'host', 'site')}
     jobs = [dict(job_name='kvm-vm', static_configs=[dict(targets=['127.0.0.1:9179'], labels=labels)])]
+    jobs.append(dict(job_name='node-exporter', static_configs=[dict(targets=['127.0.0.1:9100'], labels=labels)]))
     if agent:
         jobs.append(dict(job_name='vmagent', static_configs=[dict(targets=['127.0.0.1:8429'], labels=labels)]))
     return jobs
@@ -144,7 +145,8 @@ def render(args):
              'scrape_configs': scrape_config(state, True)}
     hybrid = {'global': {'scrape_interval': '15s', 'scrape_timeout': '10s',
                          'external_labels': labels},
-              'scrape_configs': [dict(job_name='kvm-vm', static_configs=[dict(targets=['127.0.0.1:9179'])])],
+              'scrape_configs': [dict(job_name='kvm-vm', static_configs=[dict(targets=['127.0.0.1:9179'])]),
+                                 dict(job_name='node-exporter', static_configs=[dict(targets=['127.0.0.1:9100'])])],
               'remote_write': [dict(url=state['url'], basic_auth={
                   'username': state['user'], 'password_file': PROMETHEUS_SECRET})]}
     # External labels are added only by remote write, while local Prometheus
@@ -164,7 +166,7 @@ def render(args):
         atomic_save(cfg / 'remote.env', env, 0o600)
     for source, dest in [('remote/compose.agent.yaml', 'compose.agent.yaml'),
                          ('remote/compose.hybrid.yaml', 'compose.hybrid.yaml')]:
-        if not (cfg / dest).exists():
+        if args.reconfigure or not (cfg / dest).exists():
             shutil.copyfile(ROOT / source, cfg / dest)
             os.chmod(cfg / dest, 0o644)
     if args.reconfigure or not signature_file.exists():

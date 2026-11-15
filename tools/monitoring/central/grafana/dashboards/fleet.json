@@ -2,7 +2,7 @@
   "id": null,
   "uid": "kvm-vm-fleet",
   "title": "KVM Fleet Overview",
-  "description": "Central fleet health. Host absence requires an explicit inventory.",
+  "description": "Central fleet health with persistent expected-host inventory and offline detection.",
   "tags": [
     "kvm-vm",
     "central",
@@ -331,6 +331,92 @@
           "placement": "bottom",
           "calcs": []
         }
+      }
+    },
+    {
+      "id": 8,
+      "title": "Expected hosts by inventory",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "kvm-vm-victoriametrics"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 22,
+        "w": 12,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "kvm-vm-victoriametrics"
+          },
+          "expr": "count(kvm_vm_host_expected{site=~\"$site\"}) or vector(0)",
+          "refId": "A",
+          "legendFormat": "{{host}}"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 9,
+      "title": "Hosts offline by inventory",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "kvm-vm-victoriametrics"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 22,
+        "w": 12,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "kvm-vm-victoriametrics"
+          },
+          "expr": "count(kvm_vm_host_expected{site=~\"$site\"} unless on(host_id) max by(host_id)(count_over_time(kvm_vm_collector_success[5m]))) or vector(0)",
+          "refId": "A",
+          "legendFormat": "{{host}}"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "textMode": "auto"
       }
     }
   ]

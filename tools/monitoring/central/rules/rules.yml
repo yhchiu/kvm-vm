@@ -1,6 +1,24 @@
 groups:
   - name: kvm-vm-availability
     rules:
+      # The registered/expected inventory remains available when a Host stops
+      # pushing metrics entirely. Last seen within five minutes suppresses the
+      # alert; a further five-minute 'for' window reduces flapping.
+      - alert: KvmVmHostOffline
+        expr: kvm_vm_host_expected unless on(host_id) max by(host_id) (count_over_time(kvm_vm_collector_success[5m]))
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Expected KVM host {{ $labels.host }} ({{ $labels.site }}) is not reporting'
+          description: 'Check host network, collector and remote-write queue; disable inventory during scheduled maintenance.'
+      - alert: KvmVmInventoryScrapeFailed
+        expr: up{job="kvm-vm-inventory"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Central KVM host inventory exporter is unavailable'
       - alert: KvmVmCollectorFailure
         expr: kvm_vm_collector_success == 0
         for: 5m
@@ -17,3 +35,17 @@ groups:
           summary: 'Remote write queue growth on {{ $labels.host }}'
 # Host disappearance needs a persistent enrollment inventory; a host that
 # disappears entirely produces no new time series. Do not infer up==0.
+      - alert: KvmVmHostMemoryPressure
+        expr: (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) < 0.10
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Low available memory on host {{ $labels.host }}'
+      - alert: KvmVmHostDiskFull
+        expr: (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs"}) < 0.10
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Host {{ $labels.host }} filesystem {{ $labels.mountpoint }} low on space'
