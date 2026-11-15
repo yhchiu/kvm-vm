@@ -215,3 +215,5 @@ See [Testing](tests/README.md) for the real-host tests.
 ## License
 
 GPL-3.0. See [LICENSE](LICENSE).
+
+Central monitoring: [Central monitoring (Agent / Hybrid)](docs/central-monitoring.md)

@@ -180,3 +180,5 @@ bash tests/smoke.sh
 ## 授權
 
 GPL-3.0，詳見 [LICENSE](LICENSE)。
+
+中央監控：[中央監控（Agent／Hybrid）](docs/central-monitoring.zh-TW.md)

@@ -1,0 +1,19 @@
+groups:
+  - name: kvm-vm-availability
+    rules:
+      - alert: KvmVmCollectorFailure
+        expr: kvm_vm_collector_success == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'VM metrics collection failing on {{ $labels.host }}'
+      - alert: KvmVmAgentQueueGrowing
+        expr: delta(vmagent_remotewrite_pending_data_bytes[10m]) > 104857600
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Remote write queue growth on {{ $labels.host }}'
+# Host disappearance needs a persistent enrollment inventory; a host that
+# disappears entirely produces no new time series. Do not infer up==0.

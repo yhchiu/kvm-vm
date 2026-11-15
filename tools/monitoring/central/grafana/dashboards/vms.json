@@ -1,0 +1,607 @@
+{
+  "id": null,
+  "uid": "kvm-vm-central-vms",
+  "title": "KVM Fleet - Virtual Machines",
+  "description": "Multiple KVM hosts; includes host/site identity. VM names are not globally unique.",
+  "tags": [
+    "kvm-vm",
+    "central",
+    "libvirt"
+  ],
+  "schemaVersion": 41,
+  "version": 1,
+  "timezone": "browser",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "refresh": "15s",
+  "editable": false,
+  "graphTooltip": 1,
+  "annotations": {
+    "list": []
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "site",
+        "label": "Site",
+        "type": "query",
+        "hide": 0,
+        "datasource": {
+          "type": "prometheus",
+          "uid": "kvm-vm-victoriametrics"
+        },
+        "query": "label_values(kvm_vm_collector_success,site)",
+        "definition": "label_values(kvm_vm_collector_success,site)",
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "refresh": 1,
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "sort": 1
+      },
+      {
+        "name": "host",
+        "label": "Host",
+        "type": "query",
+        "hide": 0,
+        "datasource": {
+          "type": "prometheus",
+          "uid": "kvm-vm-victoriametrics"
+        },
+        "query": "label_values(kvm_vm_collector_success{site=~\"$site\"},host)",
+        "definition": "label_values(kvm_vm_collector_success{site=~\"$site\"},host)",
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "refresh": 1,
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "sort": 1
+      },
+      {
+        "name": "vm",
+        "label": "VM",
+        "type": "query",
+        "hide": 0,
+        "datasource": {
+          "type": "prometheus",
+          "uid": "kvm-vm-victoriametrics"
+        },
+        "query": "label_values(kvm_vm_domain_state{site=~\"$site\",host=~\"$host\"},vm)",
+        "definition": "label_values(kvm_vm_domain_state{site=~\"$site\",host=~\"$host\"},vm)",
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "refresh": 1,
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "sort": 1
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Exporter healthy",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "kvm-vm-victoriametrics"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 8,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "kvm-vm-victoriametrics"
+          },
+          "expr": "kvm_vm_collector_success{site=~\"$site\",host=~\"$host\"}",
+          "legendFormat": "1 = healthy",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value"
+      }
+    },
+    {
+      "id": 2,
+      "title": "Running VMs",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "kvm-vm-victoriametrics"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 0,
+        "w": 8,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "kvm-vm-victoriametrics"
+          },
+          "expr": "count(kvm_vm_domain_state{state=\"running\",site=~\"$site\",host=~\"$host\"}) or vector(0)",
+          "legendFormat": "running",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value"
+      }
+    },
+    {
+      "id": 3,
+      "title": "Total assigned vCPUs",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "kvm-vm-victoriametrics"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 0,
+        "w": 8,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "kvm-vm-victoriametrics"
+          },
+          "expr": "sum(kvm_vm_domain_vcpus{vm=~\"$vm\",site=~\"$site\",host=~\"$host\"}) or vector(0)",
+          "legendFormat": "vCPU",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value"
+      }
+    },
+    {
+      "id": 4,
+      "title": "VM CPU utilization (% of assigned vCPUs)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "kvm-vm-victoriametrics"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "kvm-vm-victoriametrics"
+          },
+          "expr": "100 * kvm_vm_domain_cpu_usage_ratio{vm=~\"$vm\",site=~\"$site\",host=~\"$host\"}",
+          "legendFormat": "{{site}}/{{host}}/{{vm}}",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      }
+    },
+    {
+      "id": 5,
+      "title": "VM CPU cores used",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "kvm-vm-victoriametrics"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 4,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "kvm-vm-victoriametrics"
+          },
+          "expr": "kvm_vm_domain_cpu_used_cores{vm=~\"$vm\",site=~\"$site\",host=~\"$host\"}",
+          "legendFormat": "{{site}}/{{host}}/{{vm}}",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      }
+    },
+    {
+      "id": 6,
+      "title": "VM RAM: assigned vs. guest used (when available)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "kvm-vm-victoriametrics"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 12,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "kvm-vm-victoriametrics"
+          },
+          "expr": "kvm_vm_domain_memory_assigned_bytes{vm=~\"$vm\",site=~\"$site\",host=~\"$host\"}",
+          "legendFormat": "{{site}}/{{host}}/{{vm}} assigned",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "kvm-vm-victoriametrics"
+          },
+          "expr": "kvm_vm_domain_memory_guest_used_bytes{vm=~\"$vm\",site=~\"$site\",host=~\"$host\"}",
+          "legendFormat": "{{site}}/{{host}}/{{vm}} guest used",
+          "refId": "B"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      }
+    },
+    {
+      "id": 7,
+      "title": "Host-side QEMU RSS (not guest usage)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "kvm-vm-victoriametrics"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 12,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "kvm-vm-victoriametrics"
+          },
+          "expr": "kvm_vm_domain_memory_rss_bytes{vm=~\"$vm\",site=~\"$site\",host=~\"$host\"}",
+          "legendFormat": "{{site}}/{{host}}/{{vm}}",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      }
+    },
+    {
+      "id": 8,
+      "title": "Disk throughput: read / write",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "kvm-vm-victoriametrics"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 20,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "kvm-vm-victoriametrics"
+          },
+          "expr": "sum by (vm) (rate(kvm_vm_domain_disk_read_bytes_total{vm=~\"$vm\",site=~\"$site\",host=~\"$host\"}[5m]))",
+          "legendFormat": "{{site}}/{{host}}/{{vm}} read",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "kvm-vm-victoriametrics"
+          },
+          "expr": "sum by (vm) (rate(kvm_vm_domain_disk_write_bytes_total{vm=~\"$vm\",site=~\"$site\",host=~\"$host\"}[5m]))",
+          "legendFormat": "{{site}}/{{host}}/{{vm}} write",
+          "refId": "B"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      }
+    },
+    {
+      "id": 9,
+      "title": "Network throughput: receive / transmit",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "kvm-vm-victoriametrics"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 20,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "kvm-vm-victoriametrics"
+          },
+          "expr": "sum by (vm) (rate(kvm_vm_domain_network_receive_bytes_total{vm=~\"$vm\",site=~\"$site\",host=~\"$host\"}[5m]))",
+          "legendFormat": "{{site}}/{{host}}/{{vm}} receive",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "kvm-vm-victoriametrics"
+          },
+          "expr": "sum by (vm) (rate(kvm_vm_domain_network_transmit_bytes_total{vm=~\"$vm\",site=~\"$site\",host=~\"$host\"}[5m]))",
+          "legendFormat": "{{site}}/{{host}}/{{vm}} transmit",
+          "refId": "B"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      }
+    },
+    {
+      "id": 10,
+      "title": "VM disk logical capacity",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "kvm-vm-victoriametrics"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 28,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "kvm-vm-victoriametrics"
+          },
+          "expr": "kvm_vm_domain_disk_capacity_bytes{vm=~\"$vm\",site=~\"$site\",host=~\"$host\"}",
+          "legendFormat": "{{site}}/{{host}}/{{vm}} / {{disk}}",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      }
+    },
+    {
+      "id": 11,
+      "title": "Time since last successful collection",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "kvm-vm-victoriametrics"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 28,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "kvm-vm-victoriametrics"
+          },
+          "expr": "time() - kvm_vm_collector_last_success_timestamp_seconds{site=~\"$site\",host=~\"$host\"}",
+          "legendFormat": "seconds",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      }
+    }
+  ]
+}
