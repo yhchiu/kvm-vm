@@ -7,6 +7,7 @@ kvm-vm validate <vm.yaml> [--clone]
 kvm-vm create <vm.yaml> [--console-password-file <path>] [--refresh-image] [--no-start] [--dry-run]
 kvm-vm list [--managed] [--ips]
 kvm-vm status <vm>
+kvm-vm monitor [<vm>] [--managed] [--interval <seconds>] [--count <n>] [--json]
 kvm-vm console <vm>
 kvm-vm reinstall <vm> [--os <alias|url|path> | --image-url <url> | --image-path <path>] [--os-variant <variant>]
                       [--console-password-file <path>] [--refresh-image] [--no-start] [--dry-run] [--yes] [--force]
@@ -22,7 +23,7 @@ kvm-vm backup check <backup-dir> [--until <checkpoint>]
 `kvm-vm --help` 與 `kvm-vm 指令 --help` 會列出相同的選項。
 
 - [開始之前](#開始之前)
-- [validate](#validate) · [create](#create) · [list](#list) · [status](#status) · [console](#console)
+- [validate](#validate) · [create](#create) · [list](#list) · [status](#status) · [monitor](#monitor) · [console](#console)
 - [reinstall](#reinstall) · [clone](#clone) · [delete](#delete)
 - [snapshot](#snapshot) · [backup check](#backup-check)
 - [指令拒絕執行時](#指令拒絕執行時)
@@ -90,6 +91,45 @@ sudo kvm-vm status web01
 ```
 
 顯示 libvirt domain 資訊、kvm-vm 狀態清單、快照狀態、磁碟、網卡與已知位址。
+
+## monitor
+
+```bash
+sudo kvm-vm monitor web01                         # 1 秒後輸出一次
+sudo kvm-vm monitor                               # 監控宿主機上所有 VM
+sudo kvm-vm monitor --managed --interval 5 --count 0  # 每 5 秒更新，Ctrl+C 結束
+sudo kvm-vm monitor web01 --interval 2 --count 10 --json  # 10 筆 NDJSON 資料
+```
+
+`monitor` 透過兩次 `virsh domstats --raw` 讀取 libvirt 的 VM 資源統計。
+**完全唯讀**：不安裝 Guest Agent、不新增常駐程式、不修改 VM 或監控設定。
+CPU 與 I/O 是累積計數器，需要在兩次採樣之間計算差值。
+`--count 0` 持續監控，預設 `--count 1`；`--interval` 可設 0.1～3600 秒。
+省略 VM 名稱代表監控所有 libvirt VM；`--managed` 僅保留 kvm-vm 管理的 VM。
+`--json` 使用每次採樣一行 JSON（NDJSON），同時提供個別磁碟、網卡的原始計數器，方便外部程式整合。
+
+欄位與含義：
+
+- `CPU`：以**該 VM 的 vCPU 數**為分母的 CPU 使用率（通常 0～100%）。JSON
+  另提供 `cpu_host_percent`，此時 100% 代表一顆 Host CPU 核心，4 vCPU VM
+  可達約 400%。
+- `GUEST RAM`：Guest 估計無法立即回收的記憶體／目前分配記憶體。只有收到夠新的
+  balloon 統計資料，才使用 `balloon.available - balloon.usable` 估算使用量。
+  無法取得時顯示 `-`，不會把已分配記憶體誤當成已使用記憶體。
+- `QEMU RSS`：宿主機上 QEMU process 的常駐記憶體，**不等於** Guest 已用 RAM。
+- `DISK PHYS`：libvirt 回報的磁碟來源實體大小，不等於 Guest 檔案系統的已用空間，
+  也不包含 Snapshot backing chain 的完整佔用量。JSON 的 `disk_capacity_bytes`
+  則是磁碟來源邏輯大小。
+- `DISK R/s`、`DISK W/s`、`NET RX/s`、`NET TX/s`：所有磁碟、網卡的
+  每秒讀寫位元組數（對網路而言，方向以 Guest 為準）。關機、缺少計數器或
+  裝置剛出現時，顯示 `-`／JSON `null`，不偽造為 0；單位為 KiB/MiB 等二進位位元組。
+
+若 `GUEST RAM` 的使用量顯示 `-`，可能是 Guest balloon driver 沒有提供統計，
+或尚未設定定期取樣。管理員可視情況手動執行
+`virsh dommemstat web01 --period 10 --live` 啟用即時更新，
+但此指令會改變執行中的 domain 設定，**`monitor` 不會自動執行**。
+CPU、磁碟與網路統計不需要 Guest Agent。此功能只提供即時採樣，
+不包含歷史儲存、告警、Guest 檔案系統使用量或宿主機整體監控。
 
 ## console
 

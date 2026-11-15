@@ -113,6 +113,7 @@ option, and the [command reference](docs/commands.md) explains them.
 | Create a VM | `kvm-vm create vm.yaml` |
 | List VMs with their addresses | `kvm-vm list --ips` |
 | Show one VM in detail | `kvm-vm status web01` |
+| Sample VM CPU, memory and I/O | `kvm-vm monitor web01` |
 | Open the serial console (leave with `Ctrl+]`) | `kvm-vm console web01` |
 | Reinstall the OS, keeping the settings | `kvm-vm reinstall web01 [--os debian13]` |
 | Clone a shut-off VM | `kvm-vm clone web01 web02.yaml` |

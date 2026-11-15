@@ -3096,6 +3096,220 @@ def cmd_console(args: argparse.Namespace) -> int:
     return run(["virsh", "-c", LIBVIRT_URI, "console", args.name], check=False).returncode
 
 
+# --- Read-only VM resource monitoring ---
+
+MONITOR_STATS_FLAGS = ("--raw", "--state", "--cpu-total", "--vcpu", "--balloon", "--block", "--interface")
+DOMAIN_STATES = {
+    0: "no state", 1: "running", 2: "blocked", 3: "paused", 4: "shutting down",
+    5: "shut off", 6: "crashed", 7: "pmsuspended",
+}
+
+
+def parse_domstats(text: str) -> Dict[str, Dict[str, str]]:
+    """Parse `virsh domstats --raw` without relying on the locale or field order."""
+    domains: Dict[str, Dict[str, str]] = {}
+    current: Optional[Dict[str, str]] = None
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("Domain: "):
+            name = line[len("Domain: "):].strip()
+            if len(name) >= 2 and name[0] == name[-1] == "'":
+                name = name[1:-1]
+            if not name:
+                raise KVMError("Invalid empty domain in virsh domstats output")
+            current = domains.setdefault(name, {})
+        elif current is not None and "=" in line:
+            key, value = line.split("=", 1)
+            current[key.strip()] = value.strip()
+    return domains
+
+
+def read_domstats(name: Optional[str] = None) -> Dict[str, Dict[str, str]]:
+    cmd = ["virsh", "-c", LIBVIRT_URI, "domstats", *MONITOR_STATS_FLAGS]
+    if name is not None:
+        cmd.append(name)
+    p = run(cmd, check=False, capture=True)
+    if p.returncode:
+        raise KVMError(f"Cannot read VM resource statistics: {p.stderr.strip() or p.stdout.strip()}")
+    result = parse_domstats(p.stdout)
+    if name is not None and name not in result:
+        raise KVMError(f"No statistics returned for VM: {name}")
+    return result
+
+
+def monitor_int(stats: Dict[str, str], key: str) -> Optional[int]:
+    raw = stats.get(key)
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
+def counter_rate(previous: Optional[int], current: Optional[int], elapsed: float) -> Optional[float]:
+    """Counters are cumulative and may reset after a guest reboot."""
+    if previous is None or current is None or current < previous or elapsed <= 0:
+        return None
+    return (current - previous) / elapsed
+
+
+def device_stats(stats: Dict[str, str], prefix: str, fields: Tuple[str, ...]) -> Dict[str, Dict[str, Optional[int]]]:
+    """Use stable libvirt device names, not array positions, across samples."""
+    result: Dict[str, Dict[str, Optional[int]]] = {}
+    count = monitor_int(stats, f"{prefix}.count") or 0
+    for i in range(count):
+        base = f"{prefix}.{i}."
+        name = stats.get(base + "name")
+        if not name:
+            continue
+        result[name] = {field: monitor_int(stats, base + field) for field in fields}
+    return result
+
+
+def monitor_resources(
+    name: str, current: Dict[str, str], previous: Optional[Dict[str, str]],
+    elapsed: float, wall_time: float,
+) -> Dict[str, Any]:
+    """Derive useful values. Missing metrics stay null (never '0% used')."""
+    state_code = monitor_int(current, "state.state")
+    state = DOMAIN_STATES.get(state_code, "unknown")
+    running = state_code in (1, 2)
+    vcpus = monitor_int(current, "vcpu.current")
+    cpu_time = monitor_int(current, "cpu.time")
+    old_cpu = monitor_int(previous, "cpu.time") if previous else None
+    cpu_cores = counter_rate(old_cpu, cpu_time, elapsed * 1_000_000_000) if running else None
+    # 100% of one host CPU core is 1.0. A 4-vCPU guest can consume ~400%.
+    cpu_host_percent = round(cpu_cores * 100, 2) if cpu_cores is not None else None
+    cpu_percent = round(cpu_host_percent / vcpus, 2) if cpu_host_percent is not None and vcpus else None
+
+    assigned_kib = monitor_int(current, "balloon.current")
+    rss_kib = monitor_int(current, "balloon.rss")
+    last_update = monitor_int(current, "balloon.last-update")
+    available_kib = monitor_int(current, "balloon.available")
+    usable_kib = monitor_int(current, "balloon.usable")
+    # Guest stats require balloon polling. Never interpret QEMU RSS or assigned RAM as guest used RAM.
+    guest_stats_fresh = (running and last_update is not None and
+                         0 <= wall_time - last_update <= 120)
+    used_kib = (available_kib - usable_kib) if (
+        guest_stats_fresh and available_kib is not None and usable_kib is not None
+        and 0 <= usable_kib <= available_kib
+    ) else None
+
+    block_fields = ("rd.bytes", "wr.bytes", "capacity", "physical")
+    net_fields = ("rx.bytes", "tx.bytes")
+    blocks = device_stats(current, "block", block_fields)
+    nets = device_stats(current, "net", net_fields)
+    old_blocks = device_stats(previous, "block", block_fields) if previous else {}
+    old_nets = device_stats(previous, "net", net_fields) if previous else {}
+
+    def rate_devices(devices: Dict[str, Dict[str, Optional[int]]],
+                     old_devices: Dict[str, Dict[str, Optional[int]]], field: str) -> Optional[float]:
+        rates = [counter_rate(old_devices[dev].get(field), values.get(field), elapsed)
+                 for dev, values in devices.items() if dev in old_devices]
+        valid = [rate for rate in rates if rate is not None]
+        return round(sum(valid), 2) if valid else None
+
+    def sum_devices(devices: Dict[str, Dict[str, Optional[int]]], field: str) -> Optional[int]:
+        values = [item[field] for item in devices.values() if item[field] is not None]
+        return sum(values) if values else None
+
+    # A VM reboot can reset CPU, disk and NIC counters. Avoid comparing across that boundary.
+    if previous and old_cpu is not None and cpu_time is not None and cpu_time < old_cpu:
+        old_blocks, old_nets = {}, {}
+
+    disk_read = rate_devices(blocks, old_blocks, "rd.bytes") if running else None
+    disk_write = rate_devices(blocks, old_blocks, "wr.bytes") if running else None
+    net_rx = rate_devices(nets, old_nets, "rx.bytes") if running else None
+    net_tx = rate_devices(nets, old_nets, "tx.bytes") if running else None
+
+    return {
+        "name": name, "state": state, "vcpus": vcpus,
+        "cpu_percent": cpu_percent, "cpu_host_percent": cpu_host_percent,
+        "memory_assigned_bytes": assigned_kib * 1024 if assigned_kib is not None else None,
+        "memory_guest_used_bytes": used_kib * 1024 if used_kib is not None else None,
+        "memory_rss_bytes": rss_kib * 1024 if rss_kib is not None else None,
+        "disk_capacity_bytes": sum_devices(blocks, "capacity"),
+        "disk_physical_bytes": sum_devices(blocks, "physical"),
+        "disk_read_bytes_per_sec": disk_read, "disk_write_bytes_per_sec": disk_write,
+        "net_rx_bytes_per_sec": net_rx, "net_tx_bytes_per_sec": net_tx,
+        "disks": blocks, "interfaces": nets,
+    }
+
+
+def human_bytes(value: Optional[float]) -> str:
+    if value is None:
+        return "-"
+    units = ("B", "KiB", "MiB", "GiB", "TiB", "PiB")
+    size = float(value)
+    for unit in units[:-1]:
+        if abs(size) < 1024:
+            return f"{size:.1f}{unit}" if unit != "B" else f"{size:.0f}B"
+        size /= 1024
+    return f"{size:.1f}{units[-1]}"
+
+
+def print_monitor_table(snapshot: Dict[str, Any]) -> None:
+    print(f"\n{snapshot['timestamp']}  (sample: {snapshot['interval_seconds']:.2f}s)")
+    headers = ("NAME", "STATE", "CPU", "GUEST RAM", "QEMU RSS", "DISK PHYS", "DISK R/s", "DISK W/s", "NET RX/s", "NET TX/s")
+    rows: List[List[str]] = []
+    for vm in snapshot["domains"]:
+        guest = human_bytes(vm["memory_guest_used_bytes"])
+        assigned = human_bytes(vm["memory_assigned_bytes"])
+        cpu = f"{vm['cpu_percent']:.1f}%" if vm["cpu_percent"] is not None else "-"
+        rows.append([vm["name"], vm["state"], cpu, f"{guest}/{assigned}",
+                     human_bytes(vm["memory_rss_bytes"]), human_bytes(vm["disk_physical_bytes"]),
+                     human_bytes(vm["disk_read_bytes_per_sec"]), human_bytes(vm["disk_write_bytes_per_sec"]),
+                     human_bytes(vm["net_rx_bytes_per_sec"]), human_bytes(vm["net_tx_bytes_per_sec"])])
+    widths = [max(len(header), *(len(row[i]) for row in rows)) for i, header in enumerate(headers)]
+    print("  ".join(head.ljust(widths[i]) for i, head in enumerate(headers)))
+    for row in rows:
+        print("  ".join(value.ljust(widths[i]) for i, value in enumerate(row)))
+    if not rows:
+        print("(no domains)")
+
+
+def cmd_monitor(args: argparse.Namespace) -> int:
+    require_commands(["virsh"])
+    if args.name is not None and not NAME_RE.fullmatch(args.name):
+        raise KVMError("Invalid domain name")
+    if not 0.1 <= args.interval <= 3600:
+        raise KVMError("--interval must be between 0.1 and 3600 seconds")
+    if args.count < 0:
+        raise KVMError("--count must be 0 (continuous) or a positive integer")
+    if args.name is not None and not domain_exists(args.name):
+        raise KVMError(f"Domain does not exist: {args.name}")
+
+    previous = read_domstats(args.name)
+    start = time.monotonic()
+    iterations = 0
+    while args.count == 0 or iterations < args.count:
+        # Use elapsed monotonic time rather than an assumed fixed polling interval.
+        remaining = args.interval - (time.monotonic() - start)
+        if remaining > 0:
+            time.sleep(remaining)
+        current = read_domstats(args.name)
+        now = time.monotonic()
+        elapsed = now - start
+        wall_time = time.time()
+        names = sorted(current)
+        if args.managed:
+            names = [name for name in names if load_state(name)]
+        snapshot = {
+            "timestamp": dt.datetime.fromtimestamp(wall_time, dt.timezone.utc).isoformat(),
+            "interval_seconds": round(elapsed, 3),
+            "domains": [monitor_resources(name, current[name], previous.get(name), elapsed, wall_time)
+                        for name in names],
+        }
+        if args.json:
+            print(json.dumps(snapshot, ensure_ascii=False), flush=True)
+        else:
+            print_monitor_table(snapshot)
+        previous, start = current, now
+        iterations += 1
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="kvm-vm", description="Declarative KVM/libvirt VM manager")
     p.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
@@ -3136,6 +3350,16 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--managed", action="store_true", help="Show only VMs managed by kvm-vm")
     q.add_argument("--ips", action="store_true", help="Query IP addresses (slower)")
     q.set_defaults(func=cmd_list)
+
+    q = sp.add_parser("monitor", help="Sample read-only CPU, memory, disk and network VM statistics")
+    q.add_argument("name", nargs="?", help="VM name (default: all libvirt domains)")
+    q.add_argument("--managed", action="store_true", help="Show only kvm-vm managed domains")
+    q.add_argument("--interval", type=float, default=1.0, metavar="SECONDS",
+                   help="Sample interval in seconds (0.1-3600; default: 1)")
+    q.add_argument("--count", type=int, default=1, metavar="N",
+                   help="Number of samples (0: continuous; default: 1)")
+    q.add_argument("--json", action="store_true", help="Output one JSON object per sample (NDJSON)")
+    q.set_defaults(func=cmd_monitor)
 
     q = sp.add_parser("status", help="Show detailed VM status")
     q.add_argument("name")

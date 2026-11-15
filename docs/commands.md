@@ -7,6 +7,7 @@ kvm-vm validate <vm.yaml> [--clone]
 kvm-vm create <vm.yaml> [--console-password-file <path>] [--refresh-image] [--no-start] [--dry-run]
 kvm-vm list [--managed] [--ips]
 kvm-vm status <vm>
+kvm-vm monitor [<vm>] [--managed] [--interval <seconds>] [--count <n>] [--json]
 kvm-vm console <vm>
 kvm-vm reinstall <vm> [--os <alias|url|path> | --image-url <url> | --image-path <path>] [--os-variant <variant>]
                       [--console-password-file <path>] [--refresh-image] [--no-start] [--dry-run] [--yes] [--force]
@@ -22,7 +23,7 @@ kvm-vm backup check <backup-dir> [--until <checkpoint>]
 `kvm-vm --help` and `kvm-vm COMMAND --help` show the same options.
 
 - [Before you start](#before-you-start)
-- [validate](#validate) · [create](#create) · [list](#list) · [status](#status) · [console](#console)
+- [validate](#validate) · [create](#create) · [list](#list) · [status](#status) · [monitor](#monitor) · [console](#console)
 - [reinstall](#reinstall) · [clone](#clone) · [delete](#delete)
 - [snapshot](#snapshot) · [backup check](#backup-check)
 - [When a command refuses to run](#when-a-command-refuses-to-run)
@@ -117,6 +118,52 @@ sudo kvm-vm status web01
 
 Shows the libvirt domain information, the kvm-vm state manifest, the Snapshot
 state, disks, network cards and known addresses.
+
+## monitor
+
+```bash
+sudo kvm-vm monitor web01                         # one sample after 1 second
+sudo kvm-vm monitor                               # all domains on this host
+sudo kvm-vm monitor --managed --interval 5 --count 0   # managed VMs, every 5s until Ctrl+C
+sudo kvm-vm monitor web01 --interval 2 --count 10 --json  # 10 NDJSON samples
+```
+
+`monitor` samples libvirt `virsh domstats --raw` twice. It is **read-only**:
+no agent or daemon is installed, and no VM, disk, or monitoring setting is
+changed. A sample interval is required because CPU and I/O rates are derived
+from differences between cumulative counters. `--count 0` runs continuously;
+`--count 1` is the default. `--interval` accepts 0.1 through 3600 seconds.
+Without a name, all libvirt domains are included; `--managed` excludes domains
+without a kvm-vm state manifest. `--json` produces one JSON object per sample,
+including per-disk and per-interface counters, suitable for later collection.
+
+The columns and JSON fields have specific meanings:
+
+- `CPU`: percentage of the VM's allocated vCPU capacity (0–100% in typical
+  operation). JSON also includes `cpu_host_percent`, where 100% is **one host
+  CPU core**; a 4-vCPU VM can approach 400%. Values are sampled, not instantaneous.
+- `GUEST RAM`: estimated guest non-reclaimable memory / currently allocated memory. Guest used is
+  calculated as `balloon.available - balloon.usable` **only if** a recent
+  balloon memory report exists. Without guest reports it shows `-` (unknown),
+  not allocated RAM misrepresented as used RAM.
+- `QEMU RSS`: resident physical memory of the host-side VM process. It is **not**
+  the guest's actual memory usage, nor an exact measurement of VM ownership.
+- `DISK PHYS`: libvirt's physical size of the disk source files, not guest
+  filesystem occupancy or total host storage consumed (snapshot backing chains
+  are not included). `disk_capacity_bytes` in JSON is the logical source size.
+- `DISK R/s`, `DISK W/s`, `NET RX/s`, `NET TX/s`: byte rates, aggregated across
+  devices. Network direction is relative to the **guest**. Missing counters,
+  shut-off guests and newly discovered devices appear as `-` / `null` rather
+  than invented zeroes. Rate columns use binary byte units (`MiB`, etc.).
+
+Guest memory used may be unavailable by default. It requires guest balloon
+support with fresh statistics; an administrator may enable live polling with
+`virsh dommemstat web01 --period 10 --live` (this alters domain configuration
+at runtime and is **not** executed by `monitor`). The actual support depends
+on the VM definition, guest drivers and libvirt. No guest-agent is required for
+CPU, disk I/O or network counters. This command is for live sampling, not
+historical storage, alerting, in-guest filesystem usage, or host-wide
+monitoring.
 
 ## console
 
