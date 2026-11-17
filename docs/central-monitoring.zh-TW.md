@@ -48,6 +48,34 @@ sudo ./tools/setup-central-monitoring.sh enroll kvm-tpe-01
 
 Grafana 僅供內部管理員使用，建議 SSH Tunnel（`ssh -L 3000:127.0.0.1:3000 ...`）或已驗證的私有管理網路。本版**沒有**客戶租戶隔離功能。
 
+### 未來 Hosting 客戶登入：目前只建立 Tenant 資料模型
+
+**既有中央安裝升級注意：** 首次使用 `--tenant` 或 `set-tenant` 以前，
+請先審閱並執行 `sudo ./tools/setup-central-monitoring.sh sync-templates`
+（會備份並覆寫部分樣板檔），再執行
+`sudo ./tools/setup-central-monitoring.sh reload`。舊版 Inventory exporter
+無法讀取含 `tenant_id` 的 JSON，因此未更新時 CLI 會拒絕變更，
+避免影響 Host 失聯告警。
+
+
+
+管理員可在中央 Host Inventory 指定租戶歸屬：
+
+```bash
+sudo ./tools/setup-central-monitoring.sh inventory add <UUID> kvm-tpe-01 taipei --tenant cust-001
+sudo ./tools/setup-central-monitoring.sh inventory set-tenant <UUID> cust-002
+sudo ./tools/setup-central-monitoring.sh inventory list
+./tools/setup-central-monitoring.sh customer-readiness  # BLOCKED / 非零退出碼
+```
+
+舊 Host 記錄不需遷移，視為 `internal`。中央 Inventory 增加
+`kvm_vm_host_tenant_info{host_id,tenant_id}` 提供**管理員查核**，並不據此
+開放資料查詢或授權。已經驗證過的 Remote Write 傳送端仍可能偽造
+`host_id` / `tenant_id`；VictoriaMetrics Single 目前也沒有原生租戶分隔。
+**中央 Grafana 在完成可信寫入路由、租戶限定查詢及雙租戶負面測試之前，
+禁止讓 Hosting 客戶登入。** 詳見
+[ADR 0006](adr/0006-central-monitoring-tenant-security-boundary.zh-TW.md)。
+
 ## 2. KVM Host 的 Agent 模式
 
 Host 需 Docker Compose v2、systemd、Python 3、virsh 與可用的 libvirt。先在 Host 安全建立密碼檔：

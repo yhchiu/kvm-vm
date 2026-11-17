@@ -139,3 +139,5 @@ two-host Backup and Restore exercise. It uses the `prepare_*.py` and
 ## Central monitoring KVM/NAT Lab
 
 See [the isolated multi-NAT E2E Lab](e2e/README.md) and [繁體中文說明](e2e/README.zh-TW.md). It provisions five disposable VMs and must be explicitly enabled on a KVM host.
+
+Tenant inventory ownership and fail-closed customer access are tested in `test_monitoring_tenants.py`; guest/customer data permissions remain intentionally unimplemented.

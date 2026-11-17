@@ -102,3 +102,5 @@ sudo python3 -m pytest tests/test_recovery_e2e.py -v
 ## 中央監控 KVM/NAT Lab
 
 請參考[獨立多層 NAT E2E Lab](e2e/README.zh-TW.md) 與 [English](e2e/README.md)。需於可操作的 KVM 實機明確啟用，會建立五台測試 VM。
+
+`test_monitoring_tenants.py` 驗證 Host Tenant 歸屬資訊與客戶存取預檢 fail-closed；客戶讀取權限尚未開放。

@@ -76,9 +76,10 @@ case "$COMMAND" in
   help|--help|-h)
     cat <<'HELP'
 Usage: sudo ./tools/setup-central-monitoring.sh [up|reload|status|logs|update|down|credentials|enroll HOST]
-       sudo ./tools/setup-central-monitoring.sh inventory [list|add UUID HOST SITE|disable UUID|enable UUID|remove UUID]
+       sudo ./tools/setup-central-monitoring.sh inventory [list|add UUID HOST SITE [--tenant ID]|set-tenant UUID ID|disable UUID|enable UUID|remove UUID]
        sudo ./tools/setup-central-monitoring.sh notifications webhook URL_FILE
        sudo ./tools/setup-central-monitoring.sh notifications email TO SMTP_HOST:PORT FROM SMTP_USER PASSWORD_FILE
+       ./tools/setup-central-monitoring.sh customer-readiness  # safe preflight, fails closed
        sudo ./tools/setup-central-monitoring.sh sync-templates  # reviewed refresh of bundled stack templates
        ./tools/setup-central-monitoring.sh render DIRECTORY
 This installs a LOCALHOST-ONLY VictoriaMetrics + Grafana + vmalert + Alertmanager.
@@ -125,10 +126,38 @@ HELP
     require_root; require_config; check_docker
     compose down # Explicitly no -v: retain named volumes.
     ;;
+  customer-readiness)
+    # Operator visibility only. Single-node VictoriaMetrics has no native
+    # tenant boundary and the current ingress does not bind credentials to
+    # a verified tenant/host label. Never infer customer access readiness
+    # from tenant metadata, Grafana folders or dashboard variables.
+    cat <<'READINESS'
+BLOCKED: Hosting customer data access is NOT enabled.
+- VictoriaMetrics Single has no native tenant isolation.
+- Remote Write Basic Auth currently authenticates a sender but does not
+  enforce the source host_id/tenant_id on the ingested metrics.
+- Central Grafana currently has an operator-wide datasource.
+Requirements: native tenant-aware storage/routing, trusted ingress tenant
+assignment, restricted query datasource for each tenant, negative isolation
+tests, and audited customer login before this check may be enabled.
+READINESS
+    exit 2
+    ;;
   inventory)
     require_root; require_config
     shift
     [[ $# -gt 0 ]] || fail 'inventory requires a subcommand'
+    # A pre-tenant inventory exporter deployed in the running container would
+    # reject the new tenant_id field and make expected-host alerts disappear.
+    # Require an explicit reviewed template upgrade before the first mutation.
+    tenant_change=0
+    [[ $1 != set-tenant ]] || tenant_change=1
+    for argument in "$@"; do
+      [[ $argument != --tenant ]] || tenant_change=1
+    done
+    if [[ $tenant_change == 1 ]] && ! cmp -s "$TEMPLATES/inventory/inventory.py" "$CONFIG_DIR/inventory/inventory.py"; then
+      fail 'Tenant inventory template is not yet deployed: review sync-templates, then reload before assigning tenants.'
+    fi
     python3 "$TEMPLATES/inventory/inventory.py" --file "$CONFIG_DIR/inventory/hosts.json" "$@"
     ;;
   notifications)

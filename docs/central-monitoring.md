@@ -49,6 +49,38 @@ The `enroll` command uses a short-lived `httpd:2.4-alpine` Docker container to r
 
 Grafana should be used by internal administrators only. Access over SSH port-forwarding (`ssh -L 3000:127.0.0.1:3000 ...`) or an authenticated, TLS-protected private admin network. The provisioning does **not** implement per-customer isolation.
 
+### Future customer access: tenant foundation (still admin-only)
+
+**Existing central deployment upgrade:** Before adding `--tenant` or using
+`set-tenant`, review `sudo ./tools/setup-central-monitoring.sh sync-templates`
+(which backs up and overwrites selected templates), then run
+`sudo ./tools/setup-central-monitoring.sh reload`. Otherwise, an older
+inventory-exporter container would reject tenant-aware JSON and break
+expected-host alerting. The CLI refuses tenant changes until the deployed
+inventory template matches this version.
+
+
+
+The operator-owned Host inventory now accepts an optional tenant assignment:
+
+```bash
+sudo ./tools/setup-central-monitoring.sh inventory add <UUID> kvm-tpe-01 taipei --tenant cust-001
+sudo ./tools/setup-central-monitoring.sh inventory set-tenant <UUID> cust-002
+sudo ./tools/setup-central-monitoring.sh inventory list
+./tools/setup-central-monitoring.sh customer-readiness  # BLOCKED; nonzero status
+```
+
+Old Host inventory remains valid and implicitly belongs to `internal`. A new
+`kvm_vm_host_tenant_info{host_id,tenant_id}` series is published by the **trusted
+central inventory** to help administrators audit ownership. This series is
+**not a tenant security boundary** and is not added to remote-sent samples.
+The sender can spoof Host and Tenant labels, and current VictoriaMetrics Single
+has no native tenant separation. **Do not invite Hosting customers to the
+shared Grafana instance.** Before exposing data to customers, implement
+server-bound ingress tenant routing, native tenant-specific storage/query
+permissions, and cross-tenant negative tests. See
+[ADR 0006](adr/0006-central-monitoring-tenant-security-boundary.md).
+
 ## 2. Install host Agent mode
 
 Each KVM host needs Docker Compose v2, systemd, Python 3, virsh and a working libvirt service. Create a root-readable password file on the host using the *one-time* credential from central enrollment:

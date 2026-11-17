@@ -18,10 +18,13 @@ import tempfile
 import uuid
 
 NAME = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$')
+TENANT = re.compile(r'^[a-z][a-z0-9-]{0,62}$')
+DEFAULT_TENANT = 'internal'  # Legacy records remain internal/operator-only.
 
 
 def validate_record(record):
-    if not isinstance(record, dict) or set(record) != {'host_id', 'host', 'site', 'enabled'}:
+    required = {'host_id', 'host', 'site', 'enabled'}
+    if not isinstance(record, dict) or not required.issubset(record) or not set(record).issubset(required | {'tenant_id'}):
         raise ValueError('invalid inventory record fields')
     try:
         uid = uuid.UUID(record['host_id'])
@@ -32,6 +35,9 @@ def validate_record(record):
     for key in ('host', 'site'):
         if not isinstance(record[key], str) or not NAME.fullmatch(record[key]):
             raise ValueError(f'invalid {key} label')
+    tenant_id = record.get('tenant_id', DEFAULT_TENANT)
+    if not isinstance(tenant_id, str) or not TENANT.fullmatch(tenant_id):
+        raise ValueError('invalid tenant_id (lowercase slug required)')
     if type(record['enabled']) is not bool:
         raise ValueError('enabled must be a boolean')
     return record
@@ -85,16 +91,24 @@ def save(path, records):
 
 
 def metrics(path):
-    rows = [
+    expected = [
         '# HELP kvm_vm_host_expected Whether an enrolled KVM host is expected to report metrics.',
         '# TYPE kvm_vm_host_expected gauge',
     ]
+    owners = [
+        '# HELP kvm_vm_host_tenant_info Operator-assigned host-to-tenant inventory metadata; NOT an access-control mechanism.',
+        '# TYPE kvm_vm_host_tenant_info gauge',
+    ]
     for rec in load(path):
+        # Trusted local operator inventory, not the remote-write payload.
+        # Do NOT use this series for authorizing customer data queries.
+        tenant = rec.get('tenant_id', DEFAULT_TENANT)
+        owners.append(f'kvm_vm_host_tenant_info{{host_id="{rec["host_id"]}",tenant_id="{tenant}"}} 1')
         if rec['enabled']:
-            # Each value has strict identifier syntax (no escaping ambiguity).
+            # Preserve existing expected-host labels and alerts for old records.
             fields = ','.join(f'{key}="{rec[key]}"' for key in ('host_id', 'host', 'site'))
-            rows.append(f'kvm_vm_host_expected{{{fields}}} 1')
-    return ('\n'.join(rows) + '\n').encode('utf-8')
+            expected.append(f'kvm_vm_host_expected{{{fields}}} 1')
+    return ('\n'.join(expected + owners) + '\n').encode('utf-8')
 
 
 def serve(path, bind, port):
@@ -128,6 +142,11 @@ def main():
     add.add_argument('host_id')
     add.add_argument('host')
     add.add_argument('site')
+    add.add_argument('--tenant', dest='tenant_id', default=None,
+                     help='operator-assigned tenant slug (default: internal)')
+    owner = sub.add_parser('set-tenant', help='assign tenant to an existing host (not authorization)')
+    owner.add_argument('host_id')
+    owner.add_argument('tenant_id')
     for cmd in ('enable', 'disable', 'remove'):
         sub.add_parser(cmd).add_argument('host_id')
     sub.add_parser('list')
@@ -146,7 +165,10 @@ def main():
         elif args.command == 'metrics':
             sys.stdout.buffer.write(metrics(args.file))
         elif args.command == 'add':
-            new = validate_record(dict(host_id=args.host_id, host=args.host, site=args.site, enabled=True))
+            new = dict(host_id=args.host_id, host=args.host, site=args.site, enabled=True)
+            if args.tenant_id is not None:
+                new['tenant_id'] = args.tenant_id
+            validate_record(new)
             if any(x['host_id'] == args.host_id for x in records):
                 raise ValueError('host_id already exists; use disable/enable or remove explicitly')
             records.append(new)
@@ -158,6 +180,10 @@ def main():
                 raise ValueError('unknown host_id')
             if args.command == 'remove':
                 records.remove(target)
+            elif args.command == 'set-tenant':
+                if not TENANT.fullmatch(args.tenant_id):
+                    raise ValueError('invalid tenant_id (lowercase slug required)')
+                target['tenant_id'] = args.tenant_id
             else:
                 target['enabled'] = args.command == 'enable'
             save(args.file, records)

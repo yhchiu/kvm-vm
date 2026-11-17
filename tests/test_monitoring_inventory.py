@@ -112,7 +112,10 @@ def test_inventory_http_server_reads_updated_file(tmp_path):
             assert UUID.encode() in result.read()
         assert inventory(cfg,'disable',UUID).returncode == 0
         with urllib.request.urlopen(f'http://127.0.0.1:{port}/metrics') as result:
-            assert UUID.encode() not in result.read()
+            body = result.read()
+            assert b'kvm_vm_host_expected{host_id=' not in body
+            # Ownership metadata is retained even if monitoring is disabled.
+            assert UUID.encode() in body
         assert urllib.request.urlopen(f'http://127.0.0.1:{port}/healthz').read() == b'ok\n'
         with pytest.raises(urllib.error.HTTPError) as e:
             urllib.request.urlopen(f'http://127.0.0.1:{port}/private')
