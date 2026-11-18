@@ -287,3 +287,29 @@ def test_repeat_same_name_scenario_only_observes_running_guests(tmp_path, monkey
     t.scenario_same_name_vms()
     t.scp_bytes.assert_not_called()
     assert all('virsh define' not in call.args[1] for call in t.ssh.call_args_list)
+
+
+def test_guest_archive_contains_only_runtime_files(tmp_path, monkeypatch):
+    import io
+    import shutil
+    import tarfile
+
+    root = tmp_path / 'checkout'
+    for name in lab.GUEST_FILES:
+        target = root / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(lab.ROOT / name, target)
+    for directory in (root, root / 'tools/monitoring'):
+        (directory / '.env').write_text('test-only canary')
+    monkeypatch.setattr(lab, 'ROOT', root)
+    t = lab.Lab(args(tmp_path, monkeypatch))
+    t.scp_bytes = mock.Mock()
+    t.ssh = mock.Mock()
+    t.install_repo('central')
+    with tarfile.open(fileobj=io.BytesIO(t.scp_bytes.call_args.args[1])) as archive:
+        assert set(archive.getnames()) == {'kvm-vm/' + name for name in lab.GUEST_FILES}
+    (root / 'install.sh').unlink()
+    (root / 'install.sh').symlink_to(root / '.env')
+    with pytest.raises(lab.LabError, match='regular guest source'):
+        t.install_repo('central')
+    t.scp_bytes.assert_called_once()

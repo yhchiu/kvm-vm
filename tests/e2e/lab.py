@@ -38,6 +38,39 @@ SCENARIOS = ('connectivity', 'double-nat', 'metrics', 'same-name-vms',
              'latency-loss', 'disconnect-recover', 'auth', 'host-offline', 'mode-switch')
 
 
+# Files installed on the disposable monitoring guests, including templates.
+GUEST_FILES = (
+    'install.sh',
+    'kvm-vm',
+    'tools/kvm-vm-bridge',
+    'tools/setup-central-monitoring.sh',
+    'tools/setup-monitoring.sh',
+    'tools/setup-remote-monitoring.sh',
+    'tests/e2e/inject_lab_ca.py',
+    'tools/monitoring/central/alertmanager/alertmanager.yml',
+    'tools/monitoring/central/compose.yaml',
+    'tools/monitoring/central/configure-notifications.py',
+    'tools/monitoring/central/grafana/dashboards/fleet.json',
+    'tools/monitoring/central/grafana/dashboards/hosts.json',
+    'tools/monitoring/central/grafana/dashboards/vms.json',
+    'tools/monitoring/central/grafana/provisioning/dashboards/dashboards.yml',
+    'tools/monitoring/central/grafana/provisioning/datasources/victoriametrics.yml',
+    'tools/monitoring/central/inventory/inventory.py',
+    'tools/monitoring/central/inventory/scrape.yml',
+    'tools/monitoring/central/nginx-remote-write.example.conf',
+    'tools/monitoring/central/rules/rules.yml',
+    'tools/monitoring/compose.yaml',
+    'tools/monitoring/configure-remote.py',
+    'tools/monitoring/ensure-exporter.sh',
+    'tools/monitoring/grafana/dashboards/kvm-vm.json',
+    'tools/monitoring/grafana/provisioning/dashboards/dashboards.yml',
+    'tools/monitoring/grafana/provisioning/datasources/prometheus.yml',
+    'tools/monitoring/prometheus.yml',
+    'tools/monitoring/remote/compose.agent.yaml',
+    'tools/monitoring/remote/compose.hybrid.yaml',
+)
+
+
 class LabError(Exception):
     pass
 
@@ -359,17 +392,13 @@ sudo docker compose version
 ''', timeout=480)
 
     def install_repo(self, node):
-        # Archive only tracked-like project sources, never local secrets or tests
-        # created in /mnt/data or a nested Git checkout.
         buf = io.BytesIO()
-        with tarfile.open(fileobj=buf, mode='w:gz') as t:
-            for source in ROOT.rglob('*'):
-                if not source.is_file() or '.git' in source.parts or '__pycache__' in source.parts:
-                    continue
-                if any(part in ('reports', '.pytest_cache', '.venv') for part in source.parts):
-                    continue
-                rel = source.relative_to(ROOT)
-                t.add(source, arcname=str(Path('kvm-vm') / rel))
+        with tarfile.open(fileobj=buf, mode='w:gz') as archive:
+            for name in GUEST_FILES:
+                source = ROOT / name
+                if source.resolve() != source or not source.is_file():
+                    raise LabError(f'Expected regular guest source file: {name}')
+                archive.add(source, arcname='kvm-vm/' + name, recursive=False)
         self.scp_bytes(node, buf.getvalue(), '/tmp/kvm-e2e-project.tar.gz', '0600')
         self.ssh(node, 'sudo mkdir -p /opt/kvm-vm\n'
                  'sudo tar -xzf /tmp/kvm-e2e-project.tar.gz -C /opt\n'
