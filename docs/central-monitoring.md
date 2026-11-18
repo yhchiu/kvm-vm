@@ -249,4 +249,4 @@ After configuring NGINX TLS/authentication and deploying a Host, verify:
 4. Temporarily stop Agent/Hybrid uploads and validate `KvmVmHostOffline` after roughly 10 minutes, then verify it resolves when uploads resume.
 5. Trigger a controlled test alert to validate email/Webhook delivery and Alertmanager routing; do not mistake a configured receiver for verified delivery.
 
-All regression tests supplied with this project are offline/mocked. **Real KVM Host, authenticated HTTPS ingress, Docker engine, dashboards and alert delivery still require an end-to-end deployment test.**
+The default regression suite runs offline. The dedicated dual-NAT lab exercises real KVM guests, Docker, HTTPS writes, and independent webhook delivery. The development-only tenant ingress stays separate from this shared admin deployment. See the [lab instructions](../tests/e2e/README.md) and [recovery and handoff guide](plans/20261118_central-hardening/README.md).

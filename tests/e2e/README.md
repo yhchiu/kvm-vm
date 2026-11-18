@@ -108,4 +108,4 @@ bash -n tests/e2e/lab.sh
 python3 -m py_compile tests/e2e/lab.py tests/e2e/inject_lab_ca.py
 ```
 
-See [Central Monitoring Agent Handoff](../../docs/CENTRAL_MONITORING_AGENT_HANDOFF.md) for remaining production hardening work.
+After bootstrap, run writer_recovery.py, tenant_handoff.py and recovery_drill.py individually with --lab-id. These opt-in drills interrupt live lab services. The restore drill needs an additional blank guest. See the [drill guide](../../docs/plans/20261118_central-hardening/README.md).

@@ -92,4 +92,4 @@ bash -n tests/e2e/lab.sh
 python3 -m py_compile tests/e2e/lab.py tests/e2e/inject_lab_ca.py
 ```
 
-其他正式營運待辦請參考 [`docs/CENTRAL_MONITORING_AGENT_HANDOFF.md`](../../docs/CENTRAL_MONITORING_AGENT_HANDOFF.md)。
+獨立的安裝中斷、兩租戶 queue 移交與空白 VM 還原演練，可在 bootstrap 後逐一執行。詳見[演練步驟與驗收條件](../../docs/plans/20261118_central-hardening/README.md)。
