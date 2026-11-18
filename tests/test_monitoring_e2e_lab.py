@@ -83,6 +83,7 @@ def test_refuses_unowned_libvirt_resources_before_initialization(tmp_path, monke
     with mock.patch.object(lab.os, 'geteuid', return_value=0), \
          mock.patch.object(lab.Path, 'exists', autospec=True, side_effect=lambda p: str(p) == '/dev/kvm'), \
          mock.patch.object(lab.shutil, 'which', return_value='/usr/bin/tool'), \
+         mock.patch.object(lab, 'run', return_value=subprocess.CompletedProcess([], 0, 'default via 192.0.2.1', '')), \
          mock.patch.object(t, 'virsh'), \
          mock.patch.object(t, 'is_defined', return_value=True):
         # The fake cloud.img is not required to be a valid QEMU image for preflight.
