@@ -591,7 +591,7 @@ WantedBy=multi-user.target
         self.ensure_connected()
         for host in HOSTS:
             code = self.exec_guest(host,
-                'curl --cacert /etc/kvm-vm/monitoring/lab-ca.pem -sS -o /dev/null -w "%{http_code}" '
+                'sudo curl --cacert /etc/kvm-vm/monitoring/lab-ca.pem -sS -o /dev/null -w "%{http_code}" '
                 '--connect-timeout 10 https://172.30.0.10/api/v1/write')
             if code not in ('401', '403', '405'):
                 raise LabError(f'{host}: ingress GET unexpectedly returned {code}')
@@ -749,13 +749,13 @@ sudo tc qdisc del dev wan0 root 2>/dev/null || true
     def scenario_auth(self):
         for host in HOSTS:
             http = self.exec_guest(host,
-                'curl --cacert /etc/kvm-vm/monitoring/lab-ca.pem -sS -o /dev/null -w "%{http_code}" '
+                'sudo curl --cacert /etc/kvm-vm/monitoring/lab-ca.pem -sS -o /dev/null -w "%{http_code}" '
                 '-X POST --data-binary x --connect-timeout 10 '
                 'https://172.30.0.10/api/v1/write')
             if http != '401':
                 raise LabError(f'{host}: unauthenticated POST must be 401, got {http}')
             bad = self.exec_guest(host,
-                'curl --cacert /etc/kvm-vm/monitoring/lab-ca.pem -sS -o /dev/null -w "%{http_code}" '
+                'sudo curl --cacert /etc/kvm-vm/monitoring/lab-ca.pem -sS -o /dev/null -w "%{http_code}" '
                 '-u unknown:wrong -X POST --data-binary x '
                 'https://172.30.0.10/api/v1/write')
             if bad != '401':

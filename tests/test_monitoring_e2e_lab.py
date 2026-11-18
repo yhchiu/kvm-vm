@@ -263,3 +263,15 @@ def test_same_name_guests_require_headless_domains_and_running_state(tmp_path, m
     t.query.return_value = [{'metric': {'host_id': 'host-a'}}, {'metric': {'host_id': 'unrelated'}}]
     with pytest.raises(pytest.fail.Exception, match='wrong hosts'):
         t.scenario_same_name_vms()
+
+
+def test_lab_https_probes_can_use_ca_in_private_config(tmp_path, monkeypatch):
+    t = lab.Lab(args(tmp_path, monkeypatch))
+    def request(host, cmd):
+        assert cmd.startswith('sudo curl --cacert /etc/kvm-vm/monitoring/lab-ca.pem ')
+        return '401'
+    t.exec_guest = request
+    t.ensure_connected = mock.Mock()
+    t.ssh = mock.Mock(return_value=subprocess.CompletedProcess([], 1, 'blackhole 10.10.1.0/24', ''))
+    t.scenario_auth()
+    t.scenario_connectivity()
