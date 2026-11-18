@@ -734,10 +734,11 @@ sudo tc qdisc del dev wan0 root 2>/dev/null || true
         # eventually written. A fresh post-recovery scrape alone is insufficient.
         def replayed():
             series = self.query_range(
-                f'kvm_vm_collector_success{{host_id="{uid}"}}',
+                f'timestamp(kvm_vm_collector_success{{host_id="{uid}"}})',
                 int(outage_start - 30), int(time.time()), 15)
-            return any(outage_start + 20 <= float(ts) <= outage_end - 10
-                       for item in series for ts, _ in item.get('values', []))
+            # Range ticks can carry forward a sample collected before the fault.
+            return any(outage_start + 20 <= float(sample_time) <= outage_end - 10
+                       for item in series for _, sample_time in item.get('values', []))
         self.until(replayed, 180, 'replayed Agent samples from outage interval')
 
     def scenario_auth(self):

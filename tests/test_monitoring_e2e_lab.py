@@ -222,3 +222,24 @@ def test_debian_compose_package_installs_working_cli_plugin(tmp_path, monkeypatc
     t.ssh = lambda node, script, timeout: subprocess.run(['bash', '-se'], input=script,
                                                            text=True, check=True)
     t.docker_packages('central', [])
+
+
+@pytest.mark.parametrize('sample_timestamp,replayed', [(99, False), (135, True)])
+def test_replay_requires_a_sample_recorded_during_outage(tmp_path, monkeypatch,
+                                                         sample_timestamp, replayed):
+    t = lab.Lab(args(tmp_path, monkeypatch))
+    t.data = {'credentials': {'host-a': {'host_id': 'test'}}}
+    monkeypatch.setattr(lab.time, 'time', mock.Mock(side_effect=[100, 165, 185]))
+    monkeypatch.setattr(lab.time, 'sleep', lambda _: None)
+    t.scenario_metrics = t.fault = t.heal = t.ssh = mock.Mock()
+    t.exec_guest = mock.Mock(return_value='vmagent_remotewrite_pending_data_bytes 32')
+    t.query = mock.Mock(return_value=[{}])
+    # The query evaluation tick can fall within the outage for an older sample.
+    t.query_range = lambda q, *args: [{'values': [[135, str(sample_timestamp)
+                                                       if q.startswith('timestamp(') else '1']]}]
+    t.until = lambda predicate, *args: predicate() or pytest.fail('no replayed sample')
+    if replayed:
+        t.scenario_disconnect_recover()
+    else:
+        with pytest.raises(pytest.fail.Exception, match='no replayed sample'):
+            t.scenario_disconnect_recover()
