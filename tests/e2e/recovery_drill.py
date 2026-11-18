@@ -294,6 +294,23 @@ END"""
             }
         finally:
             t.virsh("resume", domain)
+            self.align_source_clock()
+
+    def align_source_clock(self):
+        # KVM can retain a synchronized status while its clock is a full suspend
+        # interval behind. Subsequent metric and alert queries depend on UTC.
+        def skew():
+            guest = int(self.run("central", "date +%s"))
+            return int(time.time()) - guest
+
+        before = skew()
+        if abs(before) <= 3:
+            return before, before
+        self.run("central", f"sudo date -u --set=@{int(time.time())} >/dev/null")
+        after = skew()
+        if abs(after) > 3:
+            raise lab.LabError("Resumed Central clock differs from lab controller")
+        return before, after
 
     def cleanup(self):
         for node, role in [("router-b", "observer"), ("router-a", "receiver")]:
