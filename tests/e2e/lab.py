@@ -34,6 +34,7 @@ NODES = {
     'host-a': {'lan': '10.10.1.10', 'ram': 6144, 'vcpus': 2, 'disk': 36},
     'host-b': {'lan': '10.10.2.10', 'ram': 6144, 'vcpus': 2, 'disk': 36},
 }
+RESTORE_NODE = {'wan': '172.30.0.20', 'ram': 4096, 'vcpus': 2, 'disk': 24}
 SCENARIOS = ('connectivity', 'double-nat', 'metrics', 'same-name-vms',
              'latency-loss', 'disconnect-recover', 'auth', 'host-offline', 'mode-switch')
 
@@ -108,7 +109,7 @@ def net_xml(name, address, mode):
 
 
 def cloud_network(node, lab_id):
-    info = NODES[node]
+    info = RESTORE_NODE if node == 'restore' else NODES[node]
     configs = []
     for idx, kind in enumerate(('wan', 'lan')):
         if kind not in info:
@@ -171,6 +172,26 @@ class Lab:
         self.names = net_names(self.lab_id)
         self.uri = os.environ.get('KVM_VM_E2E_LIBVIRT_URI', 'qemu:///system')
         self.data = None
+
+    @property
+    def nodes(self):
+        if self.data and self.data.get('restore_vm'):
+            return {**NODES, 'restore': RESTORE_NODE}
+        return NODES
+
+    def prepare_restore_vm(self):
+        self.read_state()
+        if not self.data.get('bootstrapped'):
+            raise LabError('Bootstrap before starting a restore drill')
+        name = domain_name(self.lab_id, 'restore')
+        if not self.data.get('restore_vm'):
+            if self.is_defined('domain', name) or any(self.image_dir.glob(name + '*')):
+                raise LabError('Refusing to adopt existing restore resources')
+            self.data['restore_vm'] = True
+            self.write_state()
+        self.up(Path(self.data['image']))
+        self.ssh_wait('restore')
+        self.ssh('restore', 'sudo cloud-init status --wait', timeout=300)
 
     @property
     def image_dir(self):
@@ -297,7 +318,7 @@ class Lab:
             self.virsh('net-define', str(xfile))
             self.virsh('net-start', name)
         pub = (self.home / 'id_ed25519.pub').read_text().strip()
-        for node, info in NODES.items():
+        for node, info in self.nodes.items():
             name = domain_name(self.lab_id, node)
             if self.is_defined('domain', name):
                 self.assert_owned_domain(name)
@@ -336,11 +357,11 @@ class Lab:
         print('Lab VMs and isolated networks created. Next: lab.sh bootstrap')
 
     def ssh(self, node, script, *, input=None, timeout=120, check=True):
-        if node not in NODES:
-            raise LabError(f'Unknown node: {node}')
         if self.data is None:
             self.read_state()
-        address = NODES[node].get('lan', NODES[node].get('wan'))
+        if node not in self.nodes:
+            raise LabError(f'Unknown node: {node}')
+        address = self.nodes[node].get('lan', self.nodes[node].get('wan'))
         return run(['ssh', '-i', str(self.home / 'id_ed25519'), '-o', 'BatchMode=yes',
                     '-o', 'StrictHostKeyChecking=accept-new', '-o',
                     f'UserKnownHostsFile={self.home / "known_hosts"}',
@@ -352,9 +373,9 @@ class Lab:
         """Stream binary bytes through SSH stdin, not shell argv or temporary URLs."""
         if self.data is None:
             self.read_state()
-        if node not in NODES or not dest.startswith('/'):
+        if node not in self.nodes or not dest.startswith('/'):
             raise LabError('Invalid lab upload destination')
-        address = NODES[node].get('lan', NODES[node].get('wan'))
+        address = self.nodes[node].get('lan', self.nodes[node].get('wan'))
         remote = (f'sudo mkdir -p {shlex.quote(str(Path(dest).parent))} && '
                   f'sudo tee {shlex.quote(dest)} >/dev/null && '
                   f'sudo chmod {mode} {shlex.quote(dest)}')
@@ -854,16 +875,16 @@ sudo tc qdisc del dev wan0 root 2>/dev/null || true
         print('Lab:', self.lab_id, 'bootstrapped:', self.data.get('bootstrapped', False))
         for name in self.names.values():
             print('network', name, 'defined' if self.is_defined('net', name) else 'missing')
-        for node in NODES:
+        for node in self.nodes:
             name = domain_name(self.lab_id, node)
             print('domain', name, 'defined' if self.is_defined('domain', name) else 'missing',
-                  'SSH:', NODES[node].get('lan', NODES[node].get('wan')))
+                  'SSH:', self.nodes[node].get('lan', self.nodes[node].get('wan')))
 
     def down(self, purge=False):
         if os.geteuid() != 0:
             raise LabError('Teardown requires root')
         self.read_state()
-        for node in reversed(list(NODES)):
+        for node in reversed(list(self.nodes)):
             name = domain_name(self.lab_id, node)
             if not self.is_defined('domain', name):
                 continue
@@ -881,7 +902,7 @@ sudo tc qdisc del dev wan0 root 2>/dev/null || true
             self.virsh('net-undefine', name)
         # Clean only filenames of resources created by this lab inside the
         # manifest-owned state directory. Keep logs and keys unless --purge.
-        for node in NODES:
+        for node in self.nodes:
             name = domain_name(self.lab_id, node)
             for suffix in ('.qcow2', '-seed.img'):
                 (self.image_dir / (name + suffix)).unlink(missing_ok=True)
@@ -894,6 +915,20 @@ sudo tc qdisc del dev wan0 root 2>/dev/null || true
                 self.image_dir.rmdir()
             shutil.rmtree(self.home)
         print('Lab domains and networks removed; diagnostics ' + ('purged' if purge else 'preserved'))
+
+
+def owned_lab(lab_id):
+    if not re.fullmatch('[a-z0-9]{1,12}', lab_id):
+        raise LabError('Invalid lab ID')
+    controller = Lab(build_parser().parse_args(['--lab-id', lab_id, 'plan']))
+    controller.read_state()
+    if not controller.data.get('bootstrapped'):
+        raise LabError('Bootstrap the dedicated lab first')
+    for node in NODES:
+        controller.assert_owned_domain(domain_name(lab_id, node))
+    for name, network in topo(lab_id)['networks'].items():
+        controller.assert_owned_network(name, network['bridge'], network['mode'])
+    return controller
 
 
 def build_parser():

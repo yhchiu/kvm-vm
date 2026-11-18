@@ -313,3 +313,28 @@ def test_guest_archive_contains_only_runtime_files(tmp_path, monkeypatch):
     with pytest.raises(lab.LabError, match='regular guest source'):
         t.install_repo('central')
     t.scp_bytes.assert_called_once()
+
+
+def test_recovery_vm_is_opt_in_and_refuses_an_unowned_name(tmp_path, monkeypatch):
+    t = lab.Lab(args(tmp_path, monkeypatch))
+    t.data = {'owner':'kvm-vm-e2e-lab-v1','lab_id':'cm','bootstrapped':True,'image':'/base.qcow2'}
+    t.write_state()
+    assert 'restore' not in t.nodes
+    t.is_defined = mock.Mock(return_value=True)
+    with pytest.raises(lab.LabError, match='adopt'):
+        t.prepare_restore_vm()
+    assert 'restore' not in t.nodes
+    t.is_defined.return_value = False
+    t.up = mock.Mock()
+    t.ssh_wait = mock.Mock()
+    t.ssh = mock.Mock()
+    t.prepare_restore_vm()
+    t.read_state()
+    assert t.nodes['restore']['wan'] == '172.30.0.20'
+    assert '172.30.0.20/24' in lab.cloud_network('restore','cm')
+    t.up.assert_called_once_with(Path('/base.qcow2'))
+
+
+def test_standalone_drills_validate_lab_id_before_state_access():
+    with pytest.raises(lab.LabError,match='Invalid lab ID'):
+        lab.owned_lab('../unrelated')
