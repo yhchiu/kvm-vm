@@ -202,13 +202,16 @@ def test_qemu_disk_directory_is_separate_from_private_state(tmp_path, monkeypatc
     assert t.image_dir == t.home
 
 
-def test_debian_compose_package_installs_working_cli_plugin(tmp_path, monkeypatch):
+@pytest.mark.parametrize('preinstalled_cli', [True, False])
+def test_debian_compose_package_installs_working_cli_plugin(tmp_path, monkeypatch, preinstalled_cli):
     import os
     # Debian 13 publishes its v2 CLI plugin as docker-compose.
     stubs = {
         'sudo': '[ "$1" != DEBIAN_FRONTEND=noninteractive ] || shift\nexec "$@"',
-        'apt-get': '[ "$*" = "install -y docker-compose" ] && touch "$PLUGIN"',
-        'docker': '[ "$*" = "compose version" ] && test -f "$PLUGIN"',
+        'apt-get': 'case "$*" in "install -y docker-cli") touch "$CLI";; '
+                   '"install -y docker-compose") touch "$PLUGIN";; *) exit 1;; esac',
+        'docker': 'test -f "$CLI" || exit 127\n'
+                  '[ "$*" = "--version" ] || { [ "$*" = "compose version" ] && test -f "$PLUGIN"; }',
         'systemctl': 'exit 0',
     }
     for name, body in stubs.items():
@@ -216,6 +219,10 @@ def test_debian_compose_package_installs_working_cli_plugin(tmp_path, monkeypatc
         path.write_text('#!/bin/sh\n' + body + '\n')
         path.chmod(0o755)
     monkeypatch.setenv('PATH', str(tmp_path) + ':' + os.environ['PATH'])
+    cli = tmp_path / 'cli-installed'
+    if preinstalled_cli:
+        cli.touch()
+    monkeypatch.setenv('CLI', str(cli))
     monkeypatch.setenv('PLUGIN', str(tmp_path / 'plugin-installed'))
     t = lab.Lab(args(tmp_path, monkeypatch))
     t.apt = mock.Mock()

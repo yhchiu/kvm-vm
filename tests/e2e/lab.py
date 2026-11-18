@@ -412,7 +412,10 @@ class Lab:
     def docker_packages(self, node, extra):
         # Debian 13 and Ubuntu 24.04 have differently named Compose v2 packages.
         self.apt(node, ['docker.io', *extra])
-        self.ssh(node, '''if ! docker compose version >/dev/null 2>&1; then
+        self.ssh(node, '''if ! docker --version >/dev/null 2>&1; then
+  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y docker-cli
+fi
+if ! docker compose version >/dev/null 2>&1; then
   sudo DEBIAN_FRONTEND=noninteractive apt-get install -y docker-compose-v2 ||
     sudo DEBIAN_FRONTEND=noninteractive apt-get install -y docker-compose-plugin ||
     sudo DEBIAN_FRONTEND=noninteractive apt-get install -y docker-compose
