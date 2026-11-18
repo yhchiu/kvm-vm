@@ -179,3 +179,8 @@ def test_ownership_guards_refuse_replaced_domain_and_network(tmp_path, monkeypat
     t.virsh = lambda *a, **kw: subprocess.CompletedProcess(a, 0, wrong, '')
     with pytest.raises(lab.LabError, match='modified or foreign'):
         t.assert_owned_network('kvm-e2e-cm-wan', '172.30.0.1', 'nat')
+
+
+def test_documented_lab_entrypoint_runs_plan():
+    result = subprocess.run([str(E2E / 'lab.sh'), 'plan'], capture_output=True, check=True)
+    assert len(json.loads(result.stdout)['domains']) == 5
