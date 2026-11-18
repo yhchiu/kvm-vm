@@ -198,6 +198,8 @@ def test_interrupted_writer_deployment_reconciles_on_retry(tmp_path):
     docker.write_text("""#!/bin/sh
 case "$*" in
   *' up -d') if [ -n "$INTERRUPT" ]; then kill -KILL "$PPID"; fi ;;
+  'ps '*service=prometheus) if [ -n "$LIVE_HYBRID" ]; then echo prometheus-id; fi ;;
+  'inspect '*) echo "$KVM_VM_MONITORING_DIR/prometheus-hybrid.yml" ;;
   'ps '*service=vmagent) if [ -n "$LIVE_AGENT" ]; then echo container-id; fi ;;
 esac
 exit 0
@@ -220,3 +222,4 @@ exit 0
     assert json.loads((config/'remote.json').read_text())['host_id'] == uid
     (config/'.mode').unlink()  # Previous installer interrupted before its marker.
     assert 'existing vmagent' in call(LOCAL,'up','--mode','hybrid',env={**env,'LIVE_AGENT':'1'}).stderr
+    assert 'Detected Hybrid' in call(LOCAL,'up',env={**env,'LIVE_HYBRID':'1'}).stderr

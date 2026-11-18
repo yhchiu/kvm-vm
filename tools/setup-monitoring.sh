@@ -220,11 +220,24 @@ lock_monitoring() {
 }
 
 check_writer() {
-  local wanted=$1 service ids
+  local wanted=$1 service ids container mounts directory
+  directory=$(realpath "$CONFIG_DIR")
+  local scope="label=com.docker.compose.project.working_dir=$directory"
   if [[ $wanted == agent ]]; then service=prometheus; else service=vmagent; fi
-  ids=$(docker ps -aq --filter "label=com.docker.compose.project.working_dir=$(realpath "$CONFIG_DIR")" \
-    --filter "label=com.docker.compose.service=$service") || die 'Cannot inspect monitoring containers'
+  ids=$(docker ps -aq --filter "$scope" --filter "label=com.docker.compose.service=$service") ||
+    die 'Cannot inspect monitoring containers'
   [[ -z $ids ]] || die "Stop the existing $service deployment before starting $wanted"
+  if [[ $wanted == local ]]; then
+    ids=$(docker ps -aq --filter "$scope" --filter "label=com.docker.compose.service=prometheus") ||
+      die 'Cannot inspect Prometheus containers'
+    for container in $ids; do
+      mounts=$(docker inspect --format '{{range .Mounts}}{{println .Source}}{{end}}' "$container") ||
+        die 'Cannot inspect Prometheus config mount'
+      if grep -Fxq -- "$directory/prometheus-hybrid.yml" <<< "$mounts"; then
+        die 'Detected Hybrid Prometheus. Recover with up --mode hybrid before using local.'
+      fi
+    done
+  fi
 }
 
 # The remote installer shares the same lock and local Grafana/TSDB setup.
@@ -279,6 +292,7 @@ case "$COMMAND" in
     require_root
     require_installed_config
     check_docker
+    check_writer local
     compose down # preserve named data volumes
     if [[ -f "$SYSTEMD_DIR/$UNIT_NAME" ]]; then
       systemctl disable --now "$UNIT_NAME"
