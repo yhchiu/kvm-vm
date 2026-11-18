@@ -668,16 +668,21 @@ WantedBy=multi-user.target
         xml = '''<domain type="kvm"><name>e2e-web01</name><memory unit="MiB">256</memory>
 <vcpu>1</vcpu><os><type arch="x86_64">hvm</type><boot dev="hd"/></os>
 <devices><emulator>/usr/bin/qemu-system-x86_64</emulator>
-<graphics type="none"/></devices></domain>'''
+</devices></domain>'''
         for host in HOSTS:
             kvm = self.ssh(host, 'test -c /dev/kvm\n', check=False)
             if kvm.returncode != 0:
                 raise LabError(f'{host}: Nested KVM unavailable; same-name running VM E2E cannot pass')
             self.scp_bytes(host, xml.encode(), '/tmp/kvm-lab-guest.xml')
-            self.ssh(host, 'sudo virsh define /tmp/kvm-lab-guest.xml\n'
-                           'sudo virsh start e2e-web01 || sudo virsh domstate e2e-web01\n')
-        self.until(lambda: len({x.get('metric', {}).get('host_id') for x in
-                  self.query('kvm_vm_domain_vcpus{vm="e2e-web01"}')}) == 2,
+            self.ssh(host, 'sudo virsh define /tmp/kvm-lab-guest.xml\n')
+            state_cmd = 'sudo env LC_ALL=C virsh domstate e2e-web01'
+            if self.exec_guest(host, state_cmd) != 'running':
+                self.ssh(host, 'sudo virsh start e2e-web01\n')
+            if self.exec_guest(host, state_cmd) != 'running':
+                raise LabError(f'{host}: nested e2e-web01 is not running')
+        expected = {self.data['credentials'][host]['host_id'] for host in HOSTS}
+        self.until(lambda: {x['metric'].get('host_id') for x in
+                  self.query('kvm_vm_domain_vcpus{vm="e2e-web01"}')} == expected,
                   150, 'same-name nested VMs separated by host_id')
 
     def fault(self, host, what, *, loss=1, latency=150, rate='1mbit'):

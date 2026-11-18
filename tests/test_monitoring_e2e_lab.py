@@ -243,3 +243,23 @@ def test_replay_requires_a_sample_recorded_during_outage(tmp_path, monkeypatch,
     else:
         with pytest.raises(pytest.fail.Exception, match='no replayed sample'):
             t.scenario_disconnect_recover()
+
+
+def test_same_name_guests_require_headless_domains_and_running_state(tmp_path, monkeypatch):
+    t = lab.Lab(args(tmp_path, monkeypatch))
+    t.data = {'credentials': {h: {'host_id': h} for h in lab.HOSTS}}
+    t.ssh = mock.Mock(return_value=subprocess.CompletedProcess([], 0, '', ''))
+    t.scp_bytes = mock.Mock()
+    t.exec_guest = mock.Mock(return_value='shut off')
+    t.until = mock.Mock()
+    with pytest.raises(lab.LabError, match='running'):
+        t.scenario_same_name_vms()
+    xml = ET.fromstring(t.scp_bytes.call_args.args[1])
+    assert xml.find('./devices/graphics') is None
+    t.exec_guest.return_value = 'running'
+    t.query = mock.Mock(return_value=[{'metric': {'host_id': h}} for h in lab.HOSTS])
+    t.until = lambda check, *args: check() or pytest.fail('wrong hosts')
+    t.scenario_same_name_vms()
+    t.query.return_value = [{'metric': {'host_id': 'host-a'}}, {'metric': {'host_id': 'unrelated'}}]
+    with pytest.raises(pytest.fail.Exception, match='wrong hosts'):
+        t.scenario_same_name_vms()
