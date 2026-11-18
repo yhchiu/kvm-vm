@@ -185,3 +185,18 @@ def test_ownership_guards_refuse_replaced_domain_and_network(tmp_path, monkeypat
 def test_documented_lab_entrypoint_runs_plan():
     result = subprocess.run([str(E2E / 'lab.sh'), 'plan'], capture_output=True, check=True)
     assert len(json.loads(result.stdout)['domains']) == 5
+
+
+def test_qemu_disk_directory_is_separate_from_private_state(tmp_path, monkeypatch):
+    t = lab.Lab(args(tmp_path, monkeypatch))
+    t.data = {'separate_images': True}
+    t.write_state()
+    assert t.image_dir.parent == t.home.parent
+    assert t.image_dir != t.home
+    t.create_image_dir()
+    assert t.image_dir.stat().st_mode & 0o777 == 0o711
+    assert t.home.stat().st_mode & 0o777 == 0o700
+    with pytest.raises(FileExistsError):
+        t.create_image_dir()
+    t.data = {}  # Existing deployments keep their original cleanup path.
+    assert t.image_dir == t.home

@@ -139,6 +139,20 @@ class Lab:
         self.uri = os.environ.get('KVM_VM_E2E_LIBVIRT_URI', 'qemu:///system')
         self.data = None
 
+    @property
+    def image_dir(self):
+        if self.data and self.data.get('separate_images'):
+            directory = self.home.with_name(self.lab_id + '.images')
+            if directory.is_symlink():
+                raise LabError('Refusing symlink in lab image directory')
+            return directory
+        return self.home
+
+    def create_image_dir(self):
+        # QEMU needs traversal. The manifest, credentials and keys stay in home.
+        self.image_dir.mkdir(mode=0o711)
+        self.image_dir.chmod(0o711)
+
     def read_state(self):
         if self.home.is_symlink() or self.manifest.is_symlink():
             raise LabError('Refusing symbolic link in lab state directory')
@@ -169,7 +183,7 @@ class Lab:
 
     def assert_owned_domain(self, name):
         xml = ET.fromstring(self.virsh('dumpxml', name).stdout)
-        expected = str(self.home / (name + '.qcow2'))
+        expected = str(self.image_dir / (name + '.qcow2'))
         files = [el.attrib.get('file') for el in xml.findall('./devices/disk/source')]
         if expected not in files:
             raise LabError(f'Refusing unexpected domain {name}: lab overlay disk not attached')
@@ -233,7 +247,8 @@ class Lab:
                          'image': str(image.resolve()), 'created': now(),
                          'credentials': {h: {'host_id': str(uuid.uuid4()),
                                              'password': secrets.token_urlsafe(24)} for h in HOSTS},
-                         'bootstrapped': False}
+                         'bootstrapped': False, 'separate_images': True}
+            self.create_image_dir()
             self.write_state()
         for name, cfg in topo(self.lab_id)['networks'].items():
             if self.is_defined('net', name):
@@ -254,8 +269,8 @@ class Lab:
             if self.is_defined('domain', name):
                 self.assert_owned_domain(name)
                 continue
-            disk = self.home / f'{name}.qcow2'
-            seed = self.home / f'{name}-seed.img'
+            disk = self.image_dir / f'{name}.qcow2'
+            seed = self.image_dir / f'{name}-seed.img'
             if disk.exists() or seed.exists():
                 # Manifest ownership was established before creation; a partial
                 # virt-install failure may leave only lab-owned local files.
@@ -270,6 +285,8 @@ class Lab:
             meta.write_text(f'instance-id: {name}\nlocal-hostname: {node}\n')
             net.write_text(cloud_network(node, self.lab_id))
             run(['cloud-localds', '--network-config', str(net), str(seed), str(user), str(meta)])
+            disk.chmod(0o600)
+            seed.chmod(0o600)
             v = ['virt-install', '--connect', self.uri, '--name', name,
                  '--memory', str(info['ram']), '--vcpus', str(info['vcpus']),
                  '--cpu', 'host-passthrough', '--import', '--os-variant', 'generic',
@@ -819,12 +836,14 @@ sudo tc qdisc del dev wan0 root 2>/dev/null || true
         for node in NODES:
             name = domain_name(self.lab_id, node)
             for suffix in ('.qcow2', '-seed.img'):
-                (self.home / (name + suffix)).unlink(missing_ok=True)
+                (self.image_dir / (name + suffix)).unlink(missing_ok=True)
         self.data['bootstrapped'] = False
         (self.home / 'known_hosts').unlink(missing_ok=True)
         self.write_state()
         if purge:
             # Do not follow symlinks and never delete the source cloud image.
+            if self.image_dir != self.home:
+                self.image_dir.rmdir()
             shutil.rmtree(self.home)
         print('Lab domains and networks removed; diagnostics ' + ('purged' if purge else 'preserved'))
 
