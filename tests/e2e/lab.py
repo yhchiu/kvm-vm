@@ -669,21 +669,31 @@ WantedBy=multi-user.target
         host = 'host-b'
         before = self.exec_guest(host, 'sudo cat /etc/kvm-vm/monitoring/remote.json')
         config = '/opt/kvm-vm/tools/setup-monitoring.sh'
+        uid = json.loads(before)['host_id']
         try:
             self.exec_guest(host, f'sudo {config} down --mode hybrid', timeout=180)
             self.exec_guest(host, f'sudo {config} up --mode agent', timeout=900)
-            self.until(lambda: self.exec_guest(host, 'sudo cat /etc/kvm-vm/monitoring/.mode') == 'agent',
-                       90, 'temporary Agent mode')
+            self.wait_for_writer(host, 'agent', uid)
         finally:
-            mode = self.exec_guest(host,
-                'sudo cat /etc/kvm-vm/monitoring/.mode 2>/dev/null || true')
+            mode = self.exec_guest(host, 'sudo cat /etc/kvm-vm/monitoring/.mode.pending '
+                                   '2>/dev/null || sudo cat /etc/kvm-vm/monitoring/.mode 2>/dev/null || true')
             if mode == 'agent':
                 self.exec_guest(host, f'sudo {config} down --mode agent', timeout=180)
             self.exec_guest(host, f'sudo {config} up --mode hybrid', timeout=900)
         after = self.exec_guest(host, 'sudo cat /etc/kvm-vm/monitoring/remote.json')
-        if json.loads(before)['host_id'] != json.loads(after)['host_id']:
+        if uid != json.loads(after)['host_id']:
             raise LabError('Host UUID changed during Agent/Hybrid mode switch')
-        self.scenario_metrics()
+        self.wait_for_writer(host, 'hybrid', uid)
+
+    def wait_for_writer(self, host, mode, uid):
+        since = int(self.exec_guest(host, 'date +%s'))
+        services = self.exec_guest(host, """sudo docker ps --format '{{.Label "com.docker.compose.service"}}'""")
+        writers = [s for s in services.splitlines() if s in ('vmagent', 'prometheus')]
+        if writers != ['vmagent' if mode == 'agent' else 'prometheus']:
+            raise LabError(f'{host}: unexpected writers in {mode} mode: {writers}')
+        metric = f'kvm_vm_collector_success{{host_id="{uid}"}}'
+        self.until(lambda: bool(self.query(f'(timestamp({metric}) > {since}) and ({metric} == 1)')),
+                   180, f'{host} fresh successful sample from {mode}')
 
     def scenario_metrics(self):
         for host in HOSTS:

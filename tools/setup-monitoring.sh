@@ -199,6 +199,7 @@ up() {
   command -v virsh >/dev/null || die "virsh (libvirt-clients) is required."
   command -v systemctl >/dev/null || die "systemd is required for the local exporter service."
   check_docker
+  check_writer local
   seed_config
   start_exporter
   compose up -d
@@ -208,6 +209,26 @@ up() {
   echo 'Grafana initial login: sudo ./tools/setup-monitoring.sh credentials'
   echo 'Remote access: use an SSH tunnel or an authenticated HTTPS reverse proxy.'
 }
+
+# Hold a stable directory inode across each modifying operation.
+lock_monitoring() {
+  [[ ! -L $CONFIG_DIR ]] || die "Refusing symlink monitoring directory"
+  mkdir -p -- "$CONFIG_DIR"
+  [[ -d $CONFIG_DIR ]] || die "Invalid monitoring directory"
+  exec {monitor_lock_fd}<"$CONFIG_DIR"
+  flock -n "$monitor_lock_fd" || die "Another monitoring operation is in progress"
+}
+
+check_writer() {
+  local wanted=$1 service ids
+  if [[ $wanted == agent ]]; then service=prometheus; else service=vmagent; fi
+  ids=$(docker ps -aq --filter "label=com.docker.compose.project.working_dir=$(realpath "$CONFIG_DIR")" \
+    --filter "label=com.docker.compose.service=$service") || die 'Cannot inspect monitoring containers'
+  [[ -z $ids ]] || die "Stop the existing $service deployment before starting $wanted"
+}
+
+# The remote installer shares the same lock and local Grafana/TSDB setup.
+if [[ ${BASH_SOURCE[0]} != "$0" ]]; then return; fi
 
 # Route only explicitly selected remote modes to the separate installer.
 # Keep the original no-argument local bootstrap behavior untouched.
@@ -227,8 +248,13 @@ if [[ $mode != local ]]; then
 fi
 set -- "${args[@]}"
 COMMAND="${1:-up}"
-if [[ -f "$CONFIG_DIR/.mode" ]]; then
-  active_mode="$(cat "$CONFIG_DIR/.mode")"
+case "$COMMAND" in
+  up|install|start|down|stop|update) require_root; lock_monitoring ;;
+esac
+if [[ -f "$CONFIG_DIR/.mode" || -f "$CONFIG_DIR/.mode.pending" ]]; then
+  marker="$CONFIG_DIR/.mode"
+  [[ ! -f "$CONFIG_DIR/.mode.pending" ]] || marker="$CONFIG_DIR/.mode.pending"
+  active_mode="$(cat "$marker")"
   case "$COMMAND" in
     up|install|start|update|down|stop|render)
       die "Monitoring is configured as $active_mode. Use --mode $active_mode, or stop that mode before using local." ;;
@@ -240,6 +266,7 @@ case "$COMMAND" in
   render)
     [[ $# -eq 2 && -n $2 ]] || die "Usage: $0 render DIRECTORY"
     CONFIG_DIR="$2"
+    lock_monitoring
     command -v python3 >/dev/null || die 'python3 is required.'
     seed_config
     echo "Rendered configuration: $CONFIG_DIR (no services were started)"
@@ -279,6 +306,7 @@ case "$COMMAND" in
     require_root
     require_installed_config
     check_docker
+    check_writer local
     compose pull
     up
     ;;

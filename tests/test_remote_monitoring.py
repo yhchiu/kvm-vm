@@ -177,3 +177,46 @@ def test_invalid_remote_configuration_never_persists_identity(tmp_path):
     cfg = tmp_path / 'managed'
     assert call(CONFIGURE, cfg, env=env).returncode != 0
     assert not (cfg / 'remote.json').exists()
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason='root-only deployment entry point')
+def test_interrupted_writer_deployment_reconciles_on_retry(tmp_path):
+    import fcntl
+
+    bin_dir = tmp_path / 'bin'
+    bin_dir.mkdir()
+    config = tmp_path / 'config'
+    env = remote_env(tmp_path)
+    env.update(PATH=f'{bin_dir}:{env["PATH"]}', KVM_VM_MONITORING_DIR=str(config),
+               KVM_VM_MONITORING_CLI=str(bin_dir/'kvm-vm'),
+               KVM_VM_MONITORING_SYSTEMD_DIR=str(tmp_path/'units'))
+    for name in ('virsh', 'systemctl', 'kvm-vm'):
+        stub = bin_dir / name
+        stub.write_text('#!/bin/sh\nexit 0\n')
+        stub.chmod(0o755)
+    docker = bin_dir / 'docker'
+    docker.write_text("""#!/bin/sh
+case "$*" in
+  *' up -d') if [ -n "$INTERRUPT" ]; then kill -KILL "$PPID"; fi ;;
+  'ps '*service=vmagent) if [ -n "$LIVE_AGENT" ]; then echo container-id; fi ;;
+esac
+exit 0
+""")
+    docker.chmod(0o755)
+    assert call(LOCAL,'up','--mode','agent',env={**env,'INTERRUPT':'1'}).returncode != 0
+    assert (config/'.mode.pending').read_text().strip() == 'agent'
+    uid = json.loads((config/'remote.json').read_text())['host_id']
+    for args in [('up',), ('up','--mode','hybrid')]:
+        assert call(LOCAL,*args,env=env).returncode != 0
+    lock = os.open(config, os.O_RDONLY)
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        assert 'operation is in progress' in call(LOCAL,'up','--mode','agent',env=env).stderr
+    finally:
+        os.close(lock)
+    assert call(LOCAL,'up','--mode','agent',env=env).returncode == 0
+    assert not (config/'.mode.pending').exists()
+    assert (config/'.mode').read_text().strip() == 'agent'
+    assert json.loads((config/'remote.json').read_text())['host_id'] == uid
+    (config/'.mode').unlink()  # Previous installer interrupted before its marker.
+    assert 'existing vmagent' in call(LOCAL,'up','--mode','hybrid',env={**env,'LIVE_AGENT':'1'}).stderr

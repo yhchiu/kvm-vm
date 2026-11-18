@@ -3,6 +3,7 @@
 set -euo pipefail
 umask 077
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT/tools/setup-monitoring.sh"
 MODE="${1:-}"
 shift || true
 COMMAND="${1:-up}"
@@ -18,7 +19,11 @@ check_docker() {
   docker compose version >/dev/null 2>&1 || fail 'Docker Compose v2 unavailable'
   docker info >/dev/null 2>&1 || fail 'Cannot connect to Docker Engine'
 }
-current_mode() { [[ ! -f "$CONFIG_DIR/.mode" ]] || cat "$CONFIG_DIR/.mode"; }
+current_mode() {
+  if [[ -f $CONFIG_DIR/.mode.pending ]]; then cat "$CONFIG_DIR/.mode.pending"
+  elif [[ -f $CONFIG_DIR/.mode ]]; then cat "$CONFIG_DIR/.mode"
+  fi
+}
 ensure_mode() {
   local active
   active="$(current_mode)"
@@ -27,9 +32,6 @@ ensure_mode() {
 }
 render() {
   python3 "$ROOT/tools/monitoring/configure-remote.py" "$CONFIG_DIR"
-}
-local_compose() {
-  docker compose --project-directory "$CONFIG_DIR" -f "$CONFIG_DIR/compose.yaml" "$@"
 }
 remote_compose() {
   if [[ $MODE == agent ]]; then
@@ -56,43 +58,45 @@ case "$COMMAND" in
   render)
     [[ $# -eq 2 && -n $2 ]] || fail 'render requires a destination directory'
     CONFIG_DIR="$2"
+    lock_monitoring
     render
     ;;
-  up|install|start)
+  up|install|start|update)
     require_root
+    lock_monitoring
     check_docker
     ensure_mode
-    if [[ $MODE == agent && -z $(current_mode) && -e "$CONFIG_DIR/compose.yaml" ]]; then
-      # Never silently keep local Prometheus running while switching to agent.
-      if [[ -n $(local_compose ps --status running -q) ]]; then
-        fail 'Local Prometheus/Grafana is running. Stop it with local down before switching to agent.'
-      fi
+    if [[ $COMMAND == update && $(current_mode) != "$MODE" ]]; then
+      fail "$MODE mode is not active"
     fi
+    check_writer "$MODE"
     render
-    if [[ $MODE == hybrid && -z $(current_mode) ]]; then
-      # Reuse the native local bootstrap. It seeds Grafana and the local TSDB.
-      "$ROOT/tools/setup-monitoring.sh" up
-    else
-      "$ROOT/tools/monitoring/ensure-exporter.sh"
+    if [[ $MODE == hybrid ]]; then seed_config; fi
+    if [[ $COMMAND == update ]]; then remote_compose pull; fi
+    # Keep the intended mode through a failed or interrupted Compose operation.
+    printf '%s\n' "$MODE" > "$CONFIG_DIR/.mode.new"
+    mv -f "$CONFIG_DIR/.mode.new" "$CONFIG_DIR/.mode.pending"
+    if [[ $MODE == hybrid ]]; then start_exporter
+    else "$ROOT/tools/monitoring/ensure-exporter.sh"
     fi
     if [[ ${KVM_VM_REMOTE_RECONFIGURE:-0} == 1 ]]; then
       remote_compose up -d --force-recreate
     else
       remote_compose up -d
     fi
-    printf '%s\n' "$MODE" > "$CONFIG_DIR/.mode"
-    chmod 0600 "$CONFIG_DIR/.mode"
+    mv -f "$CONFIG_DIR/.mode.pending" "$CONFIG_DIR/.mode"
     echo "Running in $MODE mode; host identity is stored in $CONFIG_DIR/remote.json."
     ;;
   down|stop)
     require_root
+    lock_monitoring
     [[ $(current_mode) == "$MODE" ]] || fail "No active $MODE deployment in $CONFIG_DIR"
     check_docker
     remote_compose down # NEVER delete named volumes
-    rm -f "$CONFIG_DIR/.mode"
     if [[ -f $SYSTEMD_DIR/$UNIT_NAME ]]; then
       systemctl disable --now "$UNIT_NAME"
     fi
+    rm -f "$CONFIG_DIR/.mode" "$CONFIG_DIR/.mode.pending"
     ;;
   status)
     require_root
@@ -106,13 +110,6 @@ case "$COMMAND" in
     [[ $(current_mode) == "$MODE" ]] || fail "$MODE mode is not active"
     check_docker
     remote_compose logs -f --tail=100
-    ;;
-  update)
-    require_root
-    [[ $(current_mode) == "$MODE" ]] || fail "$MODE mode is not active"
-    check_docker
-    remote_compose pull
-    "$ROOT/tools/setup-remote-monitoring.sh" "$MODE" up
     ;;
   *) fail "Unknown command: $COMMAND" ;;
 esac
