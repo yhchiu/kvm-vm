@@ -275,3 +275,15 @@ def test_lab_https_probes_can_use_ca_in_private_config(tmp_path, monkeypatch):
     t.ssh = mock.Mock(return_value=subprocess.CompletedProcess([], 1, 'blackhole 10.10.1.0/24', ''))
     t.scenario_auth()
     t.scenario_connectivity()
+
+
+def test_repeat_same_name_scenario_only_observes_running_guests(tmp_path, monkeypatch):
+    t = lab.Lab(args(tmp_path, monkeypatch))
+    t.data = {'credentials': {h: {'host_id': h} for h in lab.HOSTS}}
+    t.ssh = mock.Mock(return_value=subprocess.CompletedProcess([], 0, '', ''))
+    t.exec_guest = lambda host, cmd: 'e2e-web01' if 'list --all' in cmd else 'running'
+    t.scp_bytes = mock.Mock()
+    t.until = mock.Mock()
+    t.scenario_same_name_vms()
+    t.scp_bytes.assert_not_called()
+    assert all('virsh define' not in call.args[1] for call in t.ssh.call_args_list)

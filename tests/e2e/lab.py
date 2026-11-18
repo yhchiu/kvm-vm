@@ -673,8 +673,10 @@ WantedBy=multi-user.target
             kvm = self.ssh(host, 'test -c /dev/kvm\n', check=False)
             if kvm.returncode != 0:
                 raise LabError(f'{host}: Nested KVM unavailable; same-name running VM E2E cannot pass')
-            self.scp_bytes(host, xml.encode(), '/tmp/kvm-lab-guest.xml')
-            self.ssh(host, 'sudo virsh define /tmp/kvm-lab-guest.xml\n')
+            defined = self.exec_guest(host, 'sudo virsh list --all --name').splitlines()
+            if 'e2e-web01' not in defined:
+                self.scp_bytes(host, xml.encode(), '/tmp/kvm-lab-guest.xml')
+                self.ssh(host, 'sudo virsh define /tmp/kvm-lab-guest.xml\n')
             state_cmd = 'sudo env LC_ALL=C virsh domstate e2e-web01'
             if self.exec_guest(host, state_cmd) != 'running':
                 self.ssh(host, 'sudo virsh start e2e-web01\n')
