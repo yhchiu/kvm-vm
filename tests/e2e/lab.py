@@ -162,6 +162,15 @@ def topo(lab_id):
     }
 
 
+def generate_ca(certs):
+    run(['openssl', 'req', '-x509', '-newkey', 'rsa:3072', '-nodes',
+         '-sha256', '-days', '7', '-subj', '/CN=KVM E2E Lab CA',
+         '-addext', 'basicConstraints=critical,CA:TRUE',
+         '-addext', 'keyUsage=critical,keyCertSign,cRLSign',
+         '-keyout', certs / 'ca.key', '-out', certs / 'ca.pem'])
+    (certs / 'ca.key').chmod(0o600)
+
+
 class Lab:
     def __init__(self, args):
         self.args = args
@@ -462,10 +471,7 @@ WantedBy=multi-user.target
         ca, ca_key = certs / 'ca.pem', certs / 'ca.key'
         cert, key = certs / 'server.pem', certs / 'server.key'
         if not ca.exists():
-            run(['openssl', 'req', '-x509', '-newkey', 'rsa:3072', '-nodes',
-                 '-sha256', '-days', '7', '-subj', '/CN=KVM E2E Lab CA',
-                 '-addext', 'basicConstraints=critical,CA:TRUE',
-                 '-keyout', str(ca_key), '-out', str(ca)])
+            generate_ca(certs)
             run(['openssl', 'req', '-newkey', 'rsa:2048', '-nodes',
                  '-subj', '/CN=kvm-e2e-central', '-keyout', str(key),
                  '-out', str(certs / 'server.csr')])

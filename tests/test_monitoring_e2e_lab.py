@@ -338,3 +338,13 @@ def test_recovery_vm_is_opt_in_and_refuses_an_unowned_name(tmp_path, monkeypatch
 def test_standalone_drills_validate_lab_id_before_state_access():
     with pytest.raises(lab.LabError,match='Invalid lab ID'):
         lab.owned_lab('../unrelated')
+
+
+def test_generated_chain_passes_strict_server_verification(tmp_path, monkeypatch):
+    t = lab.Lab(args(tmp_path, monkeypatch))
+    t.home.mkdir()
+    t.generate_certs()
+    certs = t.home / 'certs'
+    subprocess.run(['openssl', 'verify', '-x509_strict', '-purpose', 'sslserver',
+                    '-verify_ip', '172.30.0.10', '-CAfile', certs / 'ca.pem',
+                    certs / 'server.pem'], check=True)
