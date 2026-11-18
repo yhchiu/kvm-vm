@@ -351,7 +351,8 @@ class Lab:
         self.apt(node, ['docker.io', *extra])
         self.ssh(node, '''if ! docker compose version >/dev/null 2>&1; then
   sudo DEBIAN_FRONTEND=noninteractive apt-get install -y docker-compose-v2 ||
-    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y docker-compose-plugin
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y docker-compose-plugin ||
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y docker-compose
 fi
 sudo systemctl enable --now docker
 sudo docker compose version

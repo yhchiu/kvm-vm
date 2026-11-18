@@ -200,3 +200,25 @@ def test_qemu_disk_directory_is_separate_from_private_state(tmp_path, monkeypatc
         t.create_image_dir()
     t.data = {}  # Existing deployments keep their original cleanup path.
     assert t.image_dir == t.home
+
+
+def test_debian_compose_package_installs_working_cli_plugin(tmp_path, monkeypatch):
+    import os
+    # Debian 13 publishes its v2 CLI plugin as docker-compose.
+    stubs = {
+        'sudo': '[ "$1" != DEBIAN_FRONTEND=noninteractive ] || shift\nexec "$@"',
+        'apt-get': '[ "$*" = "install -y docker-compose" ] && touch "$PLUGIN"',
+        'docker': '[ "$*" = "compose version" ] && test -f "$PLUGIN"',
+        'systemctl': 'exit 0',
+    }
+    for name, body in stubs.items():
+        path = tmp_path / name
+        path.write_text('#!/bin/sh\n' + body + '\n')
+        path.chmod(0o755)
+    monkeypatch.setenv('PATH', str(tmp_path) + ':' + os.environ['PATH'])
+    monkeypatch.setenv('PLUGIN', str(tmp_path / 'plugin-installed'))
+    t = lab.Lab(args(tmp_path, monkeypatch))
+    t.apt = mock.Mock()
+    t.ssh = lambda node, script, timeout: subprocess.run(['bash', '-se'], input=script,
+                                                           text=True, check=True)
+    t.docker_packages('central', [])
