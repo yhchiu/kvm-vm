@@ -22,3 +22,12 @@ Evidence archive SHA-256: `8550ea91d99cfe31bdd3cf038c206095e75046233b611d0131c10
 ## Phases 3–4 (second batch)
 
 See [security and reliability guide](../../monitoring-security-reliability.md) for the operator-managed writer lifecycle, optional dedicated ingress, local diagnostics, central self-monitoring, independent observer and acceptance drills. Keep the legacy deployment and customer-readiness BLOCKED. Do not treat a Host UUID binding or test ingress as tenant authorization. The real storage binding drill, extended outage/overflow/status-code experiments and offsite recovery remain live acceptance gates. No backend selection or production customer access in this phase.
+
+## Phase 5 (third batch)
+
+Implement the backend-independent synthetic acceptance contract and live HTTP
+adapter in `tests/tenancy/`. Keep existing E2E drills unchanged. Self-test
+against intentional leaks, silent drops and missing evidence. Provisioning
+actual candidate gateways/storage is Phase 6; no candidate has passed merely
+because the contract self-tests pass. Customer readiness remains BLOCKED.
+See [test protocol](../../../tests/tenancy/README.md).

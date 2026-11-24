@@ -141,3 +141,7 @@ two-host Backup and Restore exercise. It uses the `prepare_*.py` and
 See [the isolated multi-NAT E2E Lab](e2e/README.md) and [繁體中文說明](e2e/README.zh-TW.md). It provisions five disposable VMs and must be explicitly enabled on a KVM host.
 
 Tenant inventory ownership and fail-closed customer access are tested in `test_monitoring_tenants.py`; guest/customer data permissions remain intentionally unimplemented.
+
+## Tenant security acceptance (Phase 5)
+
+See [tenant contract](tenancy/README.md) for the opt-in live HTTP harness and offline self-tests. A passing self-test is not a live backend isolation result.

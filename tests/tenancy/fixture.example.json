@@ -1,0 +1,28 @@
+{
+  "disposable": false,
+  "backend": "vm-cluster",
+  "ca_file": "/absolute/path/lab-ca.pem",
+  "credentials_file": "/absolute/path/credentials.json",
+  "control_command": ["/absolute/path/to/lab-fixture-controller"],
+  "http_timeout": 10,
+  "endpoints": {
+    "write": "https://write.lab.invalid",
+    "read": "https://read.lab.invalid",
+    "oracle_a": "http://127.0.0.1:19001",
+    "oracle_b": "http://127.0.0.1:19002",
+    "oracle_internal": "http://127.0.0.1:19003"
+  },
+  "attacks": {
+    "read": [
+      {"path": "/select/1002/prometheus/api/v1/query"},
+      {"path": "/select/multitenant/prometheus/api/v1/query"},
+      {"headers": {"X-Scope-OrgID": "1002"}}
+    ],
+    "write": [
+      {"path": "/insert/1002/prometheus/api/v1/write"},
+      {"path": "/insert/multitenant/prometheus/api/v1/write"},
+      {"headers": {"X-Scope-OrgID": "1002"}},
+      {"params": {"extra_label": "tenant_id=1002"}}
+    ]
+  }
+}
