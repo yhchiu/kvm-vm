@@ -252,3 +252,5 @@ After configuring NGINX TLS/authentication and deploying a Host, verify:
 The default regression suite runs offline. The dedicated dual-NAT lab exercises real KVM guests, Docker, HTTPS writes, and independent webhook delivery. The development-only tenant ingress stays separate from this shared admin deployment. See the [lab instructions](../tests/e2e/README.md) and [recovery and handoff guide](plans/20261118_central-hardening/README.md).
 
 See [Central VM and tenant registry](monitoring-registry.md) for operator-only ownership metadata.
+
+- [Managed writer lifecycle, delivery diagnostics, independent observer and resilience drills (phases 3–4)](monitoring-security-reliability.md).

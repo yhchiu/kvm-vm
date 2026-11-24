@@ -216,3 +216,5 @@ sudo ./tools/setup-central-monitoring.sh reload
 **待實機驗證：** Docker 實際啟動、跨 NAT 的 TLS Remote Write、Inventory 查詢、Host 斷線及恢復的告警、SMTP／Webhook 實際發送、Grafana 圖表。離線測試通過不代表以上端到端功能已驗證。
 
 管理員 VM 與租戶歸屬請見 [中央 Registry](monitoring-registry.zh-TW.md)。
+
+- [Writer 憑證生命週期、傳輸診斷、獨立觀測器與故障演練（Phase 3、4）](monitoring-security-reliability.zh-TW.md).

@@ -18,3 +18,7 @@ The supplied `central-e2e-20261118-dbc99c8.tar.gz` contains `E2E_REPORT.md`, `re
 Run offline unit and regression tests, shell syntax, patch apply/tree verification. Real libvirt/Docker/NAT tests must be rerun on the dedicated lab; do not claim previous lab results validate new code. Follow tickets in `issues/`.
 
 Evidence archive SHA-256: `8550ea91d99cfe31bdd3cf038c206095e75046233b611d0131c10b20bdf9b188`.
+
+## Phases 3–4 (second batch)
+
+See [security and reliability guide](../../monitoring-security-reliability.md) for the operator-managed writer lifecycle, optional dedicated ingress, local diagnostics, central self-monitoring, independent observer and acceptance drills. Keep the legacy deployment and customer-readiness BLOCKED. Do not treat a Host UUID binding or test ingress as tenant authorization. The real storage binding drill, extended outage/overflow/status-code experiments and offsite recovery remain live acceptance gates. No backend selection or production customer access in this phase.
