@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "metrics": {
+    "cpu_cores": {"source": "cpu_time_seconds_total", "kind": "rate", "unit": "cores"},
+    "cpu_ratio": {"source": "cpu_time_seconds_total", "kind": "cpu_ratio", "unit": "ratio"},
+    "vcpus": {"source": "vcpus", "kind": "gauge", "unit": "count"},
+    "memory_assigned": {"source": "memory_assigned_bytes", "kind": "gauge", "unit": "bytes"},
+    "memory_guest_used": {"source": "memory_guest_used_bytes", "kind": "gauge", "unit": "bytes"},
+    "disk_capacity": {"source": "disk_capacity_bytes", "kind": "gauge", "unit": "bytes", "device": "disk"},
+    "disk_read": {"source": "disk_read_bytes_total", "kind": "rate", "unit": "bytes/s", "device": "disk"},
+    "disk_write": {"source": "disk_write_bytes_total", "kind": "rate", "unit": "bytes/s", "device": "disk"},
+    "disk_read_iops": {"source": "disk_read_operations_total", "kind": "rate", "unit": "ops/s", "device": "disk"},
+    "disk_write_iops": {"source": "disk_write_operations_total", "kind": "rate", "unit": "ops/s", "device": "disk"},
+    "network_receive": {"source": "network_receive_bytes_total", "kind": "rate", "unit": "bytes/s", "device": "interface"},
+    "network_transmit": {"source": "network_transmit_bytes_total", "kind": "rate", "unit": "bytes/s", "device": "interface"},
+    "network_receive_packets": {"source": "network_receive_packets_total", "kind": "rate", "unit": "packets/s", "device": "interface"},
+    "network_transmit_packets": {"source": "network_transmit_packets_total", "kind": "rate", "unit": "packets/s", "device": "interface"},
+    "network_receive_errors": {"source": "network_receive_errors_total", "kind": "rate", "unit": "errors/s", "device": "interface"},
+    "network_transmit_errors": {"source": "network_transmit_errors_total", "kind": "rate", "unit": "errors/s", "device": "interface"},
+    "network_receive_drops": {"source": "network_receive_dropped_packets_total", "kind": "rate", "unit": "packets/s", "device": "interface"},
+    "network_transmit_drops": {"source": "network_transmit_dropped_packets_total", "kind": "rate", "unit": "packets/s", "device": "interface"}
+  }
+}

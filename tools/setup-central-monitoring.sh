@@ -23,7 +23,7 @@ seed_config() {
   install -d -m 0700 "$CONFIG_DIR"
   [[ ! -L "$CONFIG_DIR/inventory" && ! -L "$CONFIG_DIR/alertmanager/secrets" ]] || fail 'Refusing symlink inventory/secrets directory'
   local file
-  for file in compose.yaml nginx-remote-write.example.conf nginx-managed-writers.example.conf \
+  for file in compose.yaml nginx-remote-write.example.conf nginx-managed-writers.example.conf nginx-panel-query.example.conf \
       grafana/provisioning/datasources/victoriametrics.yml \
       grafana/provisioning/dashboards/dashboards.yml \
       rules/rules.yml alertmanager/alertmanager.yml \
