@@ -44,11 +44,13 @@ unpartitioned Single backend or an operator-wide Grafana datasource.
 
 1. Implement **native tenant separation** in the storage/query layer, e.g.
    VictoriaMetrics Cluster with tenant-specific `vminsert`/`vmselect` APIs,
-   or strictly separate per-tenant backends. For this project we prefer the
-   cluster path when customer-facing access becomes a committed requirement.
-2. Bind each per-host credential to exactly one centrally registered `host_id`
-   and `tenant_id`. At an authenticated ingress, select the tenant-specific
-   write destination based on the **server-side credential mapping**. Reject
+   Grafana Mimir, or strictly separate per-tenant backends. Backend selection
+   is deferred until the shared acceptance suite and measured evaluation.
+2. Bind each per-host credential to exactly one centrally registered `host_id`.
+   A shared host can contain VMs owned by different tenants. At an authenticated
+   ingress, resolve each VM UUID and its time-bounded ownership from trusted
+   server-side policy before selecting the tenant-specific write destination.
+   Unassigned VMs and host-level metrics remain operator-only. Reject
    caller-supplied tenant selection and enforce host identity using an
    appropriate trusted relabeling / validation mechanism (or place each host
    in its own authenticated write pipeline). Do not rely on the received

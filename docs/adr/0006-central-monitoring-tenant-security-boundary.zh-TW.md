@@ -28,10 +28,11 @@
 ## 未來客戶登入的必要門檻
 
 1. 建立儲存／查詢層真正的租戶分離，例如 VictoriaMetrics **Cluster** 的
-   tenant-specific `vminsert`/`vmselect` 路徑，或每租戶獨立後端。
-2. 每台 Host 的驗證憑證由中央對應到 `host_id` 與 `tenant_id`，由**服務端**
-   決定寫入 Tenant，拒絕客戶自行指定目標 Tenant；針對 Host ID 另做可信
-   驗證或重標記，不能相信來源自行宣告的 `host_id`。
+   tenant-specific `vminsert`/`vmselect` 路徑、Grafana Mimir 或每租戶獨立後端。
+   待共用驗收測試與實測評估後才定案。
+2. 每台 Host 的驗證憑證由中央對應到 `host_id`。同一台 Host 可有多位租戶的 VM；
+   **服務端**須驗證 VM UUID 及採樣時間的歸屬，再決定寫入 Tenant。未分配 VM 與
+   Host 指標只供管理員使用；不得相信來源自行宣告的 `host_id` 或 `tenant_id`。
 3. 客戶 Grafana 的 datasource 必須由後端強制限定租戶，即使使用者自行送
    PromQL、列舉 Labels、呼叫 API、匯入 Dashboard 也不能取得他人資料。
 4. 管理員與客戶帳號／查詢權限分開；禁用可跨租戶查詢的無保護 API。
@@ -39,5 +40,5 @@
    API bypass、Token 過期／撤銷，以及資料移轉測試。
 
 這份 ADR **不代表** 客戶登入、真正 Tenant Isolation 已開發完成。
-現階段保留較簡單的 Single 儲存；客戶存取需求啟用前再引入需要的 Cluster
-元件與驗證流程，避免為純內部監控過度設計。
+現階段保留較簡單的 Single 儲存；客戶存取需求啟用前再選定隔離後端
+與驗證流程，避免為純內部監控過度設計。
