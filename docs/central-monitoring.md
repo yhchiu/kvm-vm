@@ -250,3 +250,5 @@ After configuring NGINX TLS/authentication and deploying a Host, verify:
 5. Trigger a controlled test alert to validate email/Webhook delivery and Alertmanager routing; do not mistake a configured receiver for verified delivery.
 
 The default regression suite runs offline. The dedicated dual-NAT lab exercises real KVM guests, Docker, HTTPS writes, and independent webhook delivery. The development-only tenant ingress stays separate from this shared admin deployment. See the [lab instructions](../tests/e2e/README.md) and [recovery and handoff guide](plans/20261118_central-hardening/README.md).
+
+See [Central VM and tenant registry](monitoring-registry.md) for operator-only ownership metadata.

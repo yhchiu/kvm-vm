@@ -77,6 +77,7 @@ case "$COMMAND" in
     cat <<'HELP'
 Usage: sudo ./tools/setup-central-monitoring.sh [up|reload|status|logs|update|down|credentials|enroll HOST]
        sudo ./tools/setup-central-monitoring.sh inventory [list|add UUID HOST SITE [--tenant ID]|set-tenant UUID ID|disable UUID|enable UUID|remove UUID]
+       sudo ./tools/setup-central-monitoring.sh registry --help  # operator-only VM/tenant metadata
        sudo ./tools/setup-central-monitoring.sh notifications webhook URL_FILE
        sudo ./tools/setup-central-monitoring.sh notifications email TO SMTP_HOST:PORT FROM SMTP_USER PASSWORD_FILE
        ./tools/setup-central-monitoring.sh customer-readiness  # safe preflight, fails closed
@@ -159,6 +160,12 @@ READINESS
       fail 'Tenant inventory template is not yet deployed: review sync-templates, then reload before assigning tenants.'
     fi
     python3 "$TEMPLATES/inventory/inventory.py" --file "$CONFIG_DIR/inventory/hosts.json" "$@"
+    ;;
+  registry)
+    require_root; require_config
+    [[ ! -L "$CONFIG_DIR" && ! -L "$CONFIG_DIR/inventory" && ! -L "$CONFIG_DIR/registry" ]] || fail "Refusing symlink registry location"
+    shift
+    python3 "$TEMPLATES/registry.py" --file "$CONFIG_DIR/registry/ownership.json" --hosts "$CONFIG_DIR/inventory/hosts.json" "$@"
     ;;
   notifications)
     require_root; require_config
