@@ -26,7 +26,7 @@ kvm-vm exporter [VM] [--managed] [--listen IPV4] [--port PORT]
 | `--listen` | `127.0.0.1` | IPv4 監聽位址；預設僅本機 |
 | `--port` | `9179` | HTTP 埠號 |
 | `--interval` | `5` | 背景採樣間隔，0.5–3600 秒 |
-| `--timeout` | `10` | 每次 `virsh` 查詢逾時，0.1–120 秒 |
+| `--timeout` | `10` | 整次採樣的 `virsh` 查詢逾時，0.1–120 秒 |
 | `--managed` | 不啟用 | 僅輸出有管理狀態檔的 VM |
 | `VM` | 全部 | 可選，指定單一 VM |
 
@@ -37,7 +37,7 @@ kvm-vm exporter [VM] [--managed] [--listen IPV4] [--port PORT]
 
 ## 指標
 
-所有 VM 指標都有 `vm` label；磁碟增加 `disk`，網路增加 `interface`。
+所有 VM 指標都有 `vm`（名稱）與 `vm_id`（libvirt Domain UUID）label；磁碟增加 `disk`，網路增加 `interface`。
 若資料不可用就不輸出該指標，不會把未知值當成 0。
 
 | 指標 | 類型 | 意義 |
@@ -84,12 +84,12 @@ Exporter 在**同一宿主機／同一網路命名空間**，可使用 `127.0.0.
 rate(kvm_vm_domain_cpu_time_seconds_total[5m]) / kvm_vm_domain_vcpus
 
 # 各 VM 的磁碟讀取／寫入 bytes/s
-sum by (vm) (rate(kvm_vm_domain_disk_read_bytes_total[5m]))
-sum by (vm) (rate(kvm_vm_domain_disk_write_bytes_total[5m]))
+sum by (host_id, vm_id, vm) (rate(kvm_vm_domain_disk_read_bytes_total[5m]))
+sum by (host_id, vm_id, vm) (rate(kvm_vm_domain_disk_write_bytes_total[5m]))
 
 # 各 VM 的網路接收／發送 bytes/s
-sum by (vm) (rate(kvm_vm_domain_network_receive_bytes_total[5m]))
-sum by (vm) (rate(kvm_vm_domain_network_transmit_bytes_total[5m]))
+sum by (host_id, vm_id, vm) (rate(kvm_vm_domain_network_receive_bytes_total[5m]))
+sum by (host_id, vm_id, vm) (rate(kvm_vm_domain_network_transmit_bytes_total[5m]))
 
 # 收集失敗、超過 30 秒沒有更新（需依採樣間隔調整）
 kvm_vm_collector_success == 0
@@ -115,3 +115,16 @@ sudo systemctl status kvm-vm-exporter
 
 歷史指標、告警與圖表交由 Prometheus/Grafana；Host 本身 CPU、RAM、磁碟
 應搭配 node_exporter 等宿主機監控工具，本功能主要提供 VM 指標。
+
+## VM 識別及升級
+
+每次採樣在批次 `domstats` 前後執行 `virsh list --all --uuid --name`，共用逾時
+預算；無法一致識別的 VM 跳過，列表失敗則整次收集失敗。這不是原子快照或授權證明。
+`monitor --json` 新增 `vm_id`，表格保持相容。重啟、改名、遷移須保留 libvirt UUID
+才會維持身分，不能將舊 UUID 重用於無關的 VM。
+
+新增 Label 會建立新序列，不會回填歷史資料。`vm_id=~".*"` 包含舊序列，
+`vm_id=~".+"` 只包含具 UUID 的序列。升級、改名、遷移的 rate/lookback 視窗可能
+同時包含舊新序列，不可直接用於計費或假定自動去重。中央查詢依 `host_id,vm_id,vm`
+分組。既有中央部署先審閱 `sync-templates` 再 `reload`；本機 Dashboard 請先備份再
+手動更新 JSON 並重啟 Grafana。升級 Host CLI 後需重啟 Exporter，確認新 label。

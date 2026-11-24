@@ -44,6 +44,28 @@
           "value": "$__all"
         },
         "sort": 1
+      },
+      {
+        "name": "vm_id",
+        "label": "VM UUID",
+        "type": "query",
+        "hide": 0,
+        "datasource": {
+          "type": "prometheus",
+          "uid": "kvm-vm-prometheus"
+        },
+        "query": "label_values(kvm_vm_domain_state{vm=~\"$vm\"}, vm_id)",
+        "definition": "label_values(kvm_vm_domain_state{vm=~\"$vm\"}, vm_id)",
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "refresh": 1,
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "sort": 1
       }
     ]
   },
@@ -162,7 +184,7 @@
             "type": "prometheus",
             "uid": "kvm-vm-prometheus"
           },
-          "expr": "sum(kvm_vm_domain_vcpus{vm=~\"$vm\"}) or vector(0)",
+          "expr": "sum(kvm_vm_domain_vcpus{vm=~\"$vm\",vm_id=~\"$vm_id\"}) or vector(0)",
           "legendFormat": "vCPU",
           "refId": "A"
         }
@@ -207,8 +229,8 @@
             "type": "prometheus",
             "uid": "kvm-vm-prometheus"
           },
-          "expr": "100 * kvm_vm_domain_cpu_usage_ratio{vm=~\"$vm\"}",
-          "legendFormat": "{{vm}}",
+          "expr": "100 * kvm_vm_domain_cpu_usage_ratio{vm=~\"$vm\",vm_id=~\"$vm_id\"}",
+          "legendFormat": "{{vm}} [{{vm_id}}]",
           "refId": "A"
         }
       ],
@@ -251,8 +273,8 @@
             "type": "prometheus",
             "uid": "kvm-vm-prometheus"
           },
-          "expr": "kvm_vm_domain_cpu_used_cores{vm=~\"$vm\"}",
-          "legendFormat": "{{vm}}",
+          "expr": "kvm_vm_domain_cpu_used_cores{vm=~\"$vm\",vm_id=~\"$vm_id\"}",
+          "legendFormat": "{{vm}} [{{vm_id}}]",
           "refId": "A"
         }
       ],
@@ -295,8 +317,8 @@
             "type": "prometheus",
             "uid": "kvm-vm-prometheus"
           },
-          "expr": "kvm_vm_domain_memory_assigned_bytes{vm=~\"$vm\"}",
-          "legendFormat": "{{vm}} assigned",
+          "expr": "kvm_vm_domain_memory_assigned_bytes{vm=~\"$vm\",vm_id=~\"$vm_id\"}",
+          "legendFormat": "{{vm}} [{{vm_id}}] assigned",
           "refId": "A"
         },
         {
@@ -304,8 +326,8 @@
             "type": "prometheus",
             "uid": "kvm-vm-prometheus"
           },
-          "expr": "kvm_vm_domain_memory_guest_used_bytes{vm=~\"$vm\"}",
-          "legendFormat": "{{vm}} guest used",
+          "expr": "kvm_vm_domain_memory_guest_used_bytes{vm=~\"$vm\",vm_id=~\"$vm_id\"}",
+          "legendFormat": "{{vm}} [{{vm_id}}] guest used",
           "refId": "B"
         }
       ],
@@ -348,8 +370,8 @@
             "type": "prometheus",
             "uid": "kvm-vm-prometheus"
           },
-          "expr": "kvm_vm_domain_memory_rss_bytes{vm=~\"$vm\"}",
-          "legendFormat": "{{vm}}",
+          "expr": "kvm_vm_domain_memory_rss_bytes{vm=~\"$vm\",vm_id=~\"$vm_id\"}",
+          "legendFormat": "{{vm}} [{{vm_id}}]",
           "refId": "A"
         }
       ],
@@ -392,8 +414,8 @@
             "type": "prometheus",
             "uid": "kvm-vm-prometheus"
           },
-          "expr": "sum by (vm) (rate(kvm_vm_domain_disk_read_bytes_total{vm=~\"$vm\"}[5m]))",
-          "legendFormat": "{{vm}} read",
+          "expr": "sum by (vm,vm_id) (rate(kvm_vm_domain_disk_read_bytes_total{vm=~\"$vm\",vm_id=~\"$vm_id\"}[5m]))",
+          "legendFormat": "{{vm}} [{{vm_id}}] read",
           "refId": "A"
         },
         {
@@ -401,8 +423,8 @@
             "type": "prometheus",
             "uid": "kvm-vm-prometheus"
           },
-          "expr": "sum by (vm) (rate(kvm_vm_domain_disk_write_bytes_total{vm=~\"$vm\"}[5m]))",
-          "legendFormat": "{{vm}} write",
+          "expr": "sum by (vm,vm_id) (rate(kvm_vm_domain_disk_write_bytes_total{vm=~\"$vm\",vm_id=~\"$vm_id\"}[5m]))",
+          "legendFormat": "{{vm}} [{{vm_id}}] write",
           "refId": "B"
         }
       ],
@@ -445,8 +467,8 @@
             "type": "prometheus",
             "uid": "kvm-vm-prometheus"
           },
-          "expr": "sum by (vm) (rate(kvm_vm_domain_network_receive_bytes_total{vm=~\"$vm\"}[5m]))",
-          "legendFormat": "{{vm}} receive",
+          "expr": "sum by (vm,vm_id) (rate(kvm_vm_domain_network_receive_bytes_total{vm=~\"$vm\",vm_id=~\"$vm_id\"}[5m]))",
+          "legendFormat": "{{vm}} [{{vm_id}}] receive",
           "refId": "A"
         },
         {
@@ -454,8 +476,8 @@
             "type": "prometheus",
             "uid": "kvm-vm-prometheus"
           },
-          "expr": "sum by (vm) (rate(kvm_vm_domain_network_transmit_bytes_total{vm=~\"$vm\"}[5m]))",
-          "legendFormat": "{{vm}} transmit",
+          "expr": "sum by (vm,vm_id) (rate(kvm_vm_domain_network_transmit_bytes_total{vm=~\"$vm\",vm_id=~\"$vm_id\"}[5m]))",
+          "legendFormat": "{{vm}} [{{vm_id}}] transmit",
           "refId": "B"
         }
       ],
@@ -498,8 +520,8 @@
             "type": "prometheus",
             "uid": "kvm-vm-prometheus"
           },
-          "expr": "kvm_vm_domain_disk_capacity_bytes{vm=~\"$vm\"}",
-          "legendFormat": "{{vm}} / {{disk}}",
+          "expr": "kvm_vm_domain_disk_capacity_bytes{vm=~\"$vm\",vm_id=~\"$vm_id\"}",
+          "legendFormat": "{{vm}} [{{vm_id}}] / {{disk}}",
           "refId": "A"
         }
       ],

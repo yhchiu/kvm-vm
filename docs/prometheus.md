@@ -29,7 +29,7 @@ kvm-vm exporter [VM] [--managed] [--listen IPV4] [--port PORT]
 | `--listen` | `127.0.0.1` | Numeric IPv4 bind address (local only by default) |
 | `--port` | `9179` | TCP HTTP port |
 | `--interval` | `5` | Background collection period, 0.5–3600 seconds |
-| `--timeout` | `10` | Per-`virsh` collection timeout, 0.1–120 seconds |
+| `--timeout` | `10` | Total timeout for all `virsh` calls in one sample, 0.1–120 seconds |
 | `--managed` | off | Include only VMs with a kvm-vm manifest |
 | `VM` | all | Optional single domain name |
 
@@ -43,7 +43,7 @@ recent successful sample time is available as
 
 ## Metric reference
 
-All VM series include a `vm` label. Disk and network series also use `disk`
+All VM series include `vm` (display name) and `vm_id` (libvirt domain UUID). Disk and network series also use `disk`
 and `interface` labels respectively. Series are omitted when a value is
 unavailable; no guessed zero is emitted.
 
@@ -93,12 +93,12 @@ Example PromQL:
 rate(kvm_vm_domain_cpu_time_seconds_total[5m]) / kvm_vm_domain_vcpus
 
 # Disk throughput in bytes/s, summed across drives per VM
-sum by (vm) (rate(kvm_vm_domain_disk_read_bytes_total[5m]))
-sum by (vm) (rate(kvm_vm_domain_disk_write_bytes_total[5m]))
+sum by (host_id, vm_id, vm) (rate(kvm_vm_domain_disk_read_bytes_total[5m]))
+sum by (host_id, vm_id, vm) (rate(kvm_vm_domain_disk_write_bytes_total[5m]))
 
 # Network throughput in bytes/s, summed across interfaces per VM
-sum by (vm) (rate(kvm_vm_domain_network_receive_bytes_total[5m]))
-sum by (vm) (rate(kvm_vm_domain_network_transmit_bytes_total[5m]))
+sum by (host_id, vm_id, vm) (rate(kvm_vm_domain_network_receive_bytes_total[5m]))
+sum by (host_id, vm_id, vm) (rate(kvm_vm_domain_network_transmit_bytes_total[5m]))
 
 # Libvirt collector failed or has stopped updating (adapt freshness threshold
 # to --interval and --timeout; default example assumes ~5s + 10s)
@@ -128,3 +128,23 @@ clients. Use `sudo systemctl disable --now kvm-vm-exporter` to stop it.
 The exporter reads current libvirt statistics only. Historical data, alerts,
 retention and graphing belong to Prometheus/Grafana. Host CPU, RAM and disk
 monitoring belong to a separate host collector, such as node_exporter.
+
+## VM identity and upgrade
+
+The collector uses `virsh list --all --uuid --name` before and after the bulk
+`domstats` read (one shared timeout). Ambiguous domains are skipped; a failed
+listing fails collection rather than guessing a UUID. This check is not an
+authentication boundary or an atomic libvirt snapshot. UUIDs survive rename,
+restart and migration only if libvirt preserves them. Do not reuse UUIDs for
+unrelated guests. `monitor --json` includes `vm_id`; the table is unchanged.
+
+Existing metric names stay unchanged, but adding `vm_id` creates new series.
+Older series do not acquire UUIDs retroactively; `vm_id=~".*"` matches legacy
+and new series, whereas `vm_id=~".+"` matches only UUID-bearing series.
+At upgrade/rename/migration, old and new series may coexist within a rate or
+lookback window. Do not use those windows for billing or assume automatic
+continuity/deduplication. Group central queries by `host_id,vm_id,vm` (and
+optionally display labels). For existing central dashboards review
+`sync-templates` then `reload`; for local dashboards back up and manually
+replace the saved dashboard JSON, then restart Grafana. Upgrade the host CLI
+and restart the exporter service; verify the new label before using it.

@@ -31,6 +31,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+import uuid
 import xml.etree.ElementTree as ET
 from urllib.parse import urlparse
 from pathlib import Path
@@ -3131,17 +3132,67 @@ def parse_domstats(text: str) -> Dict[str, Dict[str, str]]:
     return domains
 
 
+def parse_domain_ids(text: str) -> Dict[str, str]:
+    """Parse virsh list --all --uuid --name (UUID followed by domain name)."""
+    result: Dict[str, str] = {}
+    seen = set()
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        fields = line.strip().split(maxsplit=1)
+        try:
+            if len(fields) != 2:
+                raise ValueError("missing domain name")
+            vm_id = str(uuid.UUID(fields[0]))
+        except ValueError as exc:
+            raise KVMError("Invalid UUID/name in virsh list output") from exc
+        name = fields[1]
+        if name in result or vm_id in seen:
+            raise KVMError("Duplicate UUID/name in virsh list output")
+        result[name] = vm_id
+        seen.add(vm_id)
+    return result
+
+
 def read_domstats(name: Optional[str] = None, *, timeout: Optional[float] = None) -> Dict[str, Dict[str, str]]:
-    cmd = ["virsh", "-c", LIBVIRT_URI, "domstats", *MONITOR_STATS_FLAGS]
+    # Bracket the name-keyed domstats snapshot with UUID listings. A domain
+    # renamed/replaced during the read must not inherit another VM's identity.
+    # This is an observational consistency check, not an authorization proof.
+    deadline = time.monotonic() + timeout if timeout is not None else None
+
+    def query(args: List[str]) -> str:
+        remaining = deadline - time.monotonic() if deadline is not None else None
+        if remaining is not None and remaining <= 0:
+            raise KVMError("VM statistics collection timed out")
+        p = run(["virsh", "-c", LIBVIRT_URI, *args], check=False, capture=True, timeout=remaining)
+        if p.returncode:
+            raise KVMError(f"Cannot read VM resource statistics: {p.stderr.strip() or p.stdout.strip()}")
+        return p.stdout
+
+    list_args = ["list", "--all", "--uuid", "--name"]
+    before = parse_domain_ids(query(list_args))
+    cmd = ["domstats", *MONITOR_STATS_FLAGS]
     if name is not None:
         cmd.append(name)
-    p = run(cmd, check=False, capture=True, timeout=timeout)
-    if p.returncode:
-        raise KVMError(f"Cannot read VM resource statistics: {p.stderr.strip() or p.stdout.strip()}")
-    result = parse_domstats(p.stdout)
+    result = parse_domstats(query(cmd))
+    after = parse_domain_ids(query(list_args))
+    for domain in list(result):
+        vm_id = before.get(domain)
+        if vm_id is None or vm_id != after.get(domain):
+            log.warning("Skipping unstable domain identity: %s", domain)
+            del result[domain]
+        else:
+            result[domain]["vm_id"] = vm_id
     if name is not None and name not in result:
-        raise KVMError(f"No statistics returned for VM: {name}")
+        raise KVMError(f"No statistics returned for VM with stable identity: {name}")
     return result
+
+
+def same_domain_sample(current: Dict[str, str], previous: Optional[Dict[str, str]]) -> Optional[Dict[str, str]]:
+    """Never derive rates across different VM incarnations."""
+    if previous is not None and current.get("vm_id") == previous.get("vm_id"):
+        return previous
+    return None
 
 
 def monitor_int(stats: Dict[str, str], key: str) -> Optional[int]:
@@ -3179,6 +3230,7 @@ def monitor_resources(
     elapsed: float, wall_time: float,
 ) -> Dict[str, Any]:
     """Derive useful values. Missing metrics stay null (never '0% used')."""
+    previous = same_domain_sample(current, previous)
     state_code = monitor_int(current, "state.state")
     state = DOMAIN_STATES.get(state_code, "unknown")
     running = state_code in (1, 2)
@@ -3231,7 +3283,7 @@ def monitor_resources(
     net_tx = rate_devices(nets, old_nets, "tx.bytes") if running else None
 
     return {
-        "name": name, "state": state, "vcpus": vcpus,
+        "name": name, "vm_id": current.get("vm_id"), "state": state, "vcpus": vcpus,
         "cpu_percent": cpu_percent, "cpu_host_percent": cpu_host_percent,
         "memory_assigned_bytes": assigned_kib * 1024 if assigned_kib is not None else None,
         "memory_guest_used_bytes": used_kib * 1024 if used_kib is not None else None,
@@ -3368,9 +3420,11 @@ def prometheus_text(domains: Dict[str, Dict[str, str]],
             if managed and not load_state(name):
                 continue
             data = domains[name]
-            prior = previous.get(name) if previous else None
+            prior = same_domain_sample(data, previous.get(name) if previous else None)
             vm = monitor_resources(name, data, prior, elapsed, wall_time)
             labels = {"vm": name}
+            if vm["vm_id"] is not None:
+                labels["vm_id"] = vm["vm_id"]
             emit("kvm_vm_domain_state", 1, state=vm["state"], **labels)
             emit("kvm_vm_domain_vcpus", vm["vcpus"], **labels)
             # Raw counters are directly usable with PromQL rate(), without relying
@@ -3390,7 +3444,7 @@ def prometheus_text(domains: Dict[str, Dict[str, str]],
             ):
                 emit(metric, vm[key], **labels)
             for disk, stats in sorted(vm["disks"].items()):
-                disk_labels = {"vm": name, "disk": disk}
+                disk_labels = {**labels, "disk": disk}
                 emit("kvm_vm_domain_disk_capacity_bytes", stats["capacity"], **disk_labels)
                 emit("kvm_vm_domain_disk_physical_bytes", stats["physical"], **disk_labels)
                 if vm["state"] in ("running", "blocked"):
@@ -3398,7 +3452,7 @@ def prometheus_text(domains: Dict[str, Dict[str, str]],
                     emit("kvm_vm_domain_disk_write_bytes_total", stats["wr.bytes"], **disk_labels)
             if vm["state"] in ("running", "blocked"):
                 for nic, stats in sorted(vm["interfaces"].items()):
-                    nic_labels = {"vm": name, "interface": nic}
+                    nic_labels = {**labels, "interface": nic}
                     emit("kvm_vm_domain_network_receive_bytes_total", stats["rx.bytes"], **nic_labels)
                     emit("kvm_vm_domain_network_transmit_bytes_total", stats["tx.bytes"], **nic_labels)
 

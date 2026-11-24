@@ -113,14 +113,15 @@ def test_read_domstats_uses_only_read_only_virsh_options(monkeypatch):
 
     def fake_run(cmd, **kwargs):
         commands.append(cmd)
-        return subprocess.CompletedProcess(cmd, 0, "Domain: 'vm-a'\n state.state=1\n", "")
+        output = "11111111-1111-4111-8111-111111111111 vm-a\n" if cmd[3] == "list" else "Domain: 'vm-a'\n state.state=1\n"
+        return subprocess.CompletedProcess(cmd, 0, output, "")
 
     monkeypatch.setattr(kvm_vm, "run", fake_run)
-    assert kvm_vm.read_domstats("vm-a") == {"vm-a": {"state.state": "1"}}
-    assert commands[0][:4] == ["virsh", "-c", kvm_vm.LIBVIRT_URI, "domstats"]
-    assert "--raw" in commands[0]
-    assert commands[0][-1] == "vm-a"
-    assert all(opt not in commands[0] for opt in ("--enforce", "--backing"))
+    assert kvm_vm.read_domstats("vm-a") == {"vm-a": {"state.state": "1", "vm_id": "11111111-1111-4111-8111-111111111111"}}
+    assert commands[1][:4] == ["virsh", "-c", kvm_vm.LIBVIRT_URI, "domstats"]
+    assert "--raw" in commands[1]
+    assert commands[1][-1] == "vm-a"
+    assert all(opt not in commands[1] for opt in ("--enforce", "--backing"))
 
 
 def test_read_domstats_failure_and_missing_single_vm(monkeypatch):

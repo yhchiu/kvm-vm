@@ -173,7 +173,7 @@ READINESS
     backup="$CONFIG_DIR/backups/$(date -u +%Y%m%dT%H%M%SZ)-$$"
     install -d -m 0700 "$backup"
     for file in compose.yaml rules/rules.yml grafana/dashboards/fleet.json \
-        grafana/dashboards/hosts.json inventory/inventory.py inventory/scrape.yml; do
+        grafana/dashboards/vms.json grafana/dashboards/hosts.json inventory/inventory.py inventory/scrape.yml; do
       [[ ! -L "$CONFIG_DIR/$file" ]] || fail "Refusing symlink: $file"
       if [[ -f "$CONFIG_DIR/$file" ]]; then
         install -Dm0600 "$CONFIG_DIR/$file" "$backup/$file"

@@ -162,10 +162,12 @@ def test_read_domstats_applies_timeout(monkeypatch):
     calls = []
     def fake_run(cmd, **kwargs):
         calls.append(kwargs)
-        return subprocess.CompletedProcess(cmd, 0, "Domain: 'web01'\nstate.state=1\n", "")
+        output = "11111111-1111-4111-8111-111111111111 web01\n" if cmd[3] == "list" else "Domain: 'web01'\nstate.state=1\n"
+        return subprocess.CompletedProcess(cmd, 0, output, "")
     monkeypatch.setattr(kvm_vm, "run", fake_run)
     assert kvm_vm.read_domstats(timeout=4)["web01"]["state.state"] == "1"
-    assert calls[0]["timeout"] == 4
+    assert len(calls) == 3
+    assert all(0 < c["timeout"] <= 4 for c in calls)
 
 
 def test_exporter_subprocess_serves_actual_cli_endpoint(tmp_path):
@@ -178,6 +180,10 @@ def test_exporter_subprocess_serves_actual_cli_endpoint(tmp_path):
 
     virsh = tmp_path / "virsh"
     virsh.write_text("""#!/bin/sh
+if [ "$3" = list ]; then
+    echo "11111111-1111-4111-8111-111111111111 vm-e2e"
+    exit 0
+fi
 cat <<'STAT'
 Domain: 'vm-e2e'
 state.state=1
@@ -207,8 +213,8 @@ STAT
             try:
                 with urllib.request.urlopen(f"http://127.0.0.1:{port}/metrics", timeout=.3) as response:
                     body = response.read().decode("utf-8")
-                    assert 'kvm_vm_domain_state{state="running",vm="vm-e2e"} 1' in body
-                    assert 'kvm_vm_domain_disk_read_bytes_total{disk="vda",vm="vm-e2e"} 345' in body
+                    assert 'kvm_vm_domain_state{state="running",vm="vm-e2e",vm_id="11111111-1111-4111-8111-111111111111"} 1' in body
+                    assert 'kvm_vm_domain_disk_read_bytes_total{disk="vda",vm="vm-e2e",vm_id="11111111-1111-4111-8111-111111111111"} 345' in body
                     return
             except (urllib.error.URLError, TimeoutError):
                 time.sleep(.05)
