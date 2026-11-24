@@ -97,6 +97,7 @@ ssh admin@<vm-ip>         # admin 即 cloud_init.user
 | 列出 VM 與位址 | `kvm-vm list --ips` |
 | 查看單台 VM 詳細資訊 | `kvm-vm status web01` |
 | 查看 VM CPU、記憶體和 I/O 資源 | `kvm-vm monitor web01` |
+| 查詢監控 Host UUID 與 VM UUID | `kvm-vm identity --json` |
 | Prometheus VM 監控指標 | `kvm-vm exporter --managed` |
 | 開啟序列主控台（按 `Ctrl+]` 離開） | `kvm-vm console web01` |
 | 重灌作業系統並保留設定 | `kvm-vm reinstall web01 [--os debian13]` |

@@ -49,6 +49,8 @@ Grafana -> Central (operators only)
 
 ## Stable contract
 
+Discover the exact UUIDs with [`kvm-vm identity --json`](identity.md) on each KVM Host. A null Host UUID means central identity is not configured. Discovery is not proof of ownership.
+
 [Versioned catalog](../../tools/monitoring/queries/v1.json) is the metric
 allowlist, not a user-editable query language. [Python reference module](../../examples/monitoring_client.py)
 uses it. Every selector matches exact canonical `host_id` and libvirt `vm_id`

@@ -56,3 +56,5 @@ balloon freshness 及可信 Writer；不符合時須停用客戶查詢或調整�
 `customer-readiness` 仍維持 BLOCKED，不開放中央客戶登入。先按
 [Panel 驗收清單](../../tests/tenancy/panel-acceptance.md) 實測後再由管理員決定是否
 開放 Panel 功能。原 Phase 5 安全契約保留，Phase 6 儲存後端 PoC 延後至確有需求時。
+
+使用 [`kvm-vm identity --json`](identity.zh-TW.md) 從每台 KVM Host 取得監控 UUID；Host UUID 為 null 時不得啟用中央查詢。識別快照不代表客戶歸屬。

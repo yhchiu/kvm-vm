@@ -116,6 +116,7 @@ option, and the [command reference](docs/commands.md) explains them.
 | List VMs with their addresses | `kvm-vm list --ips` |
 | Show one VM in detail | `kvm-vm status web01` |
 | Sample VM CPU, memory and I/O | `kvm-vm monitor web01` |
+| Discover monitoring Host UUID and VM UUIDs | `kvm-vm identity --json` |
 | Prometheus VM metrics | `kvm-vm exporter --managed` |
 | Open the serial console (leave with `Ctrl+]`) | `kvm-vm console web01` |
 | Reinstall the OS, keeping the settings | `kvm-vm reinstall web01 [--os debian13]` |

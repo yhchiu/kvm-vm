@@ -3154,6 +3154,76 @@ def parse_domain_ids(text: str) -> Dict[str, str]:
     return result
 
 
+def read_monitoring_identity() -> Dict[str, Optional[str]]:
+    """Read only the persisted public identity fields, never writer credentials."""
+    directory = Path(os.environ.get("KVM_VM_MONITORING_DIR", "/etc/kvm-vm/monitoring"))
+    path = directory / "remote.json"
+    try:
+        if directory.is_symlink():
+            raise KVMError("Refusing symlink monitoring directory")
+        # Nonblocking and no-follow prevent accidentally opening a FIFO or a
+        # symlink to another file as the identity configuration.
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as stream:
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                raise KVMError("Monitoring identity must be a regular file")
+            raw = stream.read(65537)
+    except FileNotFoundError:
+        return {"host_id": None, "host": None, "site": None}
+    except OSError as exc:
+        raise KVMError("Cannot read monitoring identity; check configuration and permissions") from exc
+
+    def unique_fields(pairs: List[Tuple[str, Any]]) -> Dict[str, Any]:
+        fields: Dict[str, Any] = {}
+        for key, value in pairs:
+            if key in fields:
+                raise ValueError("duplicate field")
+            fields[key] = value
+        return fields
+
+    try:
+        if len(raw) > 65536:
+            raise ValueError("oversized identity configuration")
+        state = json.loads(raw, object_pairs_hook=unique_fields)
+        host_id, host, site = (state[key] for key in ("host_id", "host", "site"))
+        if not isinstance(host_id, str) or str(uuid.UUID(host_id)) != host_id:
+            raise ValueError("invalid Host UUID")
+        for value in (host, site):
+            if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", value):
+                raise ValueError("invalid monitoring label")
+    except (ValueError, TypeError, KeyError, RecursionError) as exc:
+        # JSON errors may contain sensitive configuration fragments.
+        raise KVMError("Invalid persisted monitoring identity") from exc
+    return {"host_id": host_id, "host": host, "site": site}
+
+
+def cmd_identity(args: argparse.Namespace) -> int:
+    # The stock monitoring service collects qemu:///system on this host.
+    # Do not pair its saved Host UUID with another libvirt connection.
+    if LIBVIRT_URI != "qemu:///system":
+        raise KVMError("identity requires local qemu:///system (matching the monitoring exporter)")
+    require_commands(["virsh"])
+    identity = read_monitoring_identity()
+    try:
+        result = run(["virsh", "-c", LIBVIRT_URI, "list", "--all", "--uuid", "--name"],
+                     check=False, capture=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise KVMError("Cannot list libvirt domain identities (connection failed or timed out)") from exc
+    if result.returncode:
+        raise KVMError("Cannot list libvirt domain identities; check libvirt and permissions")
+    domains = parse_domain_ids(result.stdout)
+    rows = [{"name": name, "vm_id": domains[name]} for name in sorted(domains)]
+    if args.json:
+        print(json.dumps({"schema_version": 1, **identity, "domains": rows}, indent=2))
+    else:
+        for key in ("host_id", "host", "site"):
+            print(f"{key}: {identity[key] if identity[key] is not None else '-'}")
+        print("\nVM UUID                               NAME")
+        for row in rows:
+            print(f"{row['vm_id']}  {row['name']}")
+    return 0
+
+
 def read_domstats(name: Optional[str] = None, *, timeout: Optional[float] = None) -> Dict[str, Dict[str, str]]:
     # Bracket the name-keyed domstats snapshot with UUID listings. A domain
     # renamed/replaced during the read must not inherit another VM's identity.
@@ -3653,6 +3723,10 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--managed", action="store_true", help="Show only VMs managed by kvm-vm")
     q.add_argument("--ips", action="store_true", help="Query IP addresses (slower)")
     q.set_defaults(func=cmd_list)
+
+    q = sp.add_parser("identity", help="List local monitoring Host UUID and libvirt Domain UUIDs (read-only)")
+    q.add_argument("--json", action="store_true", help="Output a versioned JSON identity snapshot")
+    q.set_defaults(func=cmd_identity)
 
     q = sp.add_parser("monitor", help="Sample read-only CPU, memory, disk and network VM statistics")
     q.add_argument("name", nargs="?", help="VM name (default: all libvirt domains)")
