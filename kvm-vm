@@ -2287,6 +2287,47 @@ def print_section(title: str, text: str) -> None:
     print(text.strip() if text.strip() else "-")
 
 
+def status_disks(name: str) -> str:
+    """Keep the block-device list and add the guest-visible capacity per disk."""
+    listing = output(["virsh", "-c", LIBVIRT_URI, "domblklist", name, "--details"])
+    lines = listing.strip().splitlines()
+    if not lines or lines[0].split() != ["Type", "Device", "Target", "Source"]:
+        # Preserve unexpected output rather than silently dropping devices.
+        return listing
+    devices = []
+    for line in lines[1:]:
+        if not line.strip() or set(line.strip()) <= {"-", " "}:
+            continue
+        fields = line.split(maxsplit=3)
+        if len(fields) != 4:
+            return listing
+        devices.append(fields)
+
+    headers = ["Type", "Device", "Target", "Capacity", "Source"]
+    rows = []
+    for kind, device, target, source in devices:
+        capacity = None
+        if device in ("disk", "lun") and source != "-":
+            try:
+                result = run(["virsh", "-c", LIBVIRT_URI, "domblkinfo", name, target],
+                             check=False, capture=True, timeout=5)
+                if result.returncode == 0:
+                    match = re.search(r"^[ \t]*Capacity:[ \t]+([0-9]+)[ \t]*$", result.stdout, re.MULTILINE)
+                    if match and int(match[1]) > 0:
+                        capacity = int(match[1])
+            except (OSError, subprocess.TimeoutExpired):
+                # Some storage drivers cannot report capacity, especially offline.
+                pass
+        rows.append([kind, device, target, human_bytes(capacity), source])
+    widths = [max([len(header)] + [len(row[i]) for row in rows]) for i, header in enumerate(headers)]
+
+    def format_row(row: List[str]) -> str:
+        return "  ".join(value.ljust(widths[i]) for i, value in enumerate(row)).rstrip()
+
+    return "\n".join([format_row(headers), "-" * (sum(widths) + 2 * (len(widths) - 1)),
+                      *(format_row(row) for row in rows)])
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     require_commands(["virsh"])
     name = args.name
@@ -2303,7 +2344,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         print_section("Snapshot", "\n".join(snapshot_report(name, inspect_snapshot(name))))
     except (KVMError, subprocess.CalledProcessError) as exc:
         print_section("Snapshot", f"Cannot inspect Snapshot state: {exc}")
-    print_section("Disks", output(["virsh", "-c", LIBVIRT_URI, "domblklist", name, "--details"]))
+    print_section("Disks", status_disks(name))
     print_section("Interfaces", output(["virsh", "-c", LIBVIRT_URI, "domiflist", name]))
     ips = get_ips(name, include_cidr=True)
     print_section("IP addresses", "\n".join(ips) if ips else "No address reported (qemu-guest-agent/lease/ARP may not have data yet).")
@@ -3387,17 +3428,18 @@ def human_bytes(value: Optional[float]) -> str:
 
 def print_monitor_table(snapshot: Dict[str, Any]) -> None:
     print(f"\n{snapshot['timestamp']}  (sample: {snapshot['interval_seconds']:.2f}s)")
-    headers = ("NAME", "STATE", "CPU", "GUEST RAM", "QEMU RSS", "DISK PHYS", "DISK R/s", "DISK W/s", "NET RX/s", "NET TX/s")
+    headers = ("NAME", "STATE", "CPU", "GUEST RAM", "QEMU RSS", "DISK SIZE", "DISK PHYS", "DISK R/s", "DISK W/s", "NET RX/s", "NET TX/s")
     rows: List[List[str]] = []
     for vm in snapshot["domains"]:
         guest = human_bytes(vm["memory_guest_used_bytes"])
         assigned = human_bytes(vm["memory_assigned_bytes"])
         cpu = f"{vm['cpu_percent']:.1f}%" if vm["cpu_percent"] is not None else "-"
         rows.append([vm["name"], vm["state"], cpu, f"{guest}/{assigned}",
-                     human_bytes(vm["memory_rss_bytes"]), human_bytes(vm["disk_physical_bytes"]),
+                     human_bytes(vm["memory_rss_bytes"]), human_bytes(vm["disk_capacity_bytes"]),
+                     human_bytes(vm["disk_physical_bytes"]),
                      human_bytes(vm["disk_read_bytes_per_sec"]), human_bytes(vm["disk_write_bytes_per_sec"]),
                      human_bytes(vm["net_rx_bytes_per_sec"]), human_bytes(vm["net_tx_bytes_per_sec"])])
-    widths = [max(len(header), *(len(row[i]) for row in rows)) for i, header in enumerate(headers)]
+    widths = [max([len(header)] + [len(row[i]) for row in rows]) for i, header in enumerate(headers)]
     print("  ".join(head.ljust(widths[i]) for i, head in enumerate(headers)))
     for row in rows:
         print("  ".join(value.ljust(widths[i]) for i, value in enumerate(row)))

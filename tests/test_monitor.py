@@ -163,3 +163,28 @@ def test_cmd_monitor_validates_options(monkeypatch, argv, match):
     args = kvm_vm.build_parser().parse_args(argv)
     with pytest.raises(kvm_vm.KVMError, match=match):
         args.func(args)
+
+
+def test_monitor_table_shows_total_logical_size_and_physical_size(capsys):
+    stats = _stats()
+    stats.update({'block.count': '2', 'block.1.name': 'vdb',
+                  'block.1.capacity': str(100 * GIB), 'block.1.physical': str(3 * GIB)})
+    vm = kvm_vm.monitor_resources('vm-a', stats, None, 1, 1001)
+    kvm_vm.print_monitor_table({'timestamp': 'now', 'interval_seconds': 1, 'domains': [vm]})
+    text = capsys.readouterr().out
+    assert 'DISK SIZE' in text and 'DISK PHYS' in text
+    assert '120.0GiB' in text and '10.0GiB' in text
+
+
+def test_monitor_table_unknown_capacity_and_empty_domains(capsys):
+    stats = _stats(state=5)
+    stats.pop('block.0.capacity')
+    vm = kvm_vm.monitor_resources('vm-a', stats, None, 1, 1001)
+    snapshot = {'timestamp': 'now', 'interval_seconds': 1, 'domains': [vm]}
+    kvm_vm.print_monitor_table(snapshot)
+    lines = capsys.readouterr().out.splitlines()
+    i = lines[-2].index('DISK SIZE')
+    assert lines[-1][i:i+9].strip() == '-'
+    snapshot['domains'] = []
+    kvm_vm.print_monitor_table(snapshot)
+    assert '(no domains)' in capsys.readouterr().out

@@ -119,7 +119,10 @@ sudo kvm-vm status web01
 ```
 
 Shows the libvirt domain information, the kvm-vm state manifest, the Snapshot
-state, disks, network cards and known addresses.
+state, disks, network cards and known addresses. The Disks section shows each
+disk/LUN's logical `Capacity` (binary units, from `virsh domblkinfo`), alongside
+its target and source. Unavailable capacities and removable media show `-`;
+this is not the actual allocated host storage or guest filesystem usage.
 
 ## monitor
 
@@ -150,9 +153,12 @@ The columns and JSON fields have specific meanings:
   not allocated RAM misrepresented as used RAM.
 - `QEMU RSS`: resident physical memory of the host-side VM process. It is **not**
   the guest's actual memory usage, nor an exact measurement of VM ownership.
+- `DISK SIZE`: sum of the logical capacities reported by libvirt for the VM's
+  block devices (`disk_capacity_bytes` in JSON). If some devices do not report
+  capacity, only known capacities are summed; if none report it, `-` is shown.
 - `DISK PHYS`: libvirt's physical size of the disk source files, not guest
   filesystem occupancy or total host storage consumed (snapshot backing chains
-  are not included). `disk_capacity_bytes` in JSON is the logical source size.
+  are not included).
 - `DISK R/s`, `DISK W/s`, `NET RX/s`, `NET TX/s`: byte rates, aggregated across
   devices. Network direction is relative to the **guest**. Missing counters,
   shut-off guests and newly discovered devices appear as `-` / `null` rather

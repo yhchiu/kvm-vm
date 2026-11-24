@@ -93,6 +93,9 @@ sudo kvm-vm status web01
 ```
 
 顯示 libvirt domain 資訊、kvm-vm 狀態清單、快照狀態、磁碟、網卡與已知位址。
+Disks 區段同時列出各磁碟／LUN 的邏輯容量 `Capacity`（二進位單位，取自
+`virsh domblkinfo`）、裝置名稱與來源。無法取得容量或可卸除媒體時顯示 `-`；
+此容量並非 Host 實際配置空間或 Guest 檔案系統使用量。
 
 ## monitor
 
@@ -119,9 +122,10 @@ CPU 與 I/O 是累積計數器，需要在兩次採樣之間計算差值。
   balloon 統計資料，才使用 `balloon.available - balloon.usable` 估算使用量。
   無法取得時顯示 `-`，不會把已分配記憶體誤當成已使用記憶體。
 - `QEMU RSS`：宿主機上 QEMU process 的常駐記憶體，**不等於** Guest 已用 RAM。
+- `DISK SIZE`：libvirt 回報的 VM 各 block device 邏輯容量加總（JSON 欄位
+  `disk_capacity_bytes`）。部分裝置未回報時只加總已知容量；全部未知時顯示 `-`。
 - `DISK PHYS`：libvirt 回報的磁碟來源實體大小，不等於 Guest 檔案系統的已用空間，
-  也不包含 Snapshot backing chain 的完整佔用量。JSON 的 `disk_capacity_bytes`
-  則是磁碟來源邏輯大小。
+  也不包含 Snapshot backing chain 的完整佔用量。
 - `DISK R/s`、`DISK W/s`、`NET RX/s`、`NET TX/s`：所有磁碟、網卡的
   每秒讀寫位元組數（對網路而言，方向以 Guest 為準）。關機、缺少計數器或
   裝置剛出現時，顯示 `-`／JSON `null`，不偽造為 0；單位為 KiB/MiB 等二進位位元組。
