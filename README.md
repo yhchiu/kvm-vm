@@ -59,7 +59,8 @@ sudo ./install.sh
 ```
 
 This installs `/usr/local/sbin/kvm-vm` and creates its directories. Run it again
-to upgrade.
+to upgrade. The installer uses POSIX `sh` (no Bash required);
+`sudo sh ./install.sh` also works. The other setup scripts may still require Bash.
 
 **3. Make sure you have an SSH key.** The examples use `~/.ssh/id_ed25519.pub`.
 If it does not exist, create it with `ssh-keygen -t ed25519`.

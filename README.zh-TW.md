@@ -48,7 +48,7 @@ RHEL 9 以上使用 libvirt 的模組化 daemon（`virtqemud` 等），安裝套
 sudo ./install.sh
 ```
 
-會安裝 `/usr/local/sbin/kvm-vm` 並建立所需目錄。重新執行即可升級。
+會安裝 `/usr/local/sbin/kvm-vm` 並建立所需目錄。重新執行即可升級。安裝程式使用 POSIX `sh`，不需要 Bash，也可以執行 `sudo sh ./install.sh`。其他安裝設定腳本仍可能需要 Bash。
 
 **3. 確認已有 SSH 金鑰。** 範例使用 `~/.ssh/id_ed25519.pub`，若不存在，請用 `ssh-keygen -t ed25519` 建立。
 
