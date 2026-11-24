@@ -23,7 +23,7 @@ seed_config() {
   install -d -m 0700 "$CONFIG_DIR"
   [[ ! -L "$CONFIG_DIR/inventory" && ! -L "$CONFIG_DIR/alertmanager/secrets" ]] || fail 'Refusing symlink inventory/secrets directory'
   local file
-  for file in compose.yaml nginx-remote-write.example.conf \
+  for file in compose.yaml nginx-remote-write.example.conf nginx-managed-writers.example.conf \
       grafana/provisioning/datasources/victoriametrics.yml \
       grafana/provisioning/dashboards/dashboards.yml \
       rules/rules.yml alertmanager/alertmanager.yml \
@@ -77,6 +77,7 @@ case "$COMMAND" in
     cat <<'HELP'
 Usage: sudo ./tools/setup-central-monitoring.sh [up|reload|status|logs|update|down|credentials|enroll HOST]
        sudo ./tools/setup-central-monitoring.sh inventory [list|add UUID HOST SITE [--tenant ID]|set-tenant UUID ID|disable UUID|enable UUID|remove UUID]
+       sudo ./tools/setup-central-monitoring.sh writers --help  # optional managed writer credentials
        sudo ./tools/setup-central-monitoring.sh registry --help  # operator-only VM/tenant metadata
        sudo ./tools/setup-central-monitoring.sh notifications webhook URL_FILE
        sudo ./tools/setup-central-monitoring.sh notifications email TO SMTP_HOST:PORT FROM SMTP_USER PASSWORD_FILE
@@ -166,6 +167,11 @@ READINESS
     [[ ! -L "$CONFIG_DIR" && ! -L "$CONFIG_DIR/inventory" && ! -L "$CONFIG_DIR/registry" ]] || fail "Refusing symlink registry location"
     shift
     python3 "$TEMPLATES/registry.py" --file "$CONFIG_DIR/registry/ownership.json" --hosts "$CONFIG_DIR/inventory/hosts.json" "$@"
+    ;;
+  writers)
+    require_root; require_config
+    shift
+    python3 "$TEMPLATES/writers.py" --directory "${KVM_VM_WRITER_DIR:-/etc/nginx/kvm-vm-writers}" --hosts "$CONFIG_DIR/inventory/hosts.json" "$@"
     ;;
   notifications)
     require_root; require_config
