@@ -42,3 +42,5 @@
 這份 ADR **不代表** 客戶登入、真正 Tenant Isolation 已開發完成。
 現階段保留較簡單的 Single 儲存；客戶存取需求啟用前再選定隔離後端
 與驗證流程，避免為純內部監控過度設計。
+
+受信任第三方 Panel 服務整合請見 [ADR 0007](0007-external-panel-monitoring.md)，不放寬中央客戶直接存取門檻。

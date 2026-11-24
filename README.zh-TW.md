@@ -186,3 +186,5 @@ GPL-3.0，詳見 [LICENSE](LICENSE)。
 中央監控亦支援持久化 Host Inventory、主機完全失聯告警、node_exporter 宿主機資源指標，以及使用機密檔案的 Email／Webhook 通知（詳見[中央監控說明](docs/central-monitoring.zh-TW.md)）。
 
 未來 Hosting 客戶的中央監控登入仍**禁止開放**，直到真正完成租戶隔離及驗證；詳見 [ADR 0006](docs/adr/0006-central-monitoring-tenant-security-boundary.zh-TW.md) 與 [後續實作計畫](docs/central-customer-access-roadmap.zh-TW.md)。
+
+[第三方 VM Panel 整合（私有唯讀查詢）](docs/integration/monitoring-api.zh-TW.md).

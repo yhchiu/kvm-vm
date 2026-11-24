@@ -218,3 +218,5 @@ sudo ./tools/setup-central-monitoring.sh reload
 管理員 VM 與租戶歸屬請見 [中央 Registry](monitoring-registry.zh-TW.md)。
 
 - [Writer 憑證生命週期、傳輸診斷、獨立觀測器與故障演練（Phase 3、4）](monitoring-security-reliability.zh-TW.md).
+
+[第三方 VM Panel 整合（受信任服務專用；禁止中央客戶直接登入）](integration/monitoring-api.zh-TW.md).

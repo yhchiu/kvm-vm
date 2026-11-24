@@ -221,3 +221,5 @@ Central monitoring: [Central monitoring (Agent / Hybrid)](docs/central-monitorin
 Central monitoring also supports persistent expected-host inventory, offline alerts, host node_exporter metrics, and secret-file-based Email/Webhook notifications (see [Central monitoring](docs/central-monitoring.md)).
 
 Customer-facing central monitoring is intentionally **disabled** until verified native tenant isolation is implemented; see [ADR 0006](docs/adr/0006-central-monitoring-tenant-security-boundary.md) and the [implementation roadmap](docs/central-customer-access-roadmap.md).
+
+[External VM Panel integration (private trusted query API)](docs/integration/monitoring-api.md).

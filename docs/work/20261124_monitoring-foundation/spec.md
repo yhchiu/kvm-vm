@@ -31,3 +31,13 @@ against intentional leaks, silent drops and missing evidence. Provisioning
 actual candidate gateways/storage is Phase 6; no candidate has passed merely
 because the contract self-tests pass. Customer readiness remains BLOCKED.
 See [test protocol](../../../tests/tenancy/README.md).
+
+## Phase 5.1: External Panel integration
+
+The existing Panel owns customer authentication/authorization and VM placement
+history. Add a private service query ingress, versioned metric catalog,
+reference client and Panel acceptance checks; retain admin-only Central and
+all existing Phase 5 tests. No new daemon or native tenant routing. Defer
+Phase 6/7 backend evaluation until capacity or storage-level isolation demands
+it. See [ADR 0007](../../adr/0007-external-panel-monitoring.md) and the
+[integration contract](../../integration/monitoring-api.md).

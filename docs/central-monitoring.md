@@ -254,3 +254,5 @@ The default regression suite runs offline. The dedicated dual-NAT lab exercises 
 See [Central VM and tenant registry](monitoring-registry.md) for operator-only ownership metadata.
 
 - [Managed writer lifecycle, delivery diagnostics, independent observer and resilience drills (phases 3–4)](monitoring-security-reliability.md).
+
+[External VM Panel integration (trusted service only; direct customer access remains blocked)](integration/monitoring-api.md).

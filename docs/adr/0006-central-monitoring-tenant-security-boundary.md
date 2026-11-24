@@ -92,3 +92,5 @@ customer-facing phase is tested end-to-end.
 - Host collection/Remote Write configuration and `local`/`agent`/`hybrid`
   mode semantics are unchanged in this milestone.
 - `tenant_id` is an operator metadata field, not a required Host-side secret.
+
+For trusted service-only external Panel integration, see [ADR 0007](0007-external-panel-monitoring.md). This does not relax the direct customer access gate.
