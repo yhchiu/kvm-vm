@@ -3200,7 +3200,8 @@ def monitor_int(stats: Dict[str, str], key: str) -> Optional[int]:
     if raw is None:
         return None
     try:
-        return int(raw)
+        value = int(raw)
+        return value if value >= 0 else None
     except ValueError:
         return None
 
@@ -3248,15 +3249,17 @@ def monitor_resources(
     available_kib = monitor_int(current, "balloon.available")
     usable_kib = monitor_int(current, "balloon.usable")
     # Guest stats require balloon polling. Never interpret QEMU RSS or assigned RAM as guest used RAM.
-    guest_stats_fresh = (running and last_update is not None and
+    guest_stats_fresh = (running and last_update is not None and last_update > 0 and
                          0 <= wall_time - last_update <= 120)
     used_kib = (available_kib - usable_kib) if (
         guest_stats_fresh and available_kib is not None and usable_kib is not None
         and 0 <= usable_kib <= available_kib
     ) else None
 
-    block_fields = ("rd.bytes", "wr.bytes", "capacity", "physical")
-    net_fields = ("rx.bytes", "tx.bytes")
+    block_fields = ("rd.bytes", "wr.bytes", "capacity", "physical",
+                    "rd.reqs", "wr.reqs", "fl.reqs", "rd.times", "wr.times", "fl.times")
+    net_fields = ("rx.bytes", "tx.bytes", "rx.pkts", "tx.pkts",
+                  "rx.errs", "tx.errs", "rx.drop", "tx.drop")
     blocks = device_stats(current, "block", block_fields)
     nets = device_stats(current, "net", net_fields)
     old_blocks = device_stats(previous, "block", block_fields) if previous else {}
@@ -3288,10 +3291,14 @@ def monitor_resources(
         "memory_assigned_bytes": assigned_kib * 1024 if assigned_kib is not None else None,
         "memory_guest_used_bytes": used_kib * 1024 if used_kib is not None else None,
         "memory_rss_bytes": rss_kib * 1024 if rss_kib is not None else None,
+        "memory_guest_stats_timestamp_seconds": last_update if last_update and running else None,
+        "memory_guest_stats_fresh": bool(guest_stats_fresh and used_kib is not None) if running else None,
         "disk_capacity_bytes": sum_devices(blocks, "capacity"),
         "disk_physical_bytes": sum_devices(blocks, "physical"),
         "disk_read_bytes_per_sec": disk_read, "disk_write_bytes_per_sec": disk_write,
         "net_rx_bytes_per_sec": net_rx, "net_tx_bytes_per_sec": net_tx,
+        "disk_read_operations_per_sec": rate_devices(blocks, old_blocks, "rd.reqs") if running else None,
+        "disk_write_operations_per_sec": rate_devices(blocks, old_blocks, "wr.reqs") if running else None,
         "disks": blocks, "interfaces": nets,
     }
 
@@ -3389,6 +3396,20 @@ PROMETHEUS_METRICS = {
     "kvm_vm_domain_disk_write_bytes_total": ("counter", "Cumulative bytes written by the VM to this disk."),
     "kvm_vm_domain_network_receive_bytes_total": ("counter", "Cumulative network bytes received by the guest on this interface."),
     "kvm_vm_domain_network_transmit_bytes_total": ("counter", "Cumulative network bytes transmitted by the guest on this interface."),
+    "kvm_vm_domain_memory_guest_stats_timestamp_seconds": ("gauge", "Last reported guest balloon statistics Unix timestamp."),
+    "kvm_vm_domain_memory_guest_stats_fresh": ("gauge", "Whether usable guest memory statistics are fresh (1=yes, 0=no) for a running VM."),
+    "kvm_vm_domain_disk_read_operations_total": ("counter", "Cumulative disk read requests."),
+    "kvm_vm_domain_disk_write_operations_total": ("counter", "Cumulative disk write requests."),
+    "kvm_vm_domain_disk_flush_operations_total": ("counter", "Cumulative disk flush requests."),
+    "kvm_vm_domain_disk_read_time_seconds_total": ("counter", "Cumulative time spent on disk reads in seconds."),
+    "kvm_vm_domain_disk_write_time_seconds_total": ("counter", "Cumulative time spent on disk writes in seconds."),
+    "kvm_vm_domain_disk_flush_time_seconds_total": ("counter", "Cumulative time spent on disk flushes in seconds."),
+    "kvm_vm_domain_network_receive_packets_total": ("counter", "Cumulative packets received by the guest."),
+    "kvm_vm_domain_network_transmit_packets_total": ("counter", "Cumulative packets transmitted by the guest."),
+    "kvm_vm_domain_network_receive_errors_total": ("counter", "Cumulative guest interface receive errors."),
+    "kvm_vm_domain_network_transmit_errors_total": ("counter", "Cumulative guest interface transmit errors."),
+    "kvm_vm_domain_network_receive_dropped_packets_total": ("counter", "Cumulative guest interface dropped receive packets."),
+    "kvm_vm_domain_network_transmit_dropped_packets_total": ("counter", "Cumulative guest interface dropped transmit packets."),
 }
 
 
@@ -3441,8 +3462,11 @@ def prometheus_text(domains: Dict[str, Dict[str, str]],
                 ("kvm_vm_domain_memory_assigned_bytes", "memory_assigned_bytes"),
                 ("kvm_vm_domain_memory_guest_used_bytes", "memory_guest_used_bytes"),
                 ("kvm_vm_domain_memory_rss_bytes", "memory_rss_bytes"),
+                ("kvm_vm_domain_memory_guest_stats_timestamp_seconds", "memory_guest_stats_timestamp_seconds"),
+                ("kvm_vm_domain_memory_guest_stats_fresh", "memory_guest_stats_fresh"),
             ):
-                emit(metric, vm[key], **labels)
+                value = vm[key]
+                emit(metric, int(value) if isinstance(value, bool) else value, **labels)
             for disk, stats in sorted(vm["disks"].items()):
                 disk_labels = {**labels, "disk": disk}
                 emit("kvm_vm_domain_disk_capacity_bytes", stats["capacity"], **disk_labels)
@@ -3450,11 +3474,19 @@ def prometheus_text(domains: Dict[str, Dict[str, str]],
                 if vm["state"] in ("running", "blocked"):
                     emit("kvm_vm_domain_disk_read_bytes_total", stats["rd.bytes"], **disk_labels)
                     emit("kvm_vm_domain_disk_write_bytes_total", stats["wr.bytes"], **disk_labels)
+                    for operation, field in (("read", "rd"), ("write", "wr"), ("flush", "fl")):
+                        emit(f"kvm_vm_domain_disk_{operation}_operations_total", stats[field + ".reqs"], **disk_labels)
+                        duration_ns = stats[field + ".times"]
+                        emit(f"kvm_vm_domain_disk_{operation}_time_seconds_total",
+                             duration_ns / 1e9 if duration_ns is not None else None, **disk_labels)
             if vm["state"] in ("running", "blocked"):
                 for nic, stats in sorted(vm["interfaces"].items()):
                     nic_labels = {**labels, "interface": nic}
                     emit("kvm_vm_domain_network_receive_bytes_total", stats["rx.bytes"], **nic_labels)
                     emit("kvm_vm_domain_network_transmit_bytes_total", stats["tx.bytes"], **nic_labels)
+                    for direction, field in (("receive", "rx"), ("transmit", "tx")):
+                        for suffix, stat in (("packets", "pkts"), ("errors", "errs"), ("dropped_packets", "drop")):
+                            emit(f"kvm_vm_domain_network_{direction}_{suffix}_total", stats[field + "." + stat], **nic_labels)
 
     result = []
     for name, (metric_type, description) in PROMETHEUS_METRICS.items():

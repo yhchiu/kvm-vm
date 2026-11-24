@@ -580,6 +580,236 @@
           "sort": "none"
         }
       }
+    },
+    {
+      "id": 12,
+      "title": "Disk IOPS",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "kvm-vm-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 36,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "kvm-vm-prometheus"
+          },
+          "expr": "sum by (vm,vm_id) (rate(kvm_vm_domain_disk_read_operations_total{vm=~\"$vm\",vm_id=~\"$vm_id\"}[5m]))",
+          "legendFormat": "{{vm}} [{{vm_id}}] read",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "kvm-vm-prometheus"
+          },
+          "expr": "sum by (vm,vm_id) (rate(kvm_vm_domain_disk_write_operations_total{vm=~\"$vm\",vm_id=~\"$vm_id\"}[5m]))",
+          "legendFormat": "{{vm}} [{{vm_id}}] write",
+          "refId": "B"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      }
+    },
+    {
+      "id": 13,
+      "title": "Mean disk request time",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "kvm-vm-prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 36,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "kvm-vm-prometheus"
+          },
+          "expr": "sum by (vm,vm_id) (rate(kvm_vm_domain_disk_read_time_seconds_total{vm=~\"$vm\",vm_id=~\"$vm_id\"}[5m])) / (sum by (vm,vm_id) (rate(kvm_vm_domain_disk_read_operations_total{vm=~\"$vm\",vm_id=~\"$vm_id\"}[5m])) > 0)",
+          "legendFormat": "{{vm}} [{{vm_id}}] read",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "kvm-vm-prometheus"
+          },
+          "expr": "sum by (vm,vm_id) (rate(kvm_vm_domain_disk_write_time_seconds_total{vm=~\"$vm\",vm_id=~\"$vm_id\"}[5m])) / (sum by (vm,vm_id) (rate(kvm_vm_domain_disk_write_operations_total{vm=~\"$vm\",vm_id=~\"$vm_id\"}[5m])) > 0)",
+          "legendFormat": "{{vm}} [{{vm_id}}] write",
+          "refId": "B"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      }
+    },
+    {
+      "id": 14,
+      "title": "Network packet rate",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "kvm-vm-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 44,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "pps",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "kvm-vm-prometheus"
+          },
+          "expr": "sum by (vm,vm_id) (rate(kvm_vm_domain_network_receive_packets_total{vm=~\"$vm\",vm_id=~\"$vm_id\"}[5m]))",
+          "legendFormat": "{{vm}} [{{vm_id}}] RX",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "kvm-vm-prometheus"
+          },
+          "expr": "sum by (vm,vm_id) (rate(kvm_vm_domain_network_transmit_packets_total{vm=~\"$vm\",vm_id=~\"$vm_id\"}[5m]))",
+          "legendFormat": "{{vm}} [{{vm_id}}] TX",
+          "refId": "B"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      }
+    },
+    {
+      "id": 15,
+      "title": "Network errors and drops",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "kvm-vm-prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 44,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "pps",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "kvm-vm-prometheus"
+          },
+          "expr": "sum by (vm,vm_id) (rate(kvm_vm_domain_network_receive_errors_total{vm=~\"$vm\",vm_id=~\"$vm_id\"}[5m]))",
+          "legendFormat": "{{vm}} [{{vm_id}}] receive errors",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "kvm-vm-prometheus"
+          },
+          "expr": "sum by (vm,vm_id) (rate(kvm_vm_domain_network_receive_dropped_packets_total{vm=~\"$vm\",vm_id=~\"$vm_id\"}[5m]))",
+          "legendFormat": "{{vm}} [{{vm_id}}] receive dropped_packets",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "kvm-vm-prometheus"
+          },
+          "expr": "sum by (vm,vm_id) (rate(kvm_vm_domain_network_transmit_errors_total{vm=~\"$vm\",vm_id=~\"$vm_id\"}[5m]))",
+          "legendFormat": "{{vm}} [{{vm_id}}] transmit errors",
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "kvm-vm-prometheus"
+          },
+          "expr": "sum by (vm,vm_id) (rate(kvm_vm_domain_network_transmit_dropped_packets_total{vm=~\"$vm\",vm_id=~\"$vm_id\"}[5m]))",
+          "legendFormat": "{{vm}} [{{vm_id}}] transmit dropped_packets",
+          "refId": "D"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      }
     }
   ]
 }

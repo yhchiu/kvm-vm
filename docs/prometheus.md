@@ -148,3 +148,29 @@ optionally display labels). For existing central dashboards review
 `sync-templates` then `reload`; for local dashboards back up and manually
 replace the saved dashboard JSON, then restart Grafana. Upgrade the host CLI
 and restart the exporter service; verify the new label before using it.
+
+## Additional resource metrics
+
+All following names use the `kvm_vm_domain_` prefix. Disk and network metrics
+retain the per-device labels. Unsupported and negative counters are omitted.
+
+| Suffix | Type | Unit/source |
+| --- | --- | --- |
+| `disk_{read,write,flush}_operations_total` | counter | requests (`rd/wr/fl.reqs`) |
+| `disk_{read,write,flush}_time_seconds_total` | counter | seconds (`rd/wr/fl.times` converted from ns) |
+| `network_{receive,transmit}_packets_total` | counter | packets (`rx/tx.pkts`) |
+| `network_{receive,transmit}_errors_total` | counter | errors (`rx/tx.errs`) |
+| `network_{receive,transmit}_dropped_packets_total` | counter | packets (`rx/tx.drop`) |
+| `memory_guest_stats_timestamp_seconds` | gauge | last valid balloon update timestamp |
+| `memory_guest_stats_fresh` | gauge | 1 when usable guest memory stats are fresh, 0 otherwise, absent when inactive |
+
+```promql
+sum by (host_id,vm_id,vm) (rate(kvm_vm_domain_disk_read_operations_total[5m]))
+rate(kvm_vm_domain_disk_read_time_seconds_total[5m]) / (rate(kvm_vm_domain_disk_read_operations_total[5m]) > 0)
+```
+
+The second expression estimates mean elapsed time per completed read from
+libvirt counters; not host device utilization or a latency percentile.
+Zero-operation intervals have no result. New JSON device fields retain raw
+libvirt units (time in ns); aggregate read/write operations per second are
+also available. VM uptime is deferred (CPU time is not uptime).

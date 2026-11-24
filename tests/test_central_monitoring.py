@@ -63,7 +63,7 @@ def test_grafana_central_dashboard_includes_host_site_and_vm():
     folder = CENTRAL_TEMPLATES / 'grafana/dashboards'
     vms = json.loads((folder/'vms.json').read_text())
     assert vms['uid'] != 'kvm-vm-local'
-    assert [v['name'] for v in vms['templating']['list']] == ['site','host','vm']
+    assert [v['name'] for v in vms['templating']['list']] == ['site','host','vm','vm_id']
     exprs = '\n'.join(t['expr'] for p in vms['panels'] for t in p['targets'])
     assert 'site=~"$site"' in exprs and 'host=~"$host"' in exprs
     assert '{{site}}/{{host}}/{{vm}}' in json.dumps(vms)

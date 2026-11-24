@@ -128,3 +128,26 @@ sudo systemctl status kvm-vm-exporter
 同時包含舊新序列，不可直接用於計費或假定自動去重。中央查詢依 `host_id,vm_id,vm`
 分組。既有中央部署先審閱 `sync-templates` 再 `reload`；本機 Dashboard 請先備份再
 手動更新 JSON 並重啟 Grafana。升級 Host CLI 後需重啟 Exporter，確認新 label。
+
+## 新增資源指標
+
+以下名稱均加 `kvm_vm_domain_` 前綴；磁碟及網路保留各裝置 label。
+
+| 後綴 | 類型 | 單位 |
+| --- | --- | --- |
+| `disk_{read,write,flush}_operations_total` | Counter | 累積請求數 |
+| `disk_{read,write,flush}_time_seconds_total` | Counter | 累積 I/O 時間，ns 轉秒 |
+| `network_{receive,transmit}_packets_total` | Counter | 封包數 |
+| `network_{receive,transmit}_errors_total` | Counter | 錯誤數 |
+| `network_{receive,transmit}_dropped_packets_total` | Counter | 丟棄封包數 |
+| `memory_guest_stats_timestamp_seconds` | Gauge | Balloon 最後更新 Unix timestamp |
+| `memory_guest_stats_fresh` | Gauge | 執行中 VM 記憶體統計有效為 1，否則 0；非執行中省略 |
+
+```promql
+sum by (host_id,vm_id,vm) (rate(kvm_vm_domain_disk_read_operations_total[5m]))
+rate(kvm_vm_domain_disk_read_time_seconds_total[5m]) / (rate(kvm_vm_domain_disk_read_operations_total[5m]) > 0)
+```
+
+第二式是平均讀取請求耗時，不是實體磁碟利用率或延遲百分位。零 IOPS 時不輸出。
+不支援或負數 Counter 省略。JSON 裝置欄位使用原始 libvirt 單位（時間 ns），另有
+read/write operations per second；VM uptime 暫緩，避免把 CPU time 誤當 uptime。
