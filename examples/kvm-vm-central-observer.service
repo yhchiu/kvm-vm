@@ -1,0 +1,26 @@
+# Optional independent health observer. Install on a different host, not Central.
+[Unit]
+Description=Independent kvm-vm Central health observer
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=kvm-vm-observer
+Group=kvm-vm-observer
+StateDirectory=kvm-vm-observer
+StateDirectoryMode=0700
+ExecStart=/usr/bin/python3 /usr/local/libexec/kvm-vm/watch-central.py --health-file /etc/kvm-vm-observer/health-url --webhook-file /etc/kvm-vm-observer/webhook-url --state /var/lib/kvm-vm-observer/state.json
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

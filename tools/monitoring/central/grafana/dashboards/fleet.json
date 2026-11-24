@@ -9,7 +9,7 @@
     "fleet"
   ],
   "schemaVersion": 41,
-  "version": 1,
+  "version": 2,
   "timezone": "browser",
   "time": {
     "from": "now-6h",
@@ -417,6 +417,162 @@
         },
         "colorMode": "value",
         "textMode": "auto"
+      }
+    },
+    {
+      "id": 10,
+      "title": "Agent pending queue",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "kvm-vm-victoriametrics"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 26,
+        "w": 12,
+        "h": 9
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "kvm-vm-victoriametrics"
+          },
+          "expr": "sum by(host_id,host)(vmagent_remotewrite_pending_data_bytes{job=\"vmagent\",site=~\"$site\"})",
+          "refId": "A",
+          "legendFormat": "{{host_id}} / {{host}}"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "calcs": []
+        }
+      }
+    },
+    {
+      "id": 11,
+      "title": "Hybrid send lag",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "kvm-vm-victoriametrics"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 26,
+        "w": 12,
+        "h": 9
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "kvm-vm-victoriametrics"
+          },
+          "expr": "prometheus_remote_storage_queue_highest_timestamp_seconds{job=\"prometheus-writer\",site=~\"$site\"} - prometheus_remote_storage_queue_highest_sent_timestamp_seconds{job=\"prometheus-writer\",site=~\"$site\"}",
+          "refId": "A",
+          "legendFormat": "{{host_id}} / {{host}}"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "calcs": []
+        }
+      }
+    },
+    {
+      "id": 12,
+      "title": "Collector sample age (transport / clock)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "kvm-vm-victoriametrics"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 35,
+        "w": 12,
+        "h": 9
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "kvm-vm-victoriametrics"
+          },
+          "expr": "time() - timestamp(kvm_vm_collector_success{site=~\"$site\"})",
+          "refId": "A",
+          "legendFormat": "{{host_id}} / {{host}}"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "calcs": []
+        }
+      }
+    },
+    {
+      "id": 13,
+      "title": "Central free storage",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "kvm-vm-victoriametrics"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 35,
+        "w": 12,
+        "h": 9
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "kvm-vm-victoriametrics"
+          },
+          "expr": "vm_free_disk_space_bytes{job=\"kvm-vm-central-components\",instance=\"victoriametrics:8428\",host_id=\"\"}",
+          "refId": "A",
+          "legendFormat": "{{instance}}"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "calcs": []
+        }
       }
     }
   ]

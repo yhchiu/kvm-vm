@@ -130,14 +130,14 @@ HELP
     ;;
   customer-readiness)
     # Operator visibility only. Single-node VictoriaMetrics has no native
-    # tenant boundary and the current ingress does not bind credentials to
-    # a verified tenant/host label. Never infer customer access readiness
+    # tenant boundary; even the optional managed writer ingress is not
+    # a verified tenant authorization boundary. Never infer readiness
     # from tenant metadata, Grafana folders or dashboard variables.
     cat <<'READINESS'
 BLOCKED: Hosting customer data access is NOT enabled.
 - VictoriaMetrics Single has no native tenant isolation.
-- Remote Write Basic Auth currently authenticates a sender but does not
-  enforce the source host_id/tenant_id on the ingested metrics.
+- Legacy Remote Write Basic Auth authenticates a sender only. The optional
+  managed writer ingress is Host-bound, not a tenant authorization boundary.
 - Central Grafana currently has an operator-wide datasource.
 Requirements: native tenant-aware storage/routing, trusted ingress tenant
 assignment, restricted query datasource for each tenant, negative isolation

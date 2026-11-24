@@ -133,9 +133,32 @@ def scrape_config(state, agent=False):
     return jobs
 
 
+def setting(path, name, default):
+    if path.is_symlink():
+        fail(f'Refusing symlink {path.name}')
+    if not path.exists():
+        return default
+    values = [line.split('=', 1)[1] for line in path.read_text().splitlines()
+              if line.startswith(name + '=')]
+    if len(values) > 1:
+        fail(f'Duplicate {name} setting')
+    return values[0] if values else default
+
+
 def render(args):
-    state = remote_config(args)
     cfg = args.directory
+    if cfg.is_symlink():
+        fail('configuration directory may not be a symlink')
+    saved_limit = setting(cfg / 'remote.env', 'REMOTE_DISK_QUEUE_LIMIT', '2147483648')
+    limit = args.disk_queue_limit or saved_limit
+    if not re.fullmatch(r'[1-9][0-9]{0,12}', limit) or not 512 * 1024**2 <= int(limit) <= 1024**4:
+        fail('Agent disk queue limit must be bytes between 512 MiB and 1 TiB')
+    if (cfg / 'remote.env').exists() and limit != saved_limit and not args.reconfigure:
+        fail('Queue limit change requires explicit reconfigure')
+    port = setting(cfg / '.env', 'PROMETHEUS_PORT', os.getenv('PROMETHEUS_PORT', '9090'))
+    if not re.fullmatch(r'[1-9][0-9]{0,4}', port) or int(port) > 65535:
+        fail('Invalid local Prometheus port')
+    state = remote_config(args)
     labels = {k: state[k] for k in ('host_id', 'host', 'site')}
     signature_file = cfg / '.remote-rendered-state'
     signature = json.dumps(state, sort_keys=True) + '\n'
@@ -146,9 +169,13 @@ def render(args):
     hybrid = {'global': {'scrape_interval': '15s', 'scrape_timeout': '10s',
                          'external_labels': labels},
               'scrape_configs': [dict(job_name='kvm-vm', static_configs=[dict(targets=['127.0.0.1:9179'])]),
-                                 dict(job_name='node-exporter', static_configs=[dict(targets=['127.0.0.1:9100'])])],
+                                 dict(job_name='node-exporter', static_configs=[dict(targets=['127.0.0.1:9100'])]),
+                                 dict(job_name='prometheus-writer', static_configs=[dict(targets=['127.0.0.1:'+port])],
+                                      metric_relabel_configs=[dict(source_labels=['__name__'],
+                                          regex='prometheus_remote_storage_.*|process_start_time_seconds', action='keep')])],
               'remote_write': [dict(url=state['url'], basic_auth={
-                  'username': state['user'], 'password_file': PROMETHEUS_SECRET})]}
+                  'username': state['user'], 'password_file': PROMETHEUS_SECRET},
+                  queue_config={'retry_on_http_429': True})]}
     # External labels are added only by remote write, while local Prometheus
     # keeps its normal VM label schema. The remote series remain host-unique.
     if args.reconfigure or not (cfg / 'vmagent-scrape.yml').exists():
@@ -159,7 +186,7 @@ def render(args):
     env = '\n'.join([
         'REMOTE_WRITE_URL=' + state['url'],
         'REMOTE_WRITE_USERNAME=' + state['user'],
-        'REMOTE_DISK_QUEUE_LIMIT=2147483648',
+        'REMOTE_DISK_QUEUE_LIMIT=' + limit,
         '',
     ])
     if args.reconfigure or not (cfg / 'remote.env').exists():
@@ -175,9 +202,29 @@ def render(args):
     print('Credentials are not written into Compose, metrics or command-line arguments.')
 
 
+def replace_password(cfg):
+    # Called by the locked Host lifecycle command after confirming both writers
+    # are absent. Only the password changes, so destination and queue IDs stay.
+    if cfg.is_symlink() or not cfg.is_dir() or cfg.stat().st_mode & 0o077:
+        fail('Require existing private monitoring directory')
+    if any(os.path.lexists(cfg / name) for name in ('.mode', '.mode.pending')):
+        fail('Stop the current monitoring deployment first')
+    for name in ('remote.json', 'remote-password'):
+        if (cfg / name).is_symlink() or not (cfg / name).is_file():
+            fail('Require existing regular remote identity and password files')
+    state = json.loads((cfg / 'remote.json').read_text())
+    validate_endpoint(state['url'])
+    password = sys.stdin.buffer.readline(75).removesuffix(b'\n').removesuffix(b'\r')
+    if not 16 <= len(password) <= 72 or any(c < 33 or c > 126 for c in password) or sys.stdin.buffer.read(1):
+        fail('Provide one 16–72 byte printable ASCII password on stdin')
+    atomic_save(cfg / 'remote-password', password.decode('ascii') + '\n', 0o644)
+    print('Password replaced; restart the same mode and verify delivery. Identity and queue unchanged.')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('directory', type=Path)
+    parser.add_argument('--replace-password', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--reconfigure', action='store_true',
                         default=os.getenv('KVM_VM_REMOTE_RECONFIGURE') == '1')
     parser.add_argument('--url', default=os.getenv('KVM_VM_REMOTE_WRITE_URL'))
@@ -186,9 +233,13 @@ def main():
     parser.add_argument('--host-id', default=os.getenv('KVM_VM_MONITOR_HOST_ID'))
     parser.add_argument('--host', default=os.getenv('KVM_VM_MONITOR_HOST'))
     parser.add_argument('--site', default=os.getenv('KVM_VM_MONITOR_SITE'))
+    parser.add_argument('--disk-queue-limit', default=os.getenv('KVM_VM_REMOTE_DISK_QUEUE_LIMIT'))
     args = parser.parse_args()
     try:
-        render(args)
+        if args.replace_password:
+            replace_password(args.directory)
+        else:
+            render(args)
     except (ValueError, OSError, json.JSONDecodeError) as e:
         print(f'ERROR: {e}', file=sys.stderr)
         return 1

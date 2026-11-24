@@ -45,7 +45,7 @@ remote_compose() {
 }
 if [[ $COMMAND == --help || $COMMAND == help || $COMMAND == -h ]]; then
   cat <<HELP
-Usage: sudo ./tools/setup-monitoring.sh [up|down|status|logs|update] --mode $MODE
+Usage: sudo ./tools/setup-monitoring.sh [up|down|status|diagnostics|replace-password|logs|update] --mode $MODE
   For first deployment set KVM_VM_REMOTE_WRITE_URL (https://.../api/v1/write),
   KVM_VM_REMOTE_PASSWORD_FILE, and optionally KVM_VM_REMOTE_USERNAME,
   KVM_VM_MONITOR_HOST, KVM_VM_MONITOR_SITE, KVM_VM_MONITOR_HOST_ID.
@@ -104,6 +104,24 @@ case "$COMMAND" in
     check_docker
     remote_compose ps
     [[ $MODE != agent ]] || echo 'vmagent self-metrics: http://127.0.0.1:8429/metrics'
+    ;;
+  replace-password)
+    require_root
+    [[ $# -eq 1 ]] || fail 'Password must be provided on stdin, not as an argument'
+    lock_monitoring
+    [[ -z $(current_mode) ]] || fail 'Stop the current monitoring deployment first'
+    check_docker
+    directory=$(realpath "$CONFIG_DIR")
+    for service in vmagent prometheus; do
+      ids=$(docker ps -aq --filter "label=com.docker.compose.project.working_dir=$directory" --filter "label=com.docker.compose.service=$service") || fail 'Cannot inspect existing writer containers'
+      [[ -z $ids ]] || fail 'Remove existing writer containers using down before replacing the password'
+    done
+    python3 "$ROOT/tools/monitoring/configure-remote.py" "$CONFIG_DIR" --replace-password
+    ;;
+  diagnostics)
+    require_root
+    [[ $(current_mode) == "$MODE" ]] || fail "$MODE mode is not active"
+    python3 "$ROOT/tools/monitoring/diagnose-writer.py" "$CONFIG_DIR" "$MODE"
     ;;
   logs)
     require_root

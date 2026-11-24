@@ -49,3 +49,49 @@ groups:
           severity: warning
         annotations:
           summary: 'Host {{ $labels.host }} filesystem {{ $labels.mountpoint }} low on space'
+  - name: kvm-vm-delivery-health
+    rules:
+      - alert: KvmVmAgentQueueDataDiscarded
+        expr: sum by(host_id,host,site) (increase(vm_persistentqueue_bytes_dropped_total{job="vmagent"}[15m])) > 0
+        labels: {severity: critical}
+        annotations:
+          summary: 'Agent persistent queue discarded bytes on {{ $labels.host }}'
+      - alert: KvmVmAgentWriteRejected
+        expr: sum by(host_id,host,site) (increase(vmagent_remotewrite_packets_dropped_total{job="vmagent"}[15m])) > 0
+        labels: {severity: critical}
+        annotations:
+          summary: 'Agent remote write rejected blocks on {{ $labels.host }}'
+      - alert: KvmVmAgentSamplesDropped
+        expr: sum by(host_id,host,site) (increase(vmagent_remotewrite_samples_dropped_total{job="vmagent"}[15m])) > 0
+        labels: {severity: critical}
+        annotations:
+          summary: 'Agent discarded samples on {{ $labels.host }}'
+      - alert: KvmVmHybridWriteFailed
+        expr: sum by(host_id,host,site) (increase(prometheus_remote_storage_samples_failed_total{job="prometheus-writer"}[15m])) > 0
+        labels: {severity: critical}
+        annotations:
+          summary: 'Hybrid remote write permanently failed samples on {{ $labels.host }}'
+      - alert: KvmVmHybridWriteLag
+        expr: (prometheus_remote_storage_queue_highest_timestamp_seconds{job="prometheus-writer"} - prometheus_remote_storage_queue_highest_sent_timestamp_seconds{job="prometheus-writer"}) > 120
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: 'Hybrid writer lag on {{ $labels.host }}'
+      - alert: KvmVmCollectorDataDelayed
+        expr: (time() - timestamp(kvm_vm_collector_success)) > 120
+        for: 2m
+        labels: {severity: warning}
+        annotations:
+          summary: 'Collector data delayed on {{ $labels.host }} (check transport and clock)'
+      - alert: KvmVmCentralComponentScrapeFailed
+        expr: up{job="kvm-vm-central-components",host_id=""} == 0
+        for: 2m
+        labels: {severity: critical}
+        annotations:
+          summary: 'Central component {{ $labels.instance }} unreachable'
+      - alert: KvmVmCentralStorageLowSpace
+        expr: vm_free_disk_space_bytes{job="kvm-vm-central-components",instance="victoriametrics:8428",host_id=""} < 1073741824
+        for: 5m
+        labels: {severity: critical}
+        annotations:
+          summary: 'Central VictoriaMetrics storage has less than 1 GiB free'

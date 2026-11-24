@@ -355,3 +355,12 @@ def test_generated_chain_passes_strict_server_verification(tmp_path, monkeypatch
     subprocess.run(['openssl', 'verify', '-x509_strict', '-purpose', 'sslserver',
                     '-verify_ip', '172.30.0.10', '-CAfile', certs / 'ca.pem',
                     certs / 'server.pem'], check=True)
+
+
+def test_resilience_coverage_counts_original_timestamps(monkeypatch):
+    monkeypatch.setitem(sys.modules, 'lab', lab)
+    drill = module('resilience_drill_test', 'resilience_drill.py')
+    result = drill.coverage([100000,115000,115000,130000,145000,160000],100,160,30)
+    assert result == {'samples':5,'max_gap_seconds':15.0,'within_gap_budget':True}
+    assert not drill.coverage([100000,160000],100,160,30)['within_gap_budget']
+    assert not drill.coverage([],100,110,30)['within_gap_budget']
