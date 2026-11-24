@@ -1,4 +1,6 @@
-# 中央監控故障與租戶移交演練
+# 中央監控故障與租戶移交演練（歷史計畫）
+
+> 本頁保留 2026-11-18 原始演練流程及限制。現行操作、最新延伸演練與驗收見 [監控導覽](../../monitoring.zh-TW.md) 與 [Lab 指南](../../../tests/e2e/README.zh-TW.md)。此處 Host-level 移交使用開發專用 Registry，不是正式 Managed Writer 或 VM-level Ownership。
 
 目前的中央 Grafana、VictoriaMetrics 與 inventory 只供管理員使用。線上部署繼續使用既有 Remote Write 路徑。下列租戶入口、查詢帳號及儲存服務只在演練期間建立。[中央安全邊界 ADR](../../adr/0006-central-monitoring-tenant-security-boundary.zh-TW.md)
 

@@ -1,18 +1,39 @@
-# Central monitoring (Remote Write)
+# Central monitoring: deployment and operations
 
-**Design:** `kvm-vm exporter` -> `vmagent` (or local Prometheus in hybrid mode) -> authenticated HTTPS ingress -> central VictoriaMetrics Single -> Grafana and vmalert/Alertmanager. Supports hosts behind NAT, with outbound-only connections. There is no VM agent and no dependency on libvirt on the central server.
+[繁體中文](central-monitoring.zh-TW.md) · [Monitoring architecture](monitoring.md)
 
-## Deployment modes
+Deploy Central once, choose one remote writer mode per KVM Host, then register the expected Host. For the mode comparison and complete architecture see [Monitoring](monitoring.md#choose-a-mode). For local-only operation use [Local monitoring](monitoring-stack.md).
 
-| Mode | Host components | Historical samples | Uploads centrally |
-|---|---|---|---|
-| `local` (unchanged default) | Exporter + Prometheus + Grafana | Local, 15 days by default | No |
-| `agent` | Exporter + vmagent | Queue only, not a queryable TSDB | Yes, outbound HTTPS |
-| `hybrid` | Exporter + Prometheus + Grafana | Local, 15 days by default | Yes, outbound HTTPS |
+```mermaid
+flowchart LR
+    H["KVM Host behind NAT"] -->|POST /api/v1/write over HTTPS| N[NGINX]
+    N -->|loopback :8428| V[(VictoriaMetrics Single)]
+    I[Inventory :9187] -->|scrape 30s| V
+    V --> G[Grafana]
+    V --> A[vmalert]
+    A --> AM[Alertmanager]
+    AM --> R[Configured receiver]
+```
 
-**Only one remote writer per host:** hybrid reuses the existing local Prometheus; it never runs vmagent in parallel. The agent mode intentionally *does not* install local Grafana or Prometheus.
+| Listener | Stock address | Access |
+|---|---|---|
+| VM exporter (Host) | `127.0.0.1:9179` | Local scraper only |
+| node_exporter (remote modes) | `127.0.0.1:9100` | Local scraper only |
+| vmagent (Agent) | `127.0.0.1:8429` | Local diagnostics |
+| Central TSDB / Grafana | `127.0.0.1:8428` / `127.0.0.1:3000` | Operators; trusted proxies only |
+| Inventory / vmalert / Alertmanager | Docker internal `9187` / `8880` / `9093` | Internal services |
+| Write ingress | Operator-configured HTTPS (typically 443) | Host writer identities |
+| Panel query ingress (optional) | Separate private HTTPS listener | Trusted Panel only |
 
-## 1. Install the central server
+## Deployment sequence
+
+1. Start Central and check its local health.
+2. Choose **one** ingress type for each writer endpoint (managed or legacy); install TLS and credentials. For managed writers choose a Host UUID and register inventory **before** activation.
+3. Start Agent or Hybrid on the Host; verify identity and raw metrics centrally.
+4. Register expected hosts not already registered; configure notification receiver and test delivery.
+5. Optionally configure the private Panel integration; do not expose Central Grafana to customers.
+
+## 1. Install Central
 
 Requirements: Linux, Docker Engine, Docker Compose v2, Python 3; no libvirt or VM management program is required.
 
@@ -21,16 +42,25 @@ sudo ./tools/setup-central-monitoring.sh up
 sudo ./tools/setup-central-monitoring.sh credentials
 ```
 
-The central stack runs VictoriaMetrics Single, Grafana, vmalert and Alertmanager. Default bind addresses: `127.0.0.1:8428` (VictoriaMetrics API) and `127.0.0.1:3000` (Grafana). Neither interface is public. In particular **VictoriaMetrics has no built-in authentication in this deployment**; NEVER expose its port to the internet. The named Docker volumes survive `down`, reboot, and upgrades. Storage retention defaults to 30 days:
+The central stack runs VictoriaMetrics Single, Grafana, vmalert, Alertmanager and the inventory exporter. Default bind addresses: `127.0.0.1:8428` (VictoriaMetrics API) and `127.0.0.1:3000` (Grafana). Neither interface is public. In particular **VictoriaMetrics has no built-in authentication in this deployment**; NEVER expose its port to the internet. The named Docker volumes survive `down`, reboot, and upgrades. Storage retention defaults to 30 days:
 
 ```bash
 sudo env GRAFANA_PORT=3100 VM_PORT=8430 VM_RETENTION=60d \
     ./tools/setup-central-monitoring.sh up
 ```
 
-Optional: `render DIRECTORY` previews the configuration without Docker. Subsequent `up` calls do not overwrite existing `.env`, dashboard/rules files or the hashed-credentials file. To upgrade, edit the pinned image tags in `/etc/kvm-vm/central/compose.yaml`, then run `update` after taking a backup.
+Optional: `render DIRECTORY` previews the configuration without Docker. First-run environment settings are saved in `.env`; subsequent runs use saved settings. Subsequent `up` calls do not overwrite existing `.env`, dashboard/rules files or the hashed-credentials file. To upgrade, edit the pinned image tags in `/etc/kvm-vm/central/compose.yaml`, then run `update` after taking a backup.
 
-### HTTPS/Basic Auth ingress (required for remote hosts)
+## 2. Configure authenticated HTTPS write ingress
+
+| Option | Credentials | Host binding |
+|---|---|---|
+| Managed (opt-in) | `writers stage/activate/rotate/revoke` | Intended immutable Host UUID binding; verify pinned receiver in the live drill |
+| Legacy (compatible) | `enroll` + manual htpasswd synchronization | Sender authentication only |
+
+For a new managed deployment follow [Writer lifecycle](monitoring-security-reliability.md#managed-writer-lifecycle-opt-in), including UUID registration and real backend acceptance. The following commands describe the legacy path; do not combine the two authentication files.
+
+### Legacy ingress
 
 Use a dedicated DNS name, e.g. `metrics.example.com`, resolving to the central machine. Set up a valid TLS certificate using your existing NGINX/certbot or another HTTPS reverse proxy. Inside that HTTPS virtual host, use the location blocks from:
 
@@ -49,41 +79,9 @@ The `enroll` command uses a short-lived `httpd:2.4-alpine` Docker container to r
 
 Grafana should be used by internal administrators only. Access over SSH port-forwarding (`ssh -L 3000:127.0.0.1:3000 ...`) or an authenticated, TLS-protected private admin network. The provisioning does **not** implement per-customer isolation.
 
-### Future customer access: tenant foundation (still admin-only)
+## 3. Deploy Agent or Hybrid on each Host
 
-**Existing central deployment upgrade:** Before adding `--tenant` or using
-`set-tenant`, review `sudo ./tools/setup-central-monitoring.sh sync-templates`
-(which backs up and overwrites selected templates), then run
-`sudo ./tools/setup-central-monitoring.sh reload`. Otherwise, an older
-inventory-exporter container would reject tenant-aware JSON and break
-expected-host alerting. The CLI refuses tenant changes until the deployed
-inventory template matches this version.
-
-
-
-The operator-owned Host inventory now accepts an optional tenant assignment:
-
-```bash
-sudo ./tools/setup-central-monitoring.sh inventory add <UUID> kvm-tpe-01 taipei --tenant cust-001
-sudo ./tools/setup-central-monitoring.sh inventory set-tenant <UUID> cust-002
-sudo ./tools/setup-central-monitoring.sh inventory list
-./tools/setup-central-monitoring.sh customer-readiness  # BLOCKED; nonzero status
-```
-
-Old Host inventory remains valid and implicitly belongs to `internal`. A new
-`kvm_vm_host_tenant_info{host_id,tenant_id}` series is published by the **trusted
-central inventory** to help administrators audit ownership. This series is
-**not a tenant security boundary** and is not added to remote-sent samples.
-The sender can spoof Host and Tenant labels, and current VictoriaMetrics Single
-has no native tenant separation. **Do not invite Hosting customers to the
-shared Grafana instance.** Before exposing data to customers, implement
-server-bound ingress tenant routing, native tenant-specific storage/query
-permissions, and cross-tenant negative tests. See
-[ADR 0006](adr/0006-central-monitoring-tenant-security-boundary.md).
-
-## 2. Install host Agent mode
-
-Each KVM host needs Docker Compose v2, systemd, Python 3, virsh and a working libvirt service. Create a root-readable password file on the host using the *one-time* credential from central enrollment:
+Each KVM host needs Docker Compose v2, systemd, Python 3, virsh and a working libvirt service. Create a root-readable password file on the host using the credential from the selected Central ingress:
 
 ```bash
 sudo install -d -m 0700 /etc/kvm-vm
@@ -92,14 +90,14 @@ sudo sh -c 'umask 077; cat > /etc/kvm-vm/central-password'
 
 sudo env \
   KVM_VM_REMOTE_WRITE_URL=https://metrics.example.com/api/v1/write \
-  KVM_VM_REMOTE_USERNAME=kvm-tpe-01 \
+  KVM_VM_REMOTE_USERNAME=WRITER_USERNAME \
   KVM_VM_REMOTE_PASSWORD_FILE=/etc/kvm-vm/central-password \
   KVM_VM_MONITOR_HOST=kvm-tpe-01 \
   KVM_VM_MONITOR_SITE=taipei \
   ./tools/setup-monitoring.sh up --mode agent
 ```
 
-The generated `remote.json` stores a **random, stable `host_id` UUID**, a human-friendly host, and site. This metadata labels scraped VM and Collector metrics, differentiating identical VM names on different KVM hosts. Never regenerate the ID on restart or mode transition. The host-level `remote-password` is stored in an owner-only directory (`0700`); the file is `0644` *within* that private directory so a non-root collector process inside its bind-mounted Docker container can read it. It is not inserted in Compose `.env` or printed as command-line arguments.
+Replace `WRITER_USERNAME` with the actual credential name (`kvm-tpe-01` in the legacy example). For managed ingress set `KVM_VM_MONITOR_HOST_ID` to the UUID registered on Central before the first deployment, and use the staged/activated username as `WRITER_USERNAME`. For legacy ingress the UUID may be generated on the first deployment. The generated `remote.json` stores a **random, stable `host_id` UUID**, a human-friendly host, and site. This metadata labels scraped VM and Collector metrics, differentiating identical VM names on different KVM hosts. Never regenerate the ID on restart or mode transition. The host-level `remote-password` is stored in an owner-only directory (`0700`); the file is `0644` *within* that private directory so a non-root collector process inside its bind-mounted Docker container can read it. It is not inserted in Compose `.env` or printed as command-line arguments.
 
 `vmagent` uses a Docker named volume to persist its queue, capped by default at **2 GiB per destination**. If the destination stays offline and the queue is full, oldest buffered samples are lost. This is a best-effort buffer, **not an indefinite archive**. Metrics scrape interval is 15s; exporter samples locally every 5s. Agent self-metrics are available at `http://127.0.0.1:8429/metrics`.
 
@@ -112,7 +110,7 @@ sudo ./tools/setup-monitoring.sh update --mode agent
 sudo ./tools/setup-monitoring.sh down --mode agent
 ```
 
-## 3. Hybrid mode: local Grafana plus central history
+### Hybrid mode
 
 On the KVM host, set the same `KVM_VM_REMOTE_*` environment variables as above and run:
 
@@ -120,63 +118,15 @@ On the KVM host, set the same `KVM_VM_REMOTE_*` environment variables as above a
 sudo ./tools/setup-monitoring.sh up --mode hybrid
 ```
 
-This boots the **existing local** Prometheus/Grafana and overlays its Prometheus config with `remote_write`. It preserves the existing TSDB and Grafana volumes. Hybrid relies on Prometheus WAL buffering, which generally cannot recover unsent data from outages longer than about **two hours**; choose `agent` with vmagent's disk queue for longer intermittent outages. Hybrid does not forward the full local Grafana configuration, dashboards or alerts — only sampled metrics. The local scrape config in hybrid uses `external_labels` for remote host identity; the central time series always contain `host_id`, `host`, and `site`.
+This boots the **existing local** Prometheus/Grafana and overlays its Prometheus config with `remote_write`. It preserves the existing TSDB and Grafana volumes. Hybrid relies on Prometheus WAL buffering, whose retention/compaction can discard unsent data during extended outages (roughly two hours is a planning heuristic, not a guarantee); choose `agent` with vmagent's disk queue for longer intermittent outages. Hybrid does not forward the full local Grafana configuration, dashboards or alerts — only sampled metrics. The generated Hybrid scrape config sets `external_labels` for outbound identity. Stock remote VM and Host samples carry `host_id`, `host`, and `site`; do not assume every custom series or incoming label is trusted.
 
 **Important:** The generated `prometheus-hybrid.yml` provides the standard exporter scrape job. If you have customized the original `prometheus.yml` with more scrape jobs, review and merge them into the hybrid config after the first deployment. Subsequent `up` runs preserve customized scrape files. A deliberate `KVM_VM_REMOTE_RECONFIGURE=1` overwrites generated configurations; back up custom jobs first. The original file is never overwritten. Do not run Agent and Hybrid concurrently for the same Host.
 
-## 4. Mode changes and configuration persistence
+## 4. Register expected hosts and verify identity
 
-To change from `agent` to `hybrid` (or the reverse), **stop the current mode first** and then start the other mode. `down` never includes `docker compose down -v`; queue, Prometheus TSDB and Grafana volumes remain intact. The `remote.json` UUID and `remote-password` file are reused. A mode marker prevents accidentally running the original local installer over a remote configuration.
+The central stack runs a private, read-only **inventory exporter** (Docker internal port 9187; no published port), which reads `/etc/kvm-vm/central/inventory/hosts.json`. VictoriaMetrics Single scrapes it every 30 seconds and creates `kvm_vm_host_expected{host_id,host,site} 1` for enabled hosts. `KvmVmHostOffline` checks this persistent expected-host series against remote VM collector reports seen during the last five minutes, with an additional five-minute alert `for` duration. It therefore detects **complete host disappearance** (unlike `up == 0` on a remote writer). A missing collector is not necessarily a powered-off host: network failure, exporter failure and remote-write failure may also cause it.
 
-```bash
-sudo ./tools/setup-monitoring.sh down --mode agent
-sudo ./tools/setup-monitoring.sh up --mode hybrid
-```
-
-To return to local-only, stop the remote mode, then run `sudo ./tools/setup-monitoring.sh up`. The localhost VM exporter may be reused if it is already running. Note: mode switching does not transfer samples between vmagent's queue and Prometheus's WAL. Wait for the queue to drain before cutting over if continuity matters.
-
-Saved settings: `/etc/kvm-vm/monitoring/remote.json`, `remote.env`, `remote-password`, `vmagent-scrape.yml`, `prometheus-hybrid.yml`, and per-mode Compose files. Saved identity and secret files are not overwritten on subsequent runs. To **change** a remote endpoint or username, explicitly edit `remote.json`, review the change, and re-run the mode's `up` with `KVM_VM_REMOTE_RECONFIGURE=1` (overwrites generated scrape files). To rotate a password, update `remote-password` only after registering a new hash at the ingress and validate both before revoking the old credential. Avoid changing the vmagent remote URL unnecessarily because it can change how on-disk queues are associated with endpoints.
-
-## 5. Central Dashboard and alerts
-
-The central Grafana dashboards are automatically provisioned:
-
-- **KVM Fleet Overview:** hosts with recent metrics, running VM count, VM CPU, assigned memory, disk and network activity by Host.
-- **KVM Fleet – Virtual Machines:** Site/Host/VM filters, VM CPU/memory/I/O and collector status. Different Hosts can have VMs with the same names; do not group by `vm` alone.
-
-`vmalert` evaluates rules for collector failures and sustained growth of the Agent remote-write queue. **Alertmanager is deliberately installed without a notification receiver**: no email/webhook is sent until an operator configures a receiver in `/etc/kvm-vm/central/alertmanager/alertmanager.yml`. Central lost-host alerts require an explicit persistent inventory of **expected** hosts; without it, a completely offline Host produces no new metrics and cannot reliably be inferred from `up == 0`. This additional inventory and automated credential lifecycle are a follow-on production hardening phase, not part of this deployment.
-
-## 6. Operational checks
-
-From each KVM Host:
-
-```bash
-curl -fsS http://127.0.0.1:9179/metrics | grep kvm_vm_collector_success
-curl -fsS http://127.0.0.1:8429/metrics | head  # Agent only
-sudo ./tools/setup-monitoring.sh status --mode agent
-```
-
-From the central host:
-
-```bash
-curl -fsS http://127.0.0.1:8428/health
-sudo ./tools/setup-central-monitoring.sh status
-sudo ./tools/setup-central-monitoring.sh logs
-```
-
-A queue-growth alert can only reach the Central server while data is flowing; it cannot observe a completely disconnected Host in real time. A future persistent Host inventory is necessary for reliable offline-host alerts.
-
-At the Central query API verify `kvm_vm_collector_success{host_id="..."}` exists after the first successful upload. If the Host is NATed, no inbound port is necessary; only outbound HTTPS to the ingress is required.
-
-## Limitations and deployment validation
-
-The scripts and YAML can be tested without Docker/virsh; a real KVM host and public TLS ingress are required to verify actual scraping, ingest, Grafana panels and alert delivery. A single VictoriaMetrics instance is **not high availability**: back up its volumes and test restore. Restrict retention and queue storage budgets, monitor disk usage, and avoid leaving the Central API publicly accessible. The central endpoint remains intentionally inaccessible from remote hosts **until you finish the authenticated HTTPS ingress setup**.
-
-## 6. Expected-host inventory and offline alerts (Phase 5 extension)
-
-The central stack now runs a private, read-only **inventory exporter** (Docker internal port 9187; no published port), which reads `/etc/kvm-vm/central/inventory/hosts.json`. VictoriaMetrics Single scrapes it every 30 seconds and creates `kvm_vm_host_expected{host_id,host,site} 1` for enabled hosts. `KvmVmHostOffline` checks this persistent expected-host series against remote VM collector reports seen during the last five minutes, with an additional five-minute alert `for` duration. It therefore detects **complete host disappearance** (unlike `up == 0` on a remote writer). A missing collector is not necessarily a powered-off host: network failure, exporter failure and remote-write failure may also cause it.
-
-**Important:** HTTP ingestion enrollment and expected-host inventory are intentionally separate. After installing Agent/Hybrid, copy the UUID from the **Host** (`/etc/kvm-vm/monitoring/remote.json`) and register it on the **Central Server**:
+**Important:** HTTP ingestion enrollment and expected-host inventory are intentionally separate. For legacy ingress, after installing Agent/Hybrid, retrieve the UUID on the **Host** with [`kvm-vm identity --json`](integration/identity.md) and register it on the **Central Server**:
 
 ```bash
 sudo ./tools/setup-central-monitoring.sh inventory add \
@@ -190,27 +140,31 @@ sudo ./tools/setup-central-monitoring.sh inventory enable eb90c4d9-7b0e-4f4f-a4b
 sudo ./tools/setup-central-monitoring.sh inventory remove eb90c4d9-7b0e-4f4f-a4bb-9490124c85ae
 ```
 
-Register only hosts that **should** report, using exactly the same `host_id` as the Remote Writer. Otherwise a false-offline alarm is expected. Stale data may remain queryable after decommission until retention expires. Disabling inventory prevents offline alarms, but **does not revoke authentication**; revoke the NGINX Basic Auth credential separately when retiring a Host. Registry data survives stack upgrades, `down`, and restarts.
+For managed ingress, perform the same registration before `writers activate` using the preselected UUID. Compare against the Host identity after deployment. Register only hosts that **should** report, using exactly the same `host_id` as the Remote Writer. Otherwise a false-offline alarm is expected. Stale data may remain queryable after decommission until retention expires. Disabling inventory prevents offline alarms, but **does not revoke authentication**; revoke the NGINX Basic Auth credential separately when retiring a Host. Registry data survives stack upgrades, `down`, and restarts.
 
 On a newly enrolled host that has not yet uploaded metrics, offline alerts start after the configured window. The Central `KvmVmInventoryScrapeFailed` alert catches an inventory exporter failure; `KvmVmHostOffline` cannot be evaluated reliably if the central inventory service is not healthy.
 
-## 7. Host-level CPU/memory/disk and network metrics
+The optional legacy Host `--tenant` / `set-tenant` metadata is for auditing only. Before using these options on an older deployment, perform the reviewed template sync below; the CLI checks that the deployed inventory exporter matches the current template. Host metadata does not propagate to VM ownership. For independent operator VM history use [Ownership registry](monitoring-registry.md); with an existing Panel, use its authoritative database instead.
 
-Agent and Hybrid now include a localhost-only **node_exporter** container (pinned `v1.12.1`) bound to `127.0.0.1:9100` on the KVM host. The containers use Linux host networking, PID namespace and a read-only `/:/host` mount so that they monitor the **host**, not just the Docker container. `node_exporter` provides host CPU, memory, filesystem and network metrics without entering any VM.
+### Host metrics
+
+Agent and Hybrid include a localhost-only **node_exporter** container (pinned `v1.12.1`) bound to `127.0.0.1:9100` on the KVM host. The containers use Linux host networking, PID namespace and a read-only `/:/host` mount so that they monitor the **host**, not just the Docker container. `node_exporter` provides host CPU, memory, filesystem and network metrics without entering any VM.
 
 Agent `vmagent-scrape.yml` or Hybrid `prometheus-hybrid.yml` collects node_exporter at 15-second intervals, with the same host identity as VM metrics. The **KVM Hosts Overview** central Dashboard correlates expected/online hosts with Host CPU, available RAM, storage and network activity. Some virtual filesystems are excluded from disk alerts. All node_exporter connections remain local to the KVM host, with no new WAN port.
 
-**Existing Agent/Hybrid installations:** configuration copies are deliberately preserved during normal `up`. To use node_exporter, back up custom scrape/Compose files and explicitly regenerate/recreate the deployment:
+If port 9100 is occupied, reconcile the existing collector before deployment. Existing deployments must use a reviewed reconfiguration to adopt updated scrape/Compose templates (see upgrades below).
 
-```bash
-sudo env KVM_VM_REMOTE_RECONFIGURE=1 \
-  ./tools/setup-monitoring.sh up --mode agent
-# or: ... --mode hybrid
-```
+## 5. Dashboards, alerts and notifications
 
-This opt-in update will overwrite generated Agent/Hybrid scrape and Compose templates (but not `remote.json`, authentication secrets, or stored metrics). Review any extra scrape jobs first. If port 9100 is already occupied by an existing node_exporter, reconcile it before starting the new container; do not run two collectors on the same port.
+| Dashboard | Contents |
+|---|---|
+| KVM Fleet Overview | Expected/reporting Hosts, VM totals, Agent queue, Hybrid lag, collector sample age, Central free space |
+| KVM Hosts Overview | Host CPU, memory, filesystem and network activity |
+| KVM Fleet – Virtual Machines | Site/Host/VM/UUID filters, CPU, memory, disk IOPS/latency, network rates and collector status |
 
-## 8. Email and Webhook alert notifications
+For exact alert names and thresholds use [rules.yml](../tools/monitoring/central/rules/rules.yml). Host disappearance and inventory scrape failure are distinct from VM collector failure; queue growth/discard, rejection, Hybrid lag/failure, delayed samples, Host memory/disk pressure and Central component/storage health also have rules. A completely disconnected Host cannot report its own queue state; use local diagnostics and an independent observer (see [Security and reliability](monitoring-security-reliability.md)). No notification is sent until an operator configures a receiver.
+
+### Email and Webhook notifications
 
 Alertmanager v0.34.2 (for file-backed Webhook URLs and implicit SMTP TLS configuration) starts with the `unconfigured` receiver, intentionally sending nothing until an administrator supplies a destination. Both methods keep secret material **out of the Compose environment and Alertmanager YAML** by using read-only secret-file mounts. Alertmanager config remains private to the Central Host; no public Alertmanager port is opened.
 
@@ -228,7 +182,22 @@ sudo ./tools/setup-central-monitoring.sh reload
 
 No test message is sent automatically; confirm delivery using a controlled test alert before trusting the notification channel. For HTTP Webhooks, the destination must accept the [Alertmanager generic JSON webhook schema](https://prometheus.io/docs/alerting/latest/configuration/#webhook_config), not an arbitrary Slack/Discord JSON format. SMTP credentials must be provisioned by the operator. The secret file within Central is world-readable only **inside** an administrator-only (`0700`) parent directory on the host so that the non-root Alertmanager process can read its container mount. Root and Docker administrators can still read these secrets.
 
-## 9. Updating a previously deployed Central stack
+## 6. Mode changes and configuration persistence
+
+To change from `agent` to `hybrid` (or the reverse), **stop the current mode first** and then start the other mode. `down` never includes `docker compose down -v`; queue, Prometheus TSDB and Grafana volumes remain intact. The `remote.json` UUID and `remote-password` file are reused. A mode marker prevents accidentally running the original local installer over a remote configuration.
+
+```bash
+sudo ./tools/setup-monitoring.sh down --mode agent
+sudo ./tools/setup-monitoring.sh up --mode hybrid
+```
+
+To return to local-only, stop the remote mode, then run `sudo ./tools/setup-monitoring.sh up`. The localhost VM exporter may be reused if it is already running. Note: mode switching does not transfer samples between vmagent's queue and Prometheus's WAL. Wait for the queue to drain before cutting over if continuity matters.
+
+Saved settings: `/etc/kvm-vm/monitoring/remote.json`, `remote.env`, `remote-password`, `vmagent-scrape.yml`, `prometheus-hybrid.yml`, and per-mode Compose files. Saved identity and secret files are not overwritten on subsequent runs. To **change** a remote endpoint or username, explicitly edit `remote.json`, review the change, and re-run the mode's `up` with `KVM_VM_REMOTE_RECONFIGURE=1` (overwrites generated scrape files). For password rotation stop the writer and follow the [coordinated rotation procedure](monitoring-security-reliability.md#rotate-without-changing-destination-or-queue); use `replace-password` rather than overwriting a live bind mount. Do not send a queued batch with invalid credentials. Avoid changing the vmagent remote URL unnecessarily because it can change how on-disk queues are associated with endpoints.
+
+If interrupted deployment leaves `.mode.pending`, rerun `up` or `down` in the recorded mode; do not manually remove the marker.
+
+## 7. Upgrade existing deployments
 
 Initial `up` and subsequent restarts never overwrite customized template files. To adopt the new Inventory exporter, scrape configuration, rules and Host dashboard, explicitly run:
 
@@ -237,22 +206,32 @@ sudo ./tools/setup-central-monitoring.sh sync-templates
 sudo ./tools/setup-central-monitoring.sh reload
 ```
 
-`sync-templates` creates a dated backup under `/etc/kvm-vm/central/backups/`, then replaces the bundled **Compose, inventory exporter, scrape, fleet Dashboard and alerting rules**. It **preserves** inventory `hosts.json`, `.env`, Grafana history, VictoriaMetrics volumes, authentication credentials, and the customized Alertmanager receiver. Review modified Compose/alerting rules before running it. `reload` uses Docker Compose `up -d --force-recreate`; containers briefly restart, but named volumes are kept. Running `up` alone might not reload an atomically replaced bind-mounted file.
+`sync-templates` creates a dated backup under `/etc/kvm-vm/central/backups/`, then replaces the bundled **Compose, inventory exporter, scrape, all three Dashboards and alerting rules**. It **preserves** inventory `hosts.json`, `.env`, Grafana history, VictoriaMetrics volumes, authentication credentials, and the customized Alertmanager receiver. Review modified Compose/alerting rules before running it. `reload` uses Docker Compose `up -d --force-recreate`; containers briefly restart, but named volumes are kept. Running `up` alone might not reload an atomically replaced bind-mounted file.
 
-### Operational validation
+For Host updates, check the queue, stop the current mode, and back up custom scrape/Compose files including private CA mounts. Render the new templates without starting services, review the differences and merge necessary custom jobs and trust configuration, then start without the reconfigure flag. For example, Agent with the default directory:
 
-After configuring NGINX TLS/authentication and deploying a Host, verify:
+```sh
+sudo ./tools/setup-monitoring.sh down --mode agent
+sudo env KVM_VM_REMOTE_RECONFIGURE=1 ./tools/setup-monitoring.sh render /etc/kvm-vm/monitoring --mode agent
+# Review and merge required custom settings from the backup before starting.
+sudo ./tools/setup-monitoring.sh up --mode agent
+```
 
-1. Central inventory endpoint (`docker compose ... logs inventory`) is healthy, and VictoriaMetrics has `up{job="kvm-vm-inventory"} == 1`.
-2. `kvm_vm_host_expected{host_id="..."}` and `kvm_vm_collector_success{host_id="..."}` both exist with the *same* UUID.
-3. `node_memory_MemAvailable_bytes{host_id="..."}` and other Host metrics exist.
-4. Temporarily stop Agent/Hybrid uploads and validate `KvmVmHostOffline` after roughly 10 minutes, then verify it resolves when uploads resume.
-5. Trigger a controlled test alert to validate email/Webhook delivery and Alertmanager routing; do not mistake a configured receiver for verified delivery.
+Use `--mode hybrid` for Hybrid and the actual saved directory if customized. This preserves identity, secret files and named volumes but replaces generated configurations. Upgrade the installed CLI and restart the exporter to activate new metrics. Local-only dashboard upgrades are described in [Local monitoring](monitoring-stack.md).
 
-The default regression suite runs offline. The dedicated dual-NAT lab exercises real KVM guests, Docker, HTTPS writes, and independent webhook delivery. The development-only tenant ingress stays separate from this shared admin deployment. See the [lab instructions](../tests/e2e/README.md) and [recovery and handoff guide](plans/20261118_central-hardening/README.md).
+## 8. Verify and operate
 
-See [Central VM and tenant registry](monitoring-registry.md) for operator-only ownership metadata.
+```sh
+# On the Host
+sudo kvm-vm identity --json
+curl -fsS http://127.0.0.1:9179/healthz
+sudo ./tools/setup-monitoring.sh diagnostics --mode agent  # or hybrid
+# On Central
+curl -fsS http://127.0.0.1:8428/health
+sudo ./tools/setup-central-monitoring.sh status
+sudo ./tools/setup-central-monitoring.sh logs
+```
 
-- [Managed writer lifecycle, delivery diagnostics, independent observer and resilience drills (phases 3–4)](monitoring-security-reliability.md).
+Using the internal query API or admin Grafana, verify that `kvm_vm_host_expected` and `kvm_vm_collector_success` carry the same Host UUID, `kvm_vm_domain_vcpus` has the correct `vm_id`, node_exporter samples are present, and `up{job="kvm-vm-inventory"} == 1`. Check actual new sample timestamps. Test the offline and notification paths on a disposable lab; do not deliberately disconnect a production host for acceptance without a maintenance plan. See [Monitoring acceptance](monitoring-acceptance.md) and [Security and reliability](monitoring-security-reliability.md) for longer outages, independent observation and backup/restore.
 
-[External VM Panel integration (trusted service only; direct customer access remains blocked)](integration/monitoring-api.md).
+**Customer access:** Central Grafana and raw TSDB remain operator-only (`customer-readiness` exits 2). [External Panel integration](integration/monitoring-api.md) is a separate trusted-service option with its own acceptance; do not hand its credentials or arbitrary query access to customers. [ADR 0006](adr/0006-central-monitoring-tenant-security-boundary.md) governs native storage isolation; [ADR 0007](adr/0007-external-panel-monitoring.md) governs the Panel path.

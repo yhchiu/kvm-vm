@@ -145,3 +145,5 @@ Tenant inventory ownership and fail-closed customer access are tested in `test_m
 ## Tenant security acceptance (Phase 5)
 
 See [tenant contract](tenancy/README.md) for the opt-in live HTTP harness and offline self-tests. A passing self-test is not a live backend isolation result.
+
+For all monitoring test and rollout gates, see [Monitoring acceptance](../docs/monitoring-acceptance.md). Existing Panel integration has a separate [live acceptance checklist](tenancy/panel-acceptance.md); native tenancy tests are not a substitute.

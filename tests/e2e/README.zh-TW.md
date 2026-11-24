@@ -17,6 +17,21 @@
 
 實體 Host 可以透過三個 libvirt bridge 管理測試 VM，中央 VM 內還會設置兩條針對 Site LAN 的 blackhole routes，避免實體 Host 的管理橋接造成旁路，因此**中央 VM 不應能直接進入兩個 Site LAN**；`connectivity` 測試會檢查此條件。Router 使用 iptables NAT，WAN 再透過 libvirt NAT 出站，形成雙層 NAT。測試不修改實體 Host 的防火牆，也不使用 libvirt `default` network。
 
+```mermaid
+flowchart LR
+    A["Host A · Agent · 10.10.1.10"] --> RA["Router A · NAT · WAN 172.30.0.11"]
+    B["Host B · Hybrid · 10.10.2.10"] --> RB["Router B · NAT · WAN 172.30.0.12"]
+    RA --> W["WAN bridge · 172.30.0.0/24"]
+    RB --> W
+    W --> C["Central · 172.30.0.10:443"]
+    W --> N[Physical host libvirt NAT] --> I[Upstream network]
+    H[Physical host SSH controller] -.-> A
+    H -.-> B
+    H -.-> C
+    H -.-> RA
+    H -.-> RB
+```
+
 ## 前置條件
 
 - **建議使用可任意操作的獨立實機**，Linux、root、`/dev/kvm`、`qemu:///system`。建議至少 **24 GiB RAM、80 GiB 可用硬碟**，並預留 Nested VM 的額外資源。
@@ -77,11 +92,11 @@ sudo ./tests/e2e/lab.sh down --purge
 
 ## 邊界與已知限制
 
-1. 目前開發執行環境沒有可供測試的實體 KVM／Docker daemon，**離線測試通過不代表真實五台 VM 已成功建立**。需要實機執行並保留 JSON 報告。
+1. **歷史實機證據有版本限制**，見[監控驗收](../../docs/monitoring-acceptance.zh-TW.md)。離線測試不代表當前版本已完成五台 VM 實測。
 2. 首次自動部署依賴 cloud-init 的網卡命名、各 Linux 發行版的 Docker Compose v2 套件名稱與網際網路套件來源。若不相容，應修正並加入測試。
 3. 本機多 NAT 可驗證傳輸與故障邏輯，但不能取代真正跨 ISP／跨機房的獨立故障驗證。
-4. 測試專用 CA 期限七天，不使用 `insecure_skip_verify`；正式憑證與認證輪替為獨立待辦。
-5. 本版自動化尚未涵蓋 Alertmanager Email／Webhook **實際送達**、完整備份還原、實際 Guest OS 的負載與 Agent Queue 滿載測試，請勿視為已完成。
+4. 測試專用 CA 期限七天，不使用 `insecure_skip_verify`；Managed Writer 輪替／撤銷另有下列演練。
+5. 基礎九項不涵蓋完整通知、佇列滿載、Guest OS 負載或異地 DR。延伸演練包含獨立模擬收件與空白 Guest 還原，不能視為正式環境驗收。
 6. `e2e-web01` 是無 OS 開機碟的真實 QEMU Domain，可驗證 libvirt VM 身分與指標，但不能代表實際 OS 的 CPU／記憶體負載測試。
 
 ## 不需要 KVM 的離線檢查
@@ -92,4 +107,27 @@ bash -n tests/e2e/lab.sh
 python3 -m py_compile tests/e2e/lab.py tests/e2e/inject_lab_ca.py
 ```
 
-獨立的安裝中斷、兩租戶 queue 移交與空白 VM 還原演練，可在 bootstrap 後逐一執行。詳見[演練步驟與驗收條件](../../docs/plans/20261118_central-hardening/README.md)。
+## 延伸演練
+
+完成 bootstrap 後，在同一個已建立 Lab ID 逐一執行，`harden` 請換成實際 ID。不得使用正式憑證；還原另需空白 Guest（見[演練條件](../../docs/plans/20261118_central-hardening/README.md)）。
+
+```sh
+sudo python3 tests/e2e/writer_recovery.py --lab-id harden
+sudo python3 tests/e2e/tenant_handoff.py --lab-id harden
+sudo python3 tests/e2e/recovery_drill.py --lab-id harden
+sudo python3 tests/e2e/managed_writer_drill.py --lab-id harden
+sudo python3 tests/e2e/resilience_drill.py --lab-id harden --host host-a --seconds 3600
+sudo python3 tests/e2e/resilience_drill.py --lab-id harden --host host-a --seconds 86400 --kill-writer --allow-loss
+sudo python3 tests/e2e/resilience_drill.py --lab-id harden --host host-a --seconds 259200 --allow-loss
+sudo python3 tests/e2e/resilience_drill.py --lab-id harden --host host-b --seconds 86400 --allow-loss
+```
+
+| 演練 | 檢查 |
+|---|---|
+| writer_recovery | 中斷部署復原、Writer 數量與新樣本 |
+| tenant_handoff | Lab 兩套 Single 的 Host-level 舊 Queue 移交，非正式 VM-level 隔離 |
+| recovery_drill | 冷備份、空白 Guest 還原、獨立通知與原始樣本 |
+| managed_writer_drill | 真實 TLS／儲存端 Host Label 覆寫、輪替與撤銷 |
+| resilience_drill | 1/24/72h 中斷、可選 SIGKILL、本機診斷、原始樣本補傳及缺口 |
+
+長時間中斷使用原始成功 Collector 樣本時間戳，預設最大間隙 45 秒（15s scrape），`--allow-loss` 僅量測，缺口標記 LOSS_OR_DELAY_OBSERVED。不能由單一 heartbeat 推論所有序列皆已補傳。若控制端被 SIGKILL 或斷電，手動 `heal`。以合成負載在隔離環境另測 Queue 滿載、磁碟空間、429/503/401/403、標籤上限與畸形 payload；驗證具代表性的 VM/Host Counter、實際通知及異地還原。完整驗收條件見[英文 Lab](README.md#extended-drills)與[監控驗收](../../docs/monitoring-acceptance.zh-TW.md)。

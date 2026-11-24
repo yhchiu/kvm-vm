@@ -1,12 +1,38 @@
 # 第三方 VM Panel 監控整合（契約 v1）
 
-本階段為 Phase 5.1，基線 `b3a2a1ed`。完整 API、設定範例與驗收規範請見
-[英文整合文件](monitoring-api.md)。架構決策見 [ADR 0007](../adr/0007-external-panel-monitoring.md)。
+[English](monitoring-api.md) · [監控架構](../monitoring.zh-TW.md)
+
+完整 API、設定範例與驗收規範請見
+[英文整合文件](monitoring-api.md)。架構決策見 [ADR 0007](../adr/0007-external-panel-monitoring.zh-TW.md)。
 
 VM Panel 負責登入、ACL、服務歸屬、歷史 VM/Host 映射及圖表；kvm-vm 保持採集、
 Remote Write、中央儲存、管理員 Grafana。沿用 VictoriaMetrics Single，不新增常駐
 API Server 或同步客戶資料庫。中央原有 Registry 可供獨立管理員使用；Panel 整合
 時以 Panel 為權威來源。客戶不直接存取 PromQL、Grafana、TSDB 或服務憑證。
+
+## 查詢流程與信任邊界
+
+```mermaid
+sequenceDiagram
+    participant U as 客戶瀏覽器
+    participant P as VM Panel Backend
+    participant D as Panel ACL 與歸屬 DB
+    participant Q as 私有 NGINX 查詢入口
+    participant V as VictoriaMetrics Single
+    U->>P: Service ID、Metric、時間範圍
+    P->>D: 驗證 Session 並授權歷史範圍
+    D-->>P: Grant revision 與 Placements 或拒絕
+    P->>P: 配額與固定查詢規劃
+    loop 每個授權區間
+        P->>Q: GET query_range 與服務憑證
+        Q->>V: 固定 API 路徑與可信參數
+        V-->>P: 經 NGINX 回傳 Matrix
+    end
+    P->>P: 驗證 UUID、時間戳並處理缺值
+    P->>D: 回傳前重新授權
+    D-->>P: Grant 未變更或拒絕
+    P-->>U: 無內部 Labels 的資料點或安全錯誤
+```
 
 ## 部署
 
@@ -24,6 +50,21 @@ API Server 或同步客戶資料庫。中央原有 Registry 可供獨立管理�
 讀寫流量/IOPS、Network 流量/封包/錯誤/丟棄指標。採固定 Host UUID + Domain UUID
 精確比對，並去除結果的內部 Labels；不提供原始累積計數、Host 層指標、任意查詢。
 
+
+| Metric ID | 單位／意義 |
+|---|---|
+| `cpu_cores` / `cpu_ratio` / `vcpus` | 核心數／比例（1 = 100%）／vCPU 數 |
+| `memory_assigned` / `memory_guest_used` | bytes；分配與 Guest 估計使用量不同 |
+| `disk_capacity` | bytes；觀測到的邏輯磁碟大小，非 Guest 檔案系統使用量 |
+| `disk_read` / `disk_write` | bytes/s |
+| `disk_read_iops` / `disk_write_iops` | ops/s |
+| `network_receive` / `network_transmit` | bytes/s，Guest 觀點 |
+| `network_receive_packets` / `network_transmit_packets` | packets/s |
+| `network_receive_errors` / `network_transmit_errors` | errors/s |
+| `network_receive_drops` / `network_transmit_drops` | packets/s |
+
+以 [v1.json](../../tools/monitoring/queries/v1.json) 為實際指標契約；不能使用任意 Metric 名稱。
+
 ```python
 from examples.monitoring_client import QueryClient, PanelMonitoring
 
@@ -39,9 +80,37 @@ Panel 實作 `authorize(principal, service_id)`，由已驗證 session 與可信
 principal、UUID、PromQL、後端 URL；未知歸屬或授權失敗拒絕查詢，查詢後重新授權。
 回傳 `schema_version`、metric、unit、step 及 `points: [[timestamp, value_or_null],...]`；
 缺值為 null，沒有資料不代表 0。CPU ratio 的 1 為 100%，流量單位 bytes/s。
-預設最大 30 天、1000 點、最小 step 15 秒、16 段歷史區間；無共享快取。
+
+| 限制 | 預設 |
+|---|---|
+| 查詢跨度 | 30 天 |
+| 資料點 | 1,000，最小 step 15 秒，省略 step 時自動調整 |
+| Placement 區間 | 16 段 |
+| 每次上游 JSON | 4 MiB |
+| Socket timeout / cooperative budget | 10s / 20s |
+| 共享回應快取 | 無 |
+
+另需 Panel 全域與每用戶／服務配額、並發限制及絕對逾時。不得將 `admit` 實作成無條件允許；若增加快取，每次命中仍須重新授權，鍵值須包含 ACL revision、principal、完整 Placement、metric、時間、step 及 schema。完整錯誤對應見英文契約。
 
 ## 歷史隔離及限制
+
+以移交／Placement 邊界 T 為例（非比例圖）：
+
+```mermaid
+flowchart LR
+    A["舊授權：可查詢"] --> B["舊區間最後 180s 保留空白"]
+    B --> T["T：舊結束不含／新起點包含"]
+    T --> C["新來源時間緩衝 180s"]
+    C --> W["新 Lookback：Gauge 60s / Rate 300s"]
+    W --> E["新授權最早可查詢點"]
+```
+
+| 類別 | Lookback | 新區間最早評估時間 | 舊已關閉區間 |
+|---|---:|---:|---|
+| Gauge | 60s | T + 240s | 早於 T − 180s |
+| Rate | 300s | T + 480s | 早於 T − 180s |
+
+實際點仍須符合請求的 step 網格；區間太短時留空，不擴大授權範圍。空白不代表零使用量。
 
 VM 改名以 UUID 辨識，遷移/重建由 Panel 保存 Placement 歷史，不推測未知歷史。
 每個區間獨立查詢，顯式 rate window 300 秒、gauge 60 秒，另外保留 180 秒來源時間

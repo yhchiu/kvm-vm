@@ -8,7 +8,7 @@
 離線驗證：`python3 -m pytest tests/test_tenant_security_contract.py -q`。
 測試包含故意存在安全漏洞的替身；測試替身通過不代表真實 Backend 通過。
 
-Phase 6 在隔離環境準備實際 write/read gateway、A/B/internal 三個獨立的管理員
+未來確有原生租戶隔離需求時（Phase 6），在隔離環境準備實際 write/read gateway、A/B/internal 三個獨立的管理員
 storage oracle，及可執行的 fixture controller。依 `fixture.example.json` 建立 0600
 設定檔與獨立憑證檔，替換成真實測試網址、攻擊路徑與受信任 CA。僅在確認沒有生產
 資源後才設定 `disposable=true`。不可使用 `--insecure` 或將密碼放在 CLI 參數。
@@ -34,3 +34,5 @@ labels API、查詢快取、偽造 VM/Host/Tenant、路徑/Header/參數繞過�
 通過而讓 oracle 使用測試期望值生成結果。延遲樣本測試不等同實際 WAL/Queue 補傳，
 另執行既有 E2E drills。正式客戶開放仍需 Grafana/網路繞過、憑證過期、真實
 佇列、容量、備份／還原等候選架構的驗收。
+
+既有 Panel 整合優先採 [Panel 實機驗收](panel-acceptance.md)。本契約僅用於未來原生儲存隔離，不是目前 Panel 上線門檻的替代。

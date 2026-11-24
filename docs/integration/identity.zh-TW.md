@@ -1,6 +1,28 @@
 # 監控識別碼查詢（CLI contract v1）
 
+[English](identity.md) · [監控導覽](../monitoring.zh-TW.md)
+
 在每台 KVM Host 更新既有 CLI，透過可信任的管理通道執行，不需要新增服務或資源採樣。
+
+## 識別碼對應
+
+| 欄位 | 來源 | 生命週期 |
+|---|---|---|
+| `host_id` | Agent／Hybrid `remote.json` | 首次遠端部署自動產生，或以 `KVM_VM_MONITOR_HOST_ID` 預先指定；停止及切換模式保留 |
+| `vm_id` | libvirt Domain UUID | 重啟、改名及保留原 UUID 的遷移不變；Clone／重建通常新 UUID |
+| `service_id` | Panel 業務資料庫（不在 CLI 回傳） | VPS 服務可跨 VM 重建；Panel 保存映射及歷史 |
+
+```mermaid
+flowchart LR
+    P[Panel 管理通道] -->|可信 SSH| H[identity --json]
+    R[remote.json] --> H
+    L[本機 libvirt] --> H
+    H --> M[Panel Host / VM 映射]
+    M --> G[授權 Placement 歷史]
+    D[Panel 客戶與服務 ACL] --> G
+```
+
+`identity` 只回傳識別快照，不會自動建立 Ownership。
 
 ```sh
 sudo kvm-vm identity

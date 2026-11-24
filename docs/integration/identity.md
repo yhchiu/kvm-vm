@@ -1,8 +1,30 @@
 # Monitoring identity discovery (CLI contract v1)
 
+[繁體中文](identity.zh-TW.md) · [Monitoring guide](../monitoring.md)
+
 Run on each KVM Host using the existing trusted management channel, not on
 Central or in a customer session. Update the existing `kvm-vm` CLI; no new
 service or resource sampling is required.
+
+## Identifier mapping
+
+| Field | Source | Lifecycle |
+|---|---|---|
+| `host_id` | Agent/Hybrid `remote.json` | Generated on first remote deployment or preselected with `KVM_VM_MONITOR_HOST_ID`; retained across stops and mode changes |
+| `vm_id` | libvirt Domain UUID | Stable across restart, rename and UUID-preserving migration; clone/recreation normally uses a new UUID |
+| `service_id` | Panel business DB (not CLI output) | VPS service may survive recreation; Panel maintains mapping/history |
+
+```mermaid
+flowchart LR
+    P[Panel management channel] -->|Trusted SSH| H[identity --json]
+    R[remote.json] --> H
+    L[Local libvirt] --> H
+    H --> M[Panel Host / VM mapping]
+    M --> G[Authorized placement history]
+    D[Panel service and customer ACL] --> G
+```
+
+Identity returns discovery only, never grants ownership.
 
 ```sh
 sudo kvm-vm identity

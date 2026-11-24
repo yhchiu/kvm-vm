@@ -1,6 +1,22 @@
 # 中央 Tenant 與 VM 歸屬 Registry
 
+[English](monitoring-registry.md) · [監控架構](monitoring.zh-TW.md)
+
 Registry 是管理員維護的 metadata，**不是授權機制**。中央維持管理員專用，customer-readiness 仍為 BLOCKED。不依賴特定 TSDB，不修改舊 Host Inventory，Host 的 tenant_id 不會自動繼承到 VM。支援同 Host 不同租戶與同租戶跨 Host。
+
+已有 VM Panel 時，客戶所有權與 Placement 歷史以 Panel 為唯一權威資料來源（[ADR 0007](adr/0007-external-panel-monitoring.zh-TW.md)）；不要求在此重複登錄。Host Identity 使用 [`kvm-vm identity --json`](integration/identity.zh-TW.md)。
+
+```mermaid
+flowchart LR
+    H1[Host 1] --> V1[VM UUID A]
+    H1 --> V2[VM UUID B]
+    H2[Host 2] --> V3[VM UUID C]
+    V1 --> T1[Tenant A]
+    V2 --> T2[Tenant B]
+    V3 --> T1
+```
+
+箭頭只表示管理員記錄的位置及歸屬，不代表實際寫入路由。
 
 先用 inventory 登錄 Host，再使用真實 UUID（由 virsh domuuid 或 monitor --json 取得），以下 UUID 為占位符：
 
@@ -20,4 +36,4 @@ sudo ./tools/setup-central-monitoring.sh registry vm-retire VM_UUID
 
 資料位於 `/etc/kvm-vm/central/registry/ownership.json`（0600、schema v1、目錄 0700）。寫入採獨立 flock、原子替換與 fsync；不支援版本或損毀檔案拒絕操作，不會重設。部署與模板同步不覆寫資料；中央設定備份須涵蓋該目錄，備份時暫停管理異動。不得在操作期間手改檔案或移除鎖。
 
-此功能不會更改 VM、憑證、Remote Write 路徑或歷史指標；未來須完成可信 Host 身分、依採樣時間驗證 VM 歸屬（含補傳）、租戶儲存及查詢隔離，才能開放客戶。
+此功能不會更改 VM、憑證、Remote Write 路徑或歷史指標；若未來要開放中央原生租戶存取，須完成可信 Host 身分、依採樣時間驗證 VM 歸屬（含補傳）、租戶儲存及查詢隔離，才能開放客戶。

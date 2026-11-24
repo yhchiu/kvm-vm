@@ -19,13 +19,13 @@
 
 ## 威脅模型
 
-- 已通過 HTTP Basic Auth 的 Host 仍可上傳任意 metrics label、偽造別台
+- Legacy HTTP Basic Auth 的 Host 仍可上傳任意 metrics label、偽造別台
   Host 的 `host_id` 或 `tenant_id`。不能把收到的 label 視為可信身分。
 - Grafana 的 Host/VM 變數、資料夾或 Dashboard 篩選都不是授權機制。
 - Inventory 的 `disable`/`remove` 不會撤銷 Remote Write 身分憑證。
 - 客戶不應取得中央原始查詢 API 或可繞過租戶限制的 Datasource。
 
-## 未來客戶登入的必要門檻
+## 未來直接中央客戶登入的必要門檻
 
 1. 建立儲存／查詢層真正的租戶分離，例如 VictoriaMetrics **Cluster** 的
    tenant-specific `vminsert`/`vmselect` 路徑、Grafana Mimir 或每租戶獨立後端。
@@ -43,4 +43,6 @@
 現階段保留較簡單的 Single 儲存；客戶存取需求啟用前再選定隔離後端
 與驗證流程，避免為純內部監控過度設計。
 
-受信任第三方 Panel 服務整合請見 [ADR 0007](0007-external-panel-monitoring.md)，不放寬中央客戶直接存取門檻。
+受信任第三方 Panel 服務整合請見 [ADR 0007](0007-external-panel-monitoring.zh-TW.md)，不放寬中央客戶直接存取門檻。
+
+Managed Writer 可選 Host UUID 綁定，需依真實儲存端驗證，仍不證明 VM 或 Tenant 授權。見[安全與可靠性](../monitoring-security-reliability.zh-TW.md)。

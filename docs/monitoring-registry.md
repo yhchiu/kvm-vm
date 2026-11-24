@@ -1,6 +1,22 @@
 # Central VM and tenant registry
 
+[繁體中文](monitoring-registry.zh-TW.md) · [Monitoring architecture](monitoring.md)
+
 Operator metadata only, **not authorization**. Central remains administrator-only and `customer-readiness` remains BLOCKED. The registry is independent of the TSDB and existing Host Inventory; Host tenant metadata is never inherited by VMs. A shared host can contain VMs owned by multiple tenants.
+
+With an existing Panel, the Panel owns customer/service placement history ([ADR 0007](adr/0007-external-panel-monitoring.md)); do not duplicate manual registrations for customer queries. Discover the Host and VM IDs with [`kvm-vm identity --json`](integration/identity.md).
+
+```mermaid
+flowchart LR
+    H1[Host 1] --> V1[VM UUID A]
+    H1 --> V2[VM UUID B]
+    H2[Host 2] --> V3[VM UUID C]
+    V1 --> T1[Tenant A]
+    V2 --> T2[Tenant B]
+    V3 --> T1
+```
+
+Arrows represent recorded placement and ownership, not actual ingestion routing.
 
 Register hosts in `inventory` first. Use actual UUIDs from `virsh domuuid VM` or `kvm-vm monitor --json`. Replace VM_UUID and HOST_UUID with canonical lowercase UUIDs.
 
@@ -25,4 +41,4 @@ Registration, transfer, move and retirement accept `--at UNIX_SECONDS` (UTC, no 
 
 The registry file `/etc/kvm-vm/central/registry/ownership.json` (schema v1, mode 0600) is created on first mutation; directory mode 0700. Writes use a separate flock file, atomic replacement and fsync. Do not edit the registry or remove the lock during operations. Unsupported/corrupt schema fails closed. `up`, `down`, `sync-templates`, `reload` do not overwrite it. Include this directory in protected central configuration backups; pause management mutations during backup/restore.
 
-Future isolation requires trusted Host credentials, VM ownership verification at sample time (including queue replay), isolated tenant storage/query access and exclusion of host-level and unassigned metrics. No routing, customer API, RBAC or credential changes are implemented.
+Future native storage isolation requires trusted Host credentials, VM ownership verification at sample time (including queue replay), isolated tenant storage/query access and exclusion of host-level and unassigned metrics. No routing, customer API, RBAC or credential changes are implemented.

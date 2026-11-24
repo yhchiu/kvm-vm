@@ -1,5 +1,7 @@
 # Prometheus 指標輸出（Exporter）
 
+[English](prometheus.md) · [監控架構](monitoring.zh-TW.md)
+
 `kvm-vm exporter` 會以 Prometheus text exposition 0.0.4 格式輸出**唯讀**的
 libvirt VM 資源資訊，沿用既有 `monitor` 的統計來源。無須在 VM 裡安裝 Agent，
 也無須新增 Python 相依套件、資料庫或預設啟動的背景服務。
@@ -37,15 +39,19 @@ kvm-vm exporter [VM] [--managed] [--listen IPV4] [--port PORT]
 
 ## 指標
 
+依資源類別列出全部指標；`{read,write,flush}` 等表示分別存在的指標後綴，而非單一指標名稱。
+
 所有 VM 指標都有 `vm`（名稱）與 `vm_id`（libvirt Domain UUID）label；磁碟增加 `disk`，網路增加 `interface`。
 若資料不可用就不輸出該指標，不會把未知值當成 0。
+
+原始 Exporter 不加監控 `host_id`、`host`、`site`；標準 Agent／Hybrid 採集／上傳設定會加入這些 Label。`identity` 讀取保存的設定，純 Local 不一定有 Host UUID，詳見[識別契約](integration/identity.zh-TW.md)。
 
 | 指標 | 類型 | 意義 |
 | --- | --- | --- |
 | `kvm_vm_collector_success` | Gauge | 最後一次收集成功（1）或失敗（0） |
 | `kvm_vm_collector_duration_seconds` | Gauge | 最近一次收集時間 |
 | `kvm_vm_collector_last_success_timestamp_seconds` | Gauge | 最近成功時間；尚未成功為 0 |
-| `kvm_vm_domain_state{vm,state}` | Gauge | VM 目前狀態，數值為 1 |
+| `kvm_vm_domain_state{vm,vm_id,state}` | Gauge | VM 目前狀態，數值為 1 |
 | `kvm_vm_domain_vcpus` | Gauge | VM vCPU 數量 |
 | `kvm_vm_domain_cpu_time_seconds_total` | Counter | 累積 CPU 秒數（跨全部 vCPU） |
 | `kvm_vm_domain_cpu_used_cores` | Gauge | 採樣期間使用核心數（1 = 一顆核心滿載） |
@@ -53,19 +59,26 @@ kvm-vm exporter [VM] [--managed] [--listen IPV4] [--port PORT]
 | `kvm_vm_domain_memory_assigned_bytes` | Gauge | 已分配記憶體 |
 | `kvm_vm_domain_memory_guest_used_bytes` | Gauge | Guest 估計不可回收記憶體，僅新鮮資料 |
 | `kvm_vm_domain_memory_rss_bytes` | Gauge | Host 上 QEMU RSS，**不是** Guest 實際使用量 |
-| `kvm_vm_domain_disk_capacity_bytes{vm,disk}` | Gauge | 磁碟來源邏輯大小 |
-| `kvm_vm_domain_disk_physical_bytes{vm,disk}` | Gauge | 磁碟來源實體大小，不含 backing chain |
-| `kvm_vm_domain_disk_read_bytes_total{vm,disk}` | Counter | 累積磁碟讀取 bytes |
-| `kvm_vm_domain_disk_write_bytes_total{vm,disk}` | Counter | 累積磁碟寫入 bytes |
-| `kvm_vm_domain_network_receive_bytes_total{vm,interface}` | Counter | Guest 累積接收 bytes |
-| `kvm_vm_domain_network_transmit_bytes_total{vm,interface}` | Counter | Guest 累積發送 bytes |
+| `kvm_vm_domain_disk_capacity_bytes{vm,vm_id,disk}` | Gauge | 磁碟來源邏輯大小 |
+| `kvm_vm_domain_disk_physical_bytes{vm,vm_id,disk}` | Gauge | 磁碟來源實體大小，不含 backing chain |
+| `kvm_vm_domain_disk_read_bytes_total{vm,vm_id,disk}` | Counter | 累積磁碟讀取 bytes |
+| `kvm_vm_domain_disk_write_bytes_total{vm,vm_id,disk}` | Counter | 累積磁碟寫入 bytes |
+| `kvm_vm_domain_network_receive_bytes_total{vm,vm_id,interface}` | Counter | Guest 累積接收 bytes |
+| `kvm_vm_domain_network_transmit_bytes_total{vm,vm_id,interface}` | Counter | Guest 累積發送 bytes |
+| `kvm_vm_domain_disk_{read,write,flush}_operations_total` | Counter | 累積請求數 |
+| `kvm_vm_domain_disk_{read,write,flush}_time_seconds_total` | Counter | 累積 I/O 時間，ns 轉秒 |
+| `kvm_vm_domain_network_{receive,transmit}_packets_total` | Counter | 封包數 |
+| `kvm_vm_domain_network_{receive,transmit}_errors_total` | Counter | 錯誤數 |
+| `kvm_vm_domain_network_{receive,transmit}_dropped_packets_total` | Counter | 丟棄封包數 |
+| `kvm_vm_domain_memory_guest_stats_timestamp_seconds` | Gauge | Balloon 最後更新 Unix timestamp |
+| `kvm_vm_domain_memory_guest_stats_fresh` | Gauge | 執行中 VM 記憶體統計有效為 1，否則 0；非執行中省略 |
 
 若要正確取得 Guest 記憶體使用量，必須有新鮮的 balloon 記憶體統計（詳見
 [monitor 說明](commands.zh-TW.md#monitor)）。離線 VM 的 I/O Counter 不輸出。
 第一次採樣即可讀取累積 Counter，但 CPU 使用率 Gauge 需要至少兩次成功採樣。
 Counter 在 VM 重啟後可能歸零，應由 PromQL `rate()` 處理重設。
 
-## Prometheus 設定
+## Prometheus 設定（管理員）
 
 將 [examples/prometheus-kvm-vm.yml](../examples/prometheus-kvm-vm.yml)
 中的 job 合併到 `prometheus.yml` 的 `scrape_configs`。若 Prometheus 與
@@ -76,6 +89,8 @@ Exporter 在**同一宿主機／同一網路命名空間**，可使用 `127.0.0.
 
 **安全提醒：** Exporter 沒有內建 HTTP 驗證或 TLS，請勿將 `9179` 直接對公網
 開放。VM 名稱和裝置名稱亦可能包含敏感資訊，應透過防火牆或私有網路保護。
+
+以下為管理員查詢範例，非客戶授權模板；Panel 使用[版本化查詢契約](integration/monitoring-api.zh-TW.md)。
 
 常用 PromQL：
 
@@ -123,25 +138,13 @@ sudo systemctl status kvm-vm-exporter
 `monitor --json` 新增 `vm_id`，表格保持相容。重啟、改名、遷移須保留 libvirt UUID
 才會維持身分，不能將舊 UUID 重用於無關的 VM。
 
-新增 Label 會建立新序列，不會回填歷史資料。`vm_id=~".*"` 包含舊序列，
+使用 [`kvm-vm identity --json`](integration/identity.zh-TW.md) 取得識別碼。新增 Label 會建立新序列，不會回填歷史資料。`vm_id=~".*"` 包含舊序列，
 `vm_id=~".+"` 只包含具 UUID 的序列。升級、改名、遷移的 rate/lookback 視窗可能
 同時包含舊新序列，不可直接用於計費或假定自動去重。中央查詢依 `host_id,vm_id,vm`
 分組。既有中央部署先審閱 `sync-templates` 再 `reload`；本機 Dashboard 請先備份再
 手動更新 JSON 並重啟 Grafana。升級 Host CLI 後需重啟 Exporter，確認新 label。
 
-## 新增資源指標
-
-以下名稱均加 `kvm_vm_domain_` 前綴；磁碟及網路保留各裝置 label。
-
-| 後綴 | 類型 | 單位 |
-| --- | --- | --- |
-| `disk_{read,write,flush}_operations_total` | Counter | 累積請求數 |
-| `disk_{read,write,flush}_time_seconds_total` | Counter | 累積 I/O 時間，ns 轉秒 |
-| `network_{receive,transmit}_packets_total` | Counter | 封包數 |
-| `network_{receive,transmit}_errors_total` | Counter | 錯誤數 |
-| `network_{receive,transmit}_dropped_packets_total` | Counter | 丟棄封包數 |
-| `memory_guest_stats_timestamp_seconds` | Gauge | Balloon 最後更新 Unix timestamp |
-| `memory_guest_stats_fresh` | Gauge | 執行中 VM 記憶體統計有效為 1，否則 0；非執行中省略 |
+## IOPS 與平均 I/O 耗時
 
 ```promql
 sum by (host_id,vm_id,vm) (rate(kvm_vm_domain_disk_read_operations_total[5m]))

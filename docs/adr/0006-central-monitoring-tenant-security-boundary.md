@@ -23,7 +23,7 @@ unpartitioned Single backend or an operator-wide Grafana datasource.
 
 ## Trust boundaries / threats
 
-- **Untrusted host metrics:** An authenticated Remote Write sender can send
+- **Untrusted host metrics:** A legacy authenticated Remote Write sender can send
   arbitrary label sets, including another `host_id` or `tenant_id`. HTTP Basic
   Auth proves possession of a credential, not that a claimed metric label is
   correct. Do not join host-provided labels to inventory and expose the
@@ -40,7 +40,7 @@ unpartitioned Single backend or an operator-wide Grafana datasource.
   username or `tenant_id` field must not determine a customer's effective
   storage partition without server-side policy.
 
-## Customer access implementation gate (future phase)
+## Direct Central customer access gate (future native tenancy)
 
 1. Implement **native tenant separation** in the storage/query layer, e.g.
    VictoriaMetrics Cluster with tenant-specific `vminsert`/`vmselect` APIs,
@@ -94,3 +94,5 @@ customer-facing phase is tested end-to-end.
 - `tenant_id` is an operator metadata field, not a required Host-side secret.
 
 For trusted service-only external Panel integration, see [ADR 0007](0007-external-panel-monitoring.md). This does not relax the direct customer access gate.
+
+The optional managed writer Host UUID binding must be verified on the actual receiver; it does not prove VM or tenant authorization. See [Security and reliability](../monitoring-security-reliability.md).

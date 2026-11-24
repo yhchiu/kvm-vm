@@ -1,8 +1,20 @@
-# 中央監控安全與可靠性（Phase 3、4）
+# 中央監控安全與可靠性
 
-中央維持 VictoriaMetrics Single、管理員專用；`customer-readiness` 仍為 BLOCKED。不新增客戶登入、租戶寫入／查詢隔離，也不決定未來儲存後端。詳細操作、安全限制及實機驗收見 [英文操作指南](monitoring-security-reliability.md)。
+[English](monitoring-security-reliability.md) · [監控架構](monitoring.zh-TW.md)
+
+中央維持 VictoriaMetrics Single、管理員專用；`customer-readiness` 仍為 BLOCKED。不提供原生租戶隔離或直接中央客戶登入；外部 Panel 的應用層隔離見[獨立整合契約](integration/monitoring-api.zh-TW.md)。詳細操作、安全限制及實機驗收見 [英文操作指南](monitoring-security-reliability.md)。
 
 ## Writer 憑證
+
+```mermaid
+stateDiagram-v2
+    [*] --> Staged: stage
+    Staged --> Active: activate
+    Active --> Active: rotate
+    Active --> Revoked: revoke
+    Staged --> Revoked: revoke
+    Revoked --> [*]
+```
 
 中央先安裝 `apache2-utils`，並將 Host UUID 登錄既有 Inventory。選用新管理入口：
 
@@ -33,8 +45,16 @@ sudo ./tools/setup-monitoring.sh diagnostics --mode hybrid
 
 ## 備份與恢復
 
+```mermaid
+flowchart LR
+    C[中央服務] -->|受保護健康端點| O[不同故障域 Observer]
+    O -->|重試及事件去重鍵| R[獨立接收者]
+    C -->|一致性備份| B[(加密異地副本)]
+    B -->|驗證及還原| D[隔離的復原中央]
+```
+
 先設定建議驗收目標 RPO 24 小時、RTO 60 分鐘（**目標，不是實測保證**），依異地演練調整。備份包含中央設定、Inventory、Ownership Registry、Grafana/TSDB volumes、外部 NGINX 與 managed writer 憑證快照、TLS、告警及 Observer 設定／狀態。採一致性備份、加密、異地保留及 checksum；不要直接複製運行中的 TSDB 當成可靠備份。還原後先核對備份後發生的 rotate/revoke，再啟用入口。既有同實機空白 VM 還原演練並非真正異地 DR，現階段不新增通用生產備份指令。
 
 ## 驗收
 
-專用 Lab 重跑原本 9 個情境，再執行 `tests/e2e/managed_writer_drill.py` 及 `tests/e2e/resilience_drill.py`。後者支援 1/24/72 小時中斷、選用 SIGKILL，記錄積壓及中央實際原始時間戳覆蓋。`--allow-loss` 只做容量特性量測，不能把有缺口的結果標為 PASS。長時間中斷、512 MiB 以上 queue 滿載、429/503/401/403 故障注入、異地 DR、跨機房實測及負向資料隔離仍需實機驗證，請逐項標記 PASS/FAIL/NOT RUN，不能以離線測試替代。完整命令及限制見英文操作指南。
+請依[監控驗收](monitoring-acceptance.zh-TW.md)及[實機 Lab 延伸演練](../tests/e2e/README.zh-TW.md)執行；實機測試指令與證據規格集中於測試文件。

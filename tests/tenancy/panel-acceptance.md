@@ -30,3 +30,5 @@ upstream. They are intentionally not proof of actual TSDB query semantics,
 network segmentation or the external Panel's session/ACL/quotas. Re-run live
 checks after any backend, exporter, auth, or query contract change. Keep
 customer-readiness BLOCKED for direct Central access regardless of this gate.
+
+Discover expected monitoring UUIDs via the [Identity CLI](../../docs/integration/identity.md) and cross-check them against real libvirt and actual stored samples. A null Host ID or missing historical mapping must fail closed; discovery never grants ownership. See [Monitoring acceptance](../../docs/monitoring-acceptance.md) for other independent gates.

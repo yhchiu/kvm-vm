@@ -8,6 +8,7 @@
 
 - [快速上手](#快速上手)
 - [常用指令](#常用指令)
+- [監控](#監控)
 - [文件導覽](#文件導覽)
 - [安全規則](#安全規則)
 - [系統需求](#系統需求)
@@ -115,6 +116,19 @@ Prometheus metrics endpoint、systemd、PromQL 與安全設定請見 [Prometheus
 
 常用選項：`--dry-run` 只檢查不變更，`--yes` 略過確認提示（用於腳本），`--force` 先強制關閉執行中的 VM，`--no-start` 讓 VM 保持關機。
 
+## 監控
+
+從[監控架構與文件導覽](docs/monitoring.zh-TW.md)開始：Local 本機歷史、Agent 跨 NAT 集中上報、Hybrid 同時保留本機歷史及中央資料。支援 Host/VM UUID、Host Inventory、Writer 憑證、告警、獨立 Observer 與既有 VM Panel 整合。
+
+| 使用情境 | 指南 |
+|---|---|
+| 單台 KVM Host | [本機監控](docs/monitoring-stack.zh-TW.md) |
+| 跨機房集中監控 | [中央部署與操作](docs/central-monitoring.zh-TW.md) |
+| 已有多用戶控制台 | [Panel 整合](docs/integration/monitoring-api.zh-TW.md) |
+| 驗收與測試 | [監控驗收](docs/monitoring-acceptance.zh-TW.md) |
+
+中央 Grafana 與 TSDB 只供管理員，`customer-readiness` 維持 BLOCKED。Panel 是受信任私有查詢服務，客戶功能須另行實機驗收。
+
 ## 文件導覽
 
 | 我想要… | 請閱讀 |
@@ -181,11 +195,3 @@ bash tests/smoke.sh
 ## 授權
 
 GPL-3.0，詳見 [LICENSE](LICENSE)。
-
-中央監控：[中央監控（Agent／Hybrid）](docs/central-monitoring.zh-TW.md)
-
-中央監控亦支援持久化 Host Inventory、主機完全失聯告警、node_exporter 宿主機資源指標，以及使用機密檔案的 Email／Webhook 通知（詳見[中央監控說明](docs/central-monitoring.zh-TW.md)）。
-
-未來 Hosting 客戶的中央監控登入仍**禁止開放**，直到真正完成租戶隔離及驗證；詳見 [ADR 0006](docs/adr/0006-central-monitoring-tenant-security-boundary.zh-TW.md) 與 [後續實作計畫](docs/central-customer-access-roadmap.zh-TW.md)。
-
-[第三方 VM Panel 整合（私有唯讀查詢）](docs/integration/monitoring-api.zh-TW.md).

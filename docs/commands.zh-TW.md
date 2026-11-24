@@ -7,6 +7,7 @@ kvm-vm validate <vm.yaml> [--clone]
 kvm-vm create <vm.yaml> [--console-password-file <path>] [--refresh-image] [--no-start] [--dry-run]
 kvm-vm list [--managed] [--ips]
 kvm-vm status <vm>
+kvm-vm identity [--json]
 kvm-vm monitor [<vm>] [--managed] [--interval <seconds>] [--count <n>] [--json]
 kvm-vm exporter [<vm>] [--managed] [--listen <ipv4>] [--port <port>] [--interval <seconds>] [--timeout <seconds>]
 kvm-vm console <vm>
@@ -24,7 +25,7 @@ kvm-vm backup check <backup-dir> [--until <checkpoint>]
 `kvm-vm --help` 與 `kvm-vm 指令 --help` 會列出相同的選項。
 
 - [開始之前](#開始之前)
-- [validate](#validate) · [create](#create) · [list](#list) · [status](#status) · [monitor](#monitor) · [exporter](#exporter) · [console](#console)
+- [validate](#validate) · [create](#create) · [list](#list) · [status](#status) · [monitor](#monitor) · [identity](#identity) · [exporter](#exporter) · [console](#console)
 - [reinstall](#reinstall) · [clone](#clone) · [delete](#delete)
 - [snapshot](#snapshot) · [backup check](#backup-check)
 - [指令拒絕執行時](#指令拒絕執行時)
@@ -102,7 +103,7 @@ sudo kvm-vm monitor --managed --interval 5 --count 0  # 每 5 秒更新，Ctrl+C
 sudo kvm-vm monitor web01 --interval 2 --count 10 --json  # 10 筆 NDJSON 資料
 ```
 
-`monitor` 透過兩次 `virsh domstats --raw` 讀取 libvirt 的 VM 資源統計。
+`monitor` 比較前後兩次 `virsh domstats --raw` 採樣；每次採樣前後核對 UUID／名稱映射。JSON 包含 `vm_id`、裝置計數器、讀寫 IOPS 與 Guest 記憶體資料新鮮度。
 **完全唯讀**：不安裝 Guest Agent、不新增常駐程式、不修改 VM 或監控設定。
 CPU 與 I/O 是累積計數器，需要在兩次採樣之間計算差值。
 `--count 0` 持續監控，預設 `--count 1`；`--interval` 可設 0.1～3600 秒。
@@ -131,6 +132,14 @@ CPU 與 I/O 是累積計數器，需要在兩次採樣之間計算差值。
 但此指令會改變執行中的 domain 設定，**`monitor` 不會自動執行**。
 CPU、磁碟與網路統計不需要 Guest Agent。此功能只提供即時採樣，
 不包含歷史儲存、告警、Guest 檔案系統使用量或宿主機整體監控。
+
+## identity
+
+```sh
+sudo kvm-vm identity --json
+```
+
+唯讀查詢保存的監控 Host UUID 與所有可見的 libvirt Domain UUID（含關機及非本套件建立的 VM）。未保存遠端監控身分時 Host 欄位為 null；不產生 UUID、不代表寫入在線或客戶歸屬。詳見 [Identity CLI 契約](integration/identity.zh-TW.md)。
 
 ## exporter
 

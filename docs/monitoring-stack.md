@@ -2,6 +2,21 @@
 
 `tools/setup-monitoring.sh` connects the native read-only `kvm-vm exporter` to **Prometheus + Grafana** using Docker Compose on the same Linux KVM/libvirt host. It monitors **all local libvirt VMs by default**, including VMs not created by kvm-vm. No VM-side agent is required.
 
+[繁體中文](monitoring-stack.zh-TW.md) · [Monitoring architecture and modes](monitoring.md)
+
+```mermaid
+flowchart LR
+    subgraph H["Single Linux KVM Host"]
+        L[libvirt / VMs] --> E["Exporter :9179"]
+        E -->|scrape every 15s| P["Prometheus :9090"]
+        P <--> D[(Local TSDB)]
+        P --> G["Grafana :3000"]
+    end
+    O[Operator] -->|SSH tunnel or private admin network| G
+```
+
+Local does not upload centrally or bundle node_exporter. For central history use [Agent/Hybrid](central-monitoring.md).
+
 ## Requirements
 
 - Linux host with working libvirt/`virsh`, Python 3, systemd, and root access.
@@ -48,7 +63,7 @@ Subsequently edit `/etc/kvm-vm/monitoring/.env` and run `up`. Exporter port `917
 
 ## Dashboard and diagnostics
 
-The dashboard displays running VM count, VM CPU percentage and cores used, assigned memory vs. guest-used memory, QEMU RSS, disk/network byte rates, disk capacity, and collection status. VM filtering is included. Disk and network rates use PromQL `rate()` over native counters. Missing first-sample CPU or stale guest balloon statistics are left unknown (not displayed as zero).
+The dashboard displays running VM count, VM CPU percentage and cores used, assigned memory vs. guest-used memory, QEMU RSS, disk/network byte rates, disk capacity, and collection status. VM name and UUID filtering are included. Disk IOPS, mean request time, network packet rate, errors and drops are also provided. Disk and network rates use PromQL `rate()` over native counters. Missing first-sample CPU or stale guest balloon statistics are left unknown (not displayed as zero).
 
 ```bash
 curl -fsS http://127.0.0.1:9179/metrics | grep kvm_vm_collector_success
@@ -70,3 +85,7 @@ ssh -L 3000:127.0.0.1:3000 user@kvm-host
 Then browse `http://127.0.0.1:3000`. For an alternative Tailscale/reverse-proxy setup, configure TLS, authentication and access restrictions. Never expose the exporter or Prometheus directly to the public internet. On SELinux enforcing hosts, bind mounts may need additional policy/labeling adjustments; the script does not automatically loosen SELinux security.
 
 See [Prometheus metrics](prometheus.md) for individual metric semantics.
+
+### Updating dashboards
+
+Back up the saved dashboard and provisioning configuration, review `tools/monitoring/grafana/dashboards/kvm-vm.json`, and replace the saved `grafana/dashboards/kvm-vm.json` in the monitoring directory if appropriate. Restart/recreate Grafana (or stop/start the same stack) to apply it. `up`/`update` alone preserve custom dashboard files. Upgrade the installed CLI and restart the managed exporter service if it is running; reconcile a manually installed exporter separately. Existing data volumes remain; a new `vm_id` label creates new series. See [metric upgrade notes](prometheus.md#vm-identity-and-upgrade).

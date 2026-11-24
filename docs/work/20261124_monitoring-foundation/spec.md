@@ -1,10 +1,10 @@
 # Backend-independent monitoring foundation
 
-Status: implementation scope for phases 0–2. Baseline: `866a0f7` (uploaded `kvm-vm.261119.zip`). The central backend remains VictoriaMetrics Single for administrators. Customer readiness MUST stay BLOCKED. Preserve Local, Agent and Hybrid, Remote Write protocol, existing host inventory and credentials. Do not implement customer login, tenant routing, storage abstraction or select a backend.
+Status: historical implementation record (phases 0–5.1). For current behavior and acceptance see [Monitoring](../../monitoring.md) and [Monitoring acceptance](../../monitoring-acceptance.md). The initial scope was phases 0–2. Baseline: `866a0f7` (uploaded `kvm-vm.261119.zip`). The central backend remains VictoriaMetrics Single for administrators. Customer readiness MUST stay BLOCKED. Preserve Local, Agent and Hybrid, Remote Write protocol, existing host inventory and credentials. Do not implement customer login, tenant routing, storage abstraction or select a backend.
 
 ## Evidence baseline
 
-The supplied `central-e2e-20261118-dbc99c8.tar.gz` contains `E2E_REPORT.md`, `results/`, `logs/`, and `docs/plans/20261118_central-hardening/acceptance.md`. It records the single-machine dual NAT lab (9/9), writer recovery, two independent Single tenant handoff, and blank-guest restore (86 seconds under prepared conditions). Real inter-site testing and production customer isolation were not established. The archive remains an external evidence artifact, not committed logs or secrets. The previous handoff and roadmap are historical; this specification and ADR 0006 govern the new scope.
+The supplied `central-e2e-20261118-dbc99c8.tar.gz` contains `E2E_REPORT.md`, `results/`, `logs/`, and `docs/plans/20261118_central-hardening/acceptance.md`. It records the single-machine dual NAT lab (9/9), writer recovery, two independent Single tenant handoff, and blank-guest restore (86 seconds under prepared conditions). Real inter-site testing and production customer isolation were not established. The archive remains an external evidence artifact, not committed logs or secrets. The previous handoff and roadmap are historical; this specification records the original scope; ADR 0007 later defines the separate Panel path.
 
 ## Deliverables
 
@@ -41,3 +41,7 @@ all existing Phase 5 tests. No new daemon or native tenant routing. Defer
 Phase 6/7 backend evaluation until capacity or storage-level isolation demands
 it. See [ADR 0007](../../adr/0007-external-panel-monitoring.md) and the
 [integration contract](../../integration/monitoring-api.md).
+
+## Identity discovery follow-up
+
+The read-only `kvm-vm identity --json` CLI exposes the persisted Host monitoring UUID and local domain UUIDs without sampling or changing settings. See [Identity contract](../../integration/identity.md). The direct Central gate remains BLOCKED; the external Panel has a separate live acceptance gate.

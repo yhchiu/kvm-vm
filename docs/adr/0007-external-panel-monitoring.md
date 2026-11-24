@@ -1,5 +1,7 @@
 # ADR 0007 — External VM Panel integration
 
+[繁體中文](0007-external-panel-monitoring.zh-TW.md)
+
 - Status: Accepted for the integration interface; customer rollout pending the Panel's own acceptance.
 - Baseline: `b3a2a1ed`.
 

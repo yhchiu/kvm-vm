@@ -134,6 +134,19 @@ Common options: `--dry-run` checks without changing anything, `--yes` skips the
 prompt (for scripts), `--force` powers off a running VM first, and `--no-start`
 leaves the VM shut off.
 
+## Monitoring
+
+Start with the [monitoring architecture and guide](docs/monitoring.md): Local history on one host, Agent outbound central collection across NAT, or Hybrid local + central history. Includes Host/VM UUIDs, expected-host inventory, managed writer credentials, alerting, independent observation and external Panel integration.
+
+| Use case | Guide |
+|---|---|
+| One KVM host | [Local monitoring](docs/monitoring-stack.md) |
+| Multi-site monitoring | [Central deployment and operations](docs/central-monitoring.md) |
+| Existing multi-user VM Panel | [Panel integration](docs/integration/monitoring-api.md) |
+| Test and release gates | [Monitoring acceptance](docs/monitoring-acceptance.md) |
+
+Central Grafana and TSDB stay operator-only (`customer-readiness` BLOCKED). A trusted private Panel service can integrate, but its customer feature requires separate live acceptance.
+
 ## Documentation
 
 | I want to... | Read |
@@ -216,11 +229,3 @@ See [Testing](tests/README.md) for the real-host tests.
 ## License
 
 GPL-3.0. See [LICENSE](LICENSE).
-
-Central monitoring: [Central monitoring (Agent / Hybrid)](docs/central-monitoring.md)
-
-Central monitoring also supports persistent expected-host inventory, offline alerts, host node_exporter metrics, and secret-file-based Email/Webhook notifications (see [Central monitoring](docs/central-monitoring.md)).
-
-Customer-facing central monitoring is intentionally **disabled** until verified native tenant isolation is implemented; see [ADR 0006](docs/adr/0006-central-monitoring-tenant-security-boundary.md) and the [implementation roadmap](docs/central-customer-access-roadmap.md).
-
-[External VM Panel integration (private trusted query API)](docs/integration/monitoring-api.md).

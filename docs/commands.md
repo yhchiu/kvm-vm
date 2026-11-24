@@ -7,6 +7,7 @@ kvm-vm validate <vm.yaml> [--clone]
 kvm-vm create <vm.yaml> [--console-password-file <path>] [--refresh-image] [--no-start] [--dry-run]
 kvm-vm list [--managed] [--ips]
 kvm-vm status <vm>
+kvm-vm identity [--json]
 kvm-vm monitor [<vm>] [--managed] [--interval <seconds>] [--count <n>] [--json]
 kvm-vm exporter [<vm>] [--managed] [--listen <ipv4>] [--port <port>] [--interval <seconds>] [--timeout <seconds>]
 kvm-vm console <vm>
@@ -24,7 +25,7 @@ kvm-vm backup check <backup-dir> [--until <checkpoint>]
 `kvm-vm --help` and `kvm-vm COMMAND --help` show the same options.
 
 - [Before you start](#before-you-start)
-- [validate](#validate) · [create](#create) · [list](#list) · [status](#status) · [monitor](#monitor) · [exporter](#exporter) · [console](#console)
+- [validate](#validate) · [create](#create) · [list](#list) · [status](#status) · [monitor](#monitor) · [identity](#identity) · [exporter](#exporter) · [console](#console)
 - [reinstall](#reinstall) · [clone](#clone) · [delete](#delete)
 - [snapshot](#snapshot) · [backup check](#backup-check)
 - [When a command refuses to run](#when-a-command-refuses-to-run)
@@ -129,14 +130,14 @@ sudo kvm-vm monitor --managed --interval 5 --count 0   # managed VMs, every 5s u
 sudo kvm-vm monitor web01 --interval 2 --count 10 --json  # 10 NDJSON samples
 ```
 
-`monitor` samples libvirt `virsh domstats --raw` twice. It is **read-only**:
+`monitor` compares successive libvirt `virsh domstats --raw` snapshots (each bracketed by UUID/name enumeration). It is **read-only**:
 no agent or daemon is installed, and no VM, disk, or monitoring setting is
 changed. A sample interval is required because CPU and I/O rates are derived
 from differences between cumulative counters. `--count 0` runs continuously;
 `--count 1` is the default. `--interval` accepts 0.1 through 3600 seconds.
 Without a name, all libvirt domains are included; `--managed` excludes domains
 without a kvm-vm state manifest. `--json` produces one JSON object per sample,
-including per-disk and per-interface counters, suitable for later collection.
+including `vm_id`, per-disk and per-interface counters, read/write operations per second and guest memory freshness, suitable for later collection.
 
 The columns and JSON fields have specific meanings:
 
@@ -165,6 +166,14 @@ on the VM definition, guest drivers and libvirt. No guest-agent is required for
 CPU, disk I/O or network counters. This command is for live sampling, not
 historical storage, alerting, in-guest filesystem usage, or host-wide
 monitoring.
+
+## identity
+
+```sh
+sudo kvm-vm identity --json
+```
+
+Read the persisted monitoring Host UUID and all visible local libvirt Domain UUIDs, including inactive and unmanaged VMs. Host fields are null if remote identity is not saved. No UUID is generated; this is neither writer liveness nor ownership authorization. See [Identity CLI contract](integration/identity.md).
 
 ## exporter
 

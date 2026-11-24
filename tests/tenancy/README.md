@@ -15,7 +15,7 @@ python3 -m pytest tests/test_tenant_security_contract.py -q
 These test the harness using deliberately defective models and transport/format
 checks. A passing model is not real backend evidence. No Docker or root needed.
 
-## Live candidate test (Phase 6)
+## Live candidate test (future native tenancy)
 
 Run only against an isolated, disposable fixture. A real candidate needs an
 authenticated write gateway, a tenant-scoped read gateway, independent operator
@@ -147,3 +147,5 @@ network reachability, token expiration, real queue handoff, backups,
 resource limits, extended outage and large-scale load still require live
 candidate-specific acceptance. Do not turn `customer-readiness` on based on
 this report alone.
+
+For the selected external Panel path, follow [Panel live acceptance](panel-acceptance.md) instead. Native backend evaluation is deferred per [ADR 0007](../../docs/adr/0007-external-panel-monitoring.md).

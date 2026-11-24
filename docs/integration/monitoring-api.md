@@ -1,15 +1,33 @@
 # External VM Panel monitoring API (contract v1)
 
-Phase 5.1 uses the existing Prometheus-compatible Query API. It is an **opt-in
+External Panel integration uses the existing Prometheus-compatible Query API. It is an **opt-in
 trusted service integration**, not a public customer API. See [ADR 0007](../adr/0007-external-panel-monitoring.md).
 
+[繁體中文](monitoring-api.zh-TW.md) · [Monitoring architecture](../monitoring.md)
+
+```mermaid
+sequenceDiagram
+    participant U as Customer browser
+    participant P as Existing Panel Backend
+    participant D as Panel ACL / placement DB
+    participant Q as Private NGINX query ingress
+    participant V as VictoriaMetrics Single
+    U->>P: service ID, metric, time range
+    P->>D: Authenticate session; authorize history
+    D-->>P: Grant revision + placements (or deny)
+    P->>P: Quota; bounded fixed query plan
+    loop Each authorized placement
+        P->>Q: GET query_range with service credential
+        Q->>V: Fixed API path, trusted query parameters
+        V-->>P: Scoped matrix via NGINX
+    end
+    P->>P: Validate identity/timestamps; normalize gaps
+    P->>D: Reauthorize and compare grant
+    D-->>P: Unchanged grant or deny
+    P-->>U: Label-free points or sanitized error
 ```
-Customer -> existing Panel Backend (authenticate / authorize / limit / render)
-         -> private HTTPS query endpoint (Panel service credential)
-         -> VictoriaMetrics Single (loopback)
-KVM Hosts -> existing HTTPS Remote Write -> Central
-Grafana -> Central (operators only)
-```
+
+The browser never reaches NGINX/TSDB directly. The Panel owns the business identity and policy; `kvm-vm identity --json` provides only trusted management discovery. For the separate write flow see [Central deployment](../central-monitoring.md).
 
 ## Install the optional query ingress
 
@@ -154,6 +172,24 @@ map quota to 429 if the surrounding Panel distinguishes it. No raw exception
 or query details to browser; no shared HTTP response caching (`no-store`).
 
 ### History and source-time safety
+
+Illustration for an ownership or placement boundary at `T`, using the default 180s guard and fixed lookback (not to scale):
+
+```mermaid
+flowchart LR
+    A["Old grant: eligible evaluations"] --> B["Old end guard: last 180s withheld"]
+    B --> T["T: exclusive end / inclusive start"]
+    T --> C["New source guard: 180s"]
+    C --> W["New explicit lookback: 60s gauge / 300s rate"]
+    W --> E["First eligible new evaluation"]
+```
+
+| Query kind | Explicit lookback | Earliest new evaluation | Old closed interval |
+|---|---:|---:|---|
+| Gauge | 60s | T + 240s | Before T − 180s |
+| Rate | 300s | T + 480s | Before T − 180s |
+
+Actual output also follows the request's aligned evaluation grid. If the allowed interval is too short, return null; do not widen the query. The gap does not represent zero utilization. These are conservative limits of the reference implementation, not proof that source time is bounded.
 
 Queries are planned separately for each authorized placement. The first
 permitted evaluation is at least interval start + 180s source guard + explicit

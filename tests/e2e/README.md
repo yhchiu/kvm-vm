@@ -6,21 +6,19 @@ This is a **destructive-to-lab-only, opt-in integration lab**. It uses a *single
 
 ## Topology
 
-```text
-                        Physical KVM host (management controller)
-                      /       |                           \
-         isolated site A      | WAN (libvirt NAT)         isolated site B
-            10.10.1/24        | 172.30.0/24               10.10.2/24
-                |             |                               |
-  KVM Host A 10.10.1.10      Central .10          KVM Host B 10.10.2.10
-  Exporter + vmagent       VictoriaMetrics      Exporter + Prometheus
-  Agent mode              Grafana, vmalert     Hybrid mode
-                |          NGINX HTTPS :443                    |
-      NAT Router A           |                       NAT Router B
-      LAN 10.10.1.2         WAN                    LAN 10.10.2.2
-      WAN 172.30.0.11        |                     WAN 172.30.0.12
-               \             |                              /
-                +----------- WAN --------------------------+
+```mermaid
+flowchart LR
+    A["Host A · Agent · 10.10.1.10"] --> RA["Router A · NAT · WAN 172.30.0.11"]
+    B["Host B · Hybrid · 10.10.2.10"] --> RB["Router B · NAT · WAN 172.30.0.12"]
+    RA --> W["WAN bridge · 172.30.0.0/24"]
+    RB --> W
+    W --> C["Central · 172.30.0.10:443"]
+    W --> N[Physical host libvirt NAT] --> I[Upstream network]
+    H[Physical host SSH controller] -.-> A
+    H -.-> B
+    H -.-> C
+    H -.-> RA
+    H -.-> RB
 ```
 
 - Three libvirt networks: `kvm-e2e-cm-wan` (**NAT**, `172.30.0.0/24`), `kvm-e2e-cm-site-a` and `kvm-e2e-cm-site-b` (**isolated**, `10.10.1.0/24` / `10.10.2.0/24`). No changes to libvirt's `default` network.
@@ -92,11 +90,11 @@ Each `test` produces a dated JSON **PASS/FAIL** report under `.../reports/`. Fai
 
 ## Known limitations / next work
 
-1. **No real-hardware result included.** This environment may lack `/dev/kvm`, libvirt, Docker and public apt access; offline tests prove only scripts and generated settings, *not* running VMs or successful networking. Record actual run logs before claiming E2E passed.
+1. **Historical evidence is version-specific.** See [Monitoring acceptance](../../docs/monitoring-acceptance.md). Offline tests prove scripts/settings, not a new live run. Record actual logs for the commit under test.
 2. Router connectivity depends on guest cloud-init NIC matching and distro packages. If the cloud image uses different network tooling or Docker Compose apt package names, fix the Lab installer for that distro with a test before declaring support.
 3. WAN NAT and traffic shaping simulate many network failures but do not reproduce real ISP routing, independent power failures, DNS propagation or external CA lifecycle. Real cross-site validation is still needed before production.
-4. The lab CA lasts seven days. Credentials and private keys live only in local lab state; rotating/revoking production credentials is a separate follow-on task.
-5. This first lab automates ingress authentication, metrics, queue replay, offline alerts and mode switching. Delivery of **Email/Webhook messages**, extensive queue overflow tests, real VM guest OS workload benchmarks and operational backup/restore need dedicated follow-up scenarios; do not imply that they are already covered.
+4. The lab CA lasts seven days. Credentials and private keys live only in local lab state; managed writer rotation/revocation has a dedicated drill below.
+5. This first lab automates ingress authentication, metrics, queue replay, offline alerts and mode switching. The base suite does not cover full notification delivery, queue overflow, guest workload or production DR. Separate drills cover a synthetic independent receiver and blank-guest restore; do not imply that they are already covered.
 6. The test VM `e2e-web01` is a **real running QEMU domain with no boot disk**. It is sufficient to test the libvirt domain identity/metrics path, but **not** the behavior of a fully booted guest OS; add a cloud-image-backed nested domain for resource/workload tests.
 7. Faults are applied inside disposable routers, never to physical host iptables/nftables. `down` is scoped by an on-disk ownership manifest and should be tested on a disposable physical host before using near customer VMs.
 
@@ -108,4 +106,26 @@ bash -n tests/e2e/lab.sh
 python3 -m py_compile tests/e2e/lab.py tests/e2e/inject_lab_ca.py
 ```
 
-After bootstrap, run writer_recovery.py, tenant_handoff.py and recovery_drill.py individually with --lab-id. These opt-in drills interrupt live lab services. The restore drill needs an additional blank guest. See the [drill guide](../../docs/plans/20261118_central-hardening/README.md).
+## Extended drills
+
+After a clean bootstrap, run the base suite and these opt-in drills one at a time on the same owned Lab ID (`harden` below is an example, use the actual ID). The writer-recovery, host-level tenant handoff and cold restore protocols are in the [historical hardening guide](../../docs/plans/20261118_central-hardening/README.md). The restore target must be an extra blank guest.
+
+```sh
+sudo python3 tests/e2e/writer_recovery.py --lab-id harden
+sudo python3 tests/e2e/tenant_handoff.py --lab-id harden
+sudo python3 tests/e2e/recovery_drill.py --lab-id harden
+```
+
+Use a valid lab CA and no production credentials:
+
+```sh
+sudo python3 tests/e2e/managed_writer_drill.py --lab-id harden
+sudo python3 tests/e2e/resilience_drill.py --lab-id harden --host host-a --seconds 3600
+sudo python3 tests/e2e/resilience_drill.py --lab-id harden --host host-a --seconds 86400 --kill-writer --allow-loss
+sudo python3 tests/e2e/resilience_drill.py --lab-id harden --host host-a --seconds 259200 --allow-loss
+sudo python3 tests/e2e/resilience_drill.py --lab-id harden --host host-b --seconds 86400 --allow-loss
+```
+
+The long-outage drill blocks only the selected lab router's WAN-to-Central write path; it reads local diagnostics, optionally kills the selected writer, heals on exit, verifies fresh upload and exports **original** successful collector sample timestamps from the interrupted window. The default maximum sample gap is 45 seconds (15s scrape); `--allow-loss` reports LOSS_OR_DELAY_OBSERVED rather than asserting PASS. SIGKILL or machine loss of the controller requires manual `lab.sh heal` as documented in the Lab guide. Do not infer all series were recovered from one heartbeat series. Save sanitized reports and compare full representative VM/host counter coverage separately.
+
+Additional manual acceptance until automated: deliberately drive a disposable Agent queue to its 512 MiB minimum or configured cap using synthetic load and separate disk limits; measure actual used bytes, queue drop counters, gaps, free disk and recovery. Inject 429/503/401/403 only on a test ingress; verify response-specific retries/loss and actual sample coverage. Repeat mode-switch, SIGKILL, TLS revocation/rotation and alert notification, external observer and offsite backup restore. Test label-limit and malformed-payload edge cases before using the binding as a security boundary. Record PASS/FAIL/NOT RUN, version, duration, raw evidence and RPO/RTO; do not mark these live checks complete from offline tests.

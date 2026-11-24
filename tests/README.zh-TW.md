@@ -108,3 +108,5 @@ sudo python3 -m pytest tests/test_recovery_e2e.py -v
 ## 租戶安全驗收（Phase 5）
 
 請見 [共用租戶安全測試](tenancy/README.zh-TW.md)。離線測試通過不代表實機 Backend 隔離已通過。
+
+監控測試與上線條件總覽見[監控驗收](../docs/monitoring-acceptance.zh-TW.md)。Panel 實際整合另見[驗收清單](tenancy/panel-acceptance.md)，原生租戶測試不是 Panel 的替代驗收。
