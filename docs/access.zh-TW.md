@@ -5,6 +5,7 @@
 - [預設政策](#預設政策)
 - [使用 SSH 連線](#使用-ssh-連線)
 - [Console 密碼登入](#console-密碼登入)
+- [線上重設密碼（QGA）](#線上重設密碼qga)
 - [重新取得存取權](#重新取得存取權)
 
 ## 預設政策
@@ -77,7 +78,7 @@ sudo kvm-vm console web01
 - 請保護好檔案。即使 `create` 在後續步驟失敗也要保留，因為 VM 的檔案可能已經使用這組密碼。重試時需要新的檔案路徑。
 - `kvm-vm delete` 不會刪除此檔案，請自行清理。
 - 若有人在 guest 內修改密碼，檔案內容就會過時。
-- 沒有找回密碼的指令。遺失時請使用其他存取方式，或下方的[離線方法](#重新取得存取權)。
+- 無法找回已遺失的明文密碼，可使用[線上重設](#線上重設密碼qga)或下方[離線方法](#重新取得存取權)。
 
 ### Clone 與 reinstall
 
@@ -100,6 +101,53 @@ sudo kvm-vm reinstall web01 --yes --console-password-file /root/vm-credentials/w
 ### 已測試的 guest
 
 Debian 12 與 13、Ubuntu 24.04 與 26.04、Rocky Linux 8、AlmaLinux 8 已通過主控台登入、`sudo`、SSH 僅金鑰登入與重開機檢查，也驗證了三種網路模式下的預設鎖定、clone 憑證隔離與 reinstall 密碼更換。Rocky Linux 與 AlmaLinux 9、10 尚未測試主控台登入。詳見 [Console 驗收報告](plans/20261019_macvtap-console/ticket-06-validation.md)（英文）。
+
+## 線上重設密碼（QGA）
+
+運行中的受管 Linux VM 可不經 SSH、不重開機重設密碼。只支援有效定義檔
+`cloud_init.user` 指定的非 root 本機登入帳號（UID 至少 1000）；不支援指定新密碼或其他帳號。
+QGA 必須支援原生密碼 API 與預檢所需的 `guest-exec`，不需安裝額外 libvirt Python 套件。
+
+```bash
+sudo install -d -m 0700 /root/vm-credentials
+sudo kvm-vm reset-password web01 --password-file /root/vm-credentials/web01-reset.json --dry-run
+sudo kvm-vm reset-password web01 --password-file /root/vm-credentials/web01-reset.json
+# 自動化可加 --yes
+# 若原本 console_password 為 false，必須明確啟用：
+sudo kvm-vm reset-password web01 --enable-console --password-file /root/vm-credentials/web01-enabled.json --yes
+```
+
+預檢包含受管 VM 身分（名稱、MAC、libvirt UUID）、運行狀態、domain job、未完成的受管快照、
+cloud-init、QGA 能力、本機帳號、主控台、SSH 安全政策及私有憑證路徑。
+使用 lifecycle lock，dry-run 也會取得鎖。確認預設為 `[y/N]`，非互動操作必須指定 `--yes`。
+已完成的快照或備份 checkpoint 不會單獨阻止密碼重設，但進行中的 domain job 或未完成快照會被拒絕；
+外部備份及生命週期操作仍需由管理員協調。
+
+`--enable-console` 明確允許解鎖密碼，並在必要時啟用 serial getty。未指定時，原有政策必須
+已啟用 Console 密碼且 serial getty 正常運作。程式檢查磁碟上的標準 SSH 設定（含 Include 與 Match）
+以及 `sshd -T`；為安全起見，即使某個明確啟用密碼或 keyboard-interactive 的指令目前被其他設定覆蓋，
+也會拒絕。請管理員另行修正並 reload SSH 政策再重試。程式不會重寫或重啟 sshd、變更 SSH 金鑰、root
+密碼、帳號到期政策或 sudo/PAM 設定。自訂 sshd 啟動參數、尚未 reload 的設定、其他 SSH server 或 PAM
+服務仍可能接受密碼，啟用前須自行確認實際運行政策及其他登入入口。管理帳號具有免密碼 sudo 管理權限。
+重設密碼不等於啟用 SSH 密碼登入。
+
+在 Guest 變更前，先產生並同步寫入全新的 `0600` JSON 憑證檔（`vm`、`user`、`password`）。
+密碼由安全亂數產生 24 字元，以 salted SHA-512 crypt hash 透過 pipe 傳入
+`virsh set-user-password ... --encrypted`，不放入 argv、環境變數或 shell 命令。
+Client history 與除錯紀錄受到限制，stdout/stderr 不直接輸出。請勿啟用敏感 libvirt/QGA debug tracing、
+RPC 攔截或 process dump；具特權的監控工具仍可能取得 hash。`--timeout` 僅限制 virsh 密碼 RPC（預設
+30 秒、1–300 秒），不是整個預檢流程的總時限。
+
+除了 exit code 0，還必須取得 virsh 明確的 C locale 成功回覆（stdin 模式下子指令失敗時仍可能回傳 0）。
+若逾時、斷線或無成功回覆，請保留憑證並驗證 Console 登入，再決定是否以**新檔名**重試。
+結果不確定時可能已改密碼，或只啟用了 getty；不會自動重試或離線 fallback。憑證檔存在不代表密碼已生效。
+成功執行 `--enable-console` 後只更新有效 YAML，不重寫原始定義或舊 seed。若 Guest 成功但 Host 保存失敗，
+應保留憑證、確認存取並修正有效政策。
+
+Reboot/migration 保留密碼；clone 會鎖定來源管理帳號（即使來源保存的 Console 政策為 false），再依目標政策
+初始化。Reinstall 若啟用 Console 密碼仍須提供新的 `--console-password-file`。Snapshot rollback、Backup restore
+會恢復回復點當時的密碼；重跑舊 cloud-init seed 也可能還原舊登入政策。憑證檔不會被自動刪除，勿提交至版本控制。
+若 Guest 已關機或 QGA 無法使用，請參考下方明確的離線救援流程，程式不會自動關閉生產 VM。
 
 ## 重新取得存取權
 

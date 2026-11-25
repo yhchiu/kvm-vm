@@ -110,3 +110,15 @@ sudo python3 -m pytest tests/test_recovery_e2e.py -v
 請見 [共用租戶安全測試](tenancy/README.zh-TW.md)。離線測試通過不代表實機 Backend 隔離已通過。
 
 監控測試與上線條件總覽見[監控驗收](../docs/monitoring-acceptance.zh-TW.md)。Panel 實際整合另見[驗收清單](tenancy/panel-acceptance.md)，原生租戶測試不是 Panel 的替代驗收。
+
+## QGA 密碼重設驗收
+
+在可任意清理的 KVM 測試 Host 上安裝 `pexpect`，並啟用測試。會建立兩台獨立測試 VM（Console 密碼已啟用及未啟用），完成後清理；驗證實際 Console 登入、舊密碼失效、SSH 金鑰與安全政策保留。不得提交測試憑證。
+
+```bash
+python3 -m pytest tests/test_reset_password.py -q
+sudo KVM_VM_RESET_E2E=1 KVM_VM_E2E_DISTRO=debian13 KVM_VM_E2E_SSH_TIMEOUT=600 \
+  python3 -m pytest tests/test_reset_password_e2e.py -v -s
+```
+
+可用 `KVM_VM_E2E_DISTRO` 切換 Ubuntu、Rocky Linux 或 AlmaLinux 等映像。未具備 `/dev/kvm` 或未 opt-in 時會跳過；單元測試不代表實機驗收。

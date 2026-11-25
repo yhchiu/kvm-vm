@@ -11,6 +11,7 @@ kvm-vm identity [--json]
 kvm-vm monitor [<vm>] [--managed] [--interval <seconds>] [--count <n>] [--json]
 kvm-vm exporter [<vm>] [--managed] [--listen <ipv4>] [--port <port>] [--interval <seconds>] [--timeout <seconds>]
 kvm-vm console <vm>
+kvm-vm reset-password <vm> --password-file <path> [--enable-console] [--timeout <seconds>] [--dry-run] [--yes]
 kvm-vm maintenance preview <vm> [--profile none|balanced | --policy <policy.yaml>]
 kvm-vm maintenance status <vm>
 kvm-vm maintenance apply <vm> [--profile none|balanced | --policy <policy.yaml>] [--dry-run] [--yes]
@@ -31,7 +32,7 @@ kvm-vm backup check <backup-dir> [--until <checkpoint>]
 - [Before you start](#before-you-start)
 - [validate](#validate) · [create](#create) · [list](#list) · [status](#status) · [monitor](#monitor) · [identity](#identity) · [exporter](#exporter) · [console](#console)
 - [reinstall](#reinstall) · [clone](#clone) · [delete](#delete)
-- [maintenance](#maintenance) · [snapshot](#snapshot) · [backup check](#backup-check)
+- [reset-password](#reset-password) · [maintenance](#maintenance) · [snapshot](#snapshot) · [backup check](#backup-check)
 - [When a command refuses to run](#when-a-command-refuses-to-run)
 
 ## Before you start
@@ -47,11 +48,11 @@ Options shared by several commands:
 | `--dry-run` | `maintenance apply`, `maintenance remove` | Preview the policy and schedule without contacting the guest. |
 | `--dry-run` | `create`, `clone`, `reinstall`, `snapshot create` | Run the checks and stop before changing anything: nothing is downloaded, no disk is changed and no VM is defined. `create`, `clone` and `reinstall` also print the effective definition. When the base image is already on disk, `create` and `reinstall` also reject a `disk_gib` smaller than that image. `clone` rejects a `disk_gib` smaller than the source disk. Dry-run does not download an image in order to measure it. |
 | `--no-start` | `create`, `clone`, `reinstall`, `snapshot rollback` | Leave the VM shut off afterwards, for example to inspect `virsh dumpxml` first. |
-| `--yes` | `create`, `maintenance apply`, `maintenance remove`, `reinstall`, `delete`, `snapshot delete`, `snapshot rollback` | Skip the confirmation prompt. Required for changes when there is no terminal, such as in scripts. |
+| `--yes` | `create`, `reset-password`, `maintenance apply`, `maintenance remove`, `reinstall`, `delete`, `snapshot delete`, `snapshot rollback` | Skip the confirmation prompt. Required for changes when there is no terminal, such as in scripts. |
 | `--force` | `reinstall`, `delete`, `snapshot rollback` | Power off a running VM first (`virsh destroy`). Without it, a running VM is refused. |
 | `--console-password-file` | `create`, `clone`, `reinstall` | Where to write a new console password. Required when the definition has `console_password: true`, and an error otherwise. See [Access and security](access.md#console-password-login). |
 
-`create`, `clone`, `reinstall`, `delete`, `maintenance apply`, `maintenance remove`
+`create`, `clone`, `reinstall`, `delete`, `reset-password`, `maintenance apply`, `maintenance remove`
 and the `snapshot` commands that change something take a lock, `/var/lib/kvm-vm/state/.lifecycle-lock`, so only one runs
 at a time. A command that finds the lock stops at once. If an earlier run was
 interrupted, the lock stays; see
@@ -59,6 +60,15 @@ interrupted, the lock stays; see
 before you remove it. `--dry-run` takes this lock as well: it is still a
 lifecycle command. If the state directory is not writable, the command stops
 with `ERROR:` and does not print a Python traceback. Run it as root.
+
+## reset-password
+
+```bash
+sudo kvm-vm reset-password web01 --password-file /root/credentials/web01-new.json --dry-run
+sudo kvm-vm reset-password web01 --password-file /root/credentials/web01-new.json --yes
+```
+
+Requires a running managed Linux guest, available QGA (`guest-set-user-password` and `guest-exec`), completed cloud-init, and verified SSH key-only policy. Only the non-root management user in the effective definition is reset. For `console_password: false`, explicitly add `--enable-console`; successful reset then saves `console_password: true`. `--dry-run` contacts the guest for read-only checks, never generates a password; `--yes` skips only confirmation. `--timeout` bounds the virsh password RPC (1–300 seconds, default 30); pre-flight checks have separate timeouts. See [Online password reset](access.md#online-password-reset-qga) for security and recovery requirements.
 
 ## maintenance
 

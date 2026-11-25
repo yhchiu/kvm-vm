@@ -124,6 +124,7 @@ option, and the [command reference](docs/commands.md) explains them.
 | Discover monitoring Host UUID and VM UUIDs | `kvm-vm identity --json` |
 | Prometheus VM metrics | `kvm-vm exporter --managed` |
 | Open the serial console (leave with `Ctrl+]`) | `kvm-vm console web01` |
+| Reset the management password online (QGA) | `kvm-vm reset-password web01 --password-file /root/credentials/new.json` |
 | Reinstall the OS, keeping the settings | `kvm-vm reinstall web01 [--os debian13]` |
 | Clone a shut-off VM | `kvm-vm clone web01 web02.yaml` |
 | Delete a VM and the files kvm-vm made | `kvm-vm delete web01` |

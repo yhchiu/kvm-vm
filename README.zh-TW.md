@@ -103,6 +103,7 @@ ssh admin@<vm-ip>         # admin 即 cloud_init.user
 | 查詢監控 Host UUID 與 VM UUID | `kvm-vm identity --json` |
 | Prometheus VM 監控指標 | `kvm-vm exporter --managed` |
 | 開啟序列主控台（按 `Ctrl+]` 離開） | `kvm-vm console web01` |
+| 線上重設管理帳號密碼（QGA） | `kvm-vm reset-password web01 --password-file /root/credentials/new.json` |
 | 重灌作業系統並保留設定 | `kvm-vm reinstall web01 [--os debian13]` |
 | 複製一台已關機的 VM | `kvm-vm clone web01 web02.yaml` |
 | 刪除 VM 與 kvm-vm 建立的檔案 | `kvm-vm delete web01` |

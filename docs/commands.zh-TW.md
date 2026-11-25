@@ -11,6 +11,7 @@ kvm-vm identity [--json]
 kvm-vm monitor [<vm>] [--managed] [--interval <seconds>] [--count <n>] [--json]
 kvm-vm exporter [<vm>] [--managed] [--listen <ipv4>] [--port <port>] [--interval <seconds>] [--timeout <seconds>]
 kvm-vm console <vm>
+kvm-vm reset-password <vm> --password-file <path> [--enable-console] [--timeout <seconds>] [--dry-run] [--yes]
 kvm-vm maintenance preview <vm> [--profile none|balanced | --policy <policy.yaml>]
 kvm-vm maintenance status <vm>
 kvm-vm maintenance apply <vm> [--profile none|balanced | --policy <policy.yaml>] [--dry-run] [--yes]
@@ -31,7 +32,7 @@ kvm-vm backup check <backup-dir> [--until <checkpoint>]
 - [開始之前](#開始之前)
 - [validate](#validate) · [create](#create) · [list](#list) · [status](#status) · [monitor](#monitor) · [identity](#identity) · [exporter](#exporter) · [console](#console)
 - [reinstall](#reinstall) · [clone](#clone) · [delete](#delete)
-- [maintenance](#maintenance) · [snapshot](#snapshot) · [backup check](#backup-check)
+- [reset-password](#reset-password) · [maintenance](#maintenance) · [snapshot](#snapshot) · [backup check](#backup-check)
 - [指令拒絕執行時](#指令拒絕執行時)
 
 ## 開始之前
@@ -45,11 +46,20 @@ kvm-vm backup check <backup-dir> [--until <checkpoint>]
 | `--dry-run` | `maintenance apply`、`maintenance remove` | 預覽政策及排程，不連線 Guest。 |
 | `--dry-run` | `create`、`clone`、`reinstall`、`snapshot create` | 執行檢查後停止，不做任何變更：不下載、不改磁碟、不定義 VM。`create`、`clone`、`reinstall` 另會輸出生效定義檔。基底映像檔已經在磁碟上時，`create` 與 `reinstall` 也會拒絕小於該映像檔虛擬大小的 `disk_gib`。`clone` 會拒絕小於來源磁碟的 `disk_gib`。dry-run 不會為了量測大小而下載映像檔。 |
 | `--no-start` | `create`、`clone`、`reinstall`、`snapshot rollback` | 完成後讓 VM 保持關機，例如想先檢查 `virsh dumpxml`。 |
-| `--yes` | `create`、`maintenance apply`、`maintenance remove`、`reinstall`、`delete`、`snapshot delete`、`snapshot rollback` | 略過確認提示。沒有終端機時（例如腳本中）必須使用。 |
+| `--yes` | `create`、`reset-password`、`maintenance apply`、`maintenance remove`、`reinstall`、`delete`、`snapshot delete`、`snapshot rollback` | 略過確認提示。沒有終端機時（例如腳本中）必須使用。 |
 | `--force` | `reinstall`、`delete`、`snapshot rollback` | 先強制關閉執行中的 VM（`virsh destroy`）。未指定時，執行中的 VM 會被拒絕。 |
 | `--console-password-file` | `create`、`clone`、`reinstall` | 新 Console 密碼的寫入位置。定義檔設定 `console_password: true` 時必填，否則指定會報錯。詳見[存取與安全](access.zh-TW.md#console-密碼登入)。 |
 
-`create`、`clone`、`reinstall`、`delete`、`maintenance apply`、`maintenance remove` 以及會變更狀態的 `snapshot` 指令會取得鎖 `/var/lib/kvm-vm/state/.lifecycle-lock`，同一時間只會有一個在執行。遇到鎖的指令會立即停止。若先前的執行被中斷，鎖會留著；移除前請先閱讀 [Sequencing and interrupted operations](lifecycle-recovery-safety.md#sequencing-and-interrupted-operations)（英文）。`--dry-run` 同樣會取得這把鎖，因為它仍是生命週期指令。狀態目錄無法寫入時，指令以 `ERROR:` 結束，不會印出 Python traceback。請以 root 執行。
+`create`、`clone`、`reinstall`、`delete`、`reset-password`、`maintenance apply`、`maintenance remove` 以及會變更狀態的 `snapshot` 指令會取得鎖 `/var/lib/kvm-vm/state/.lifecycle-lock`，同一時間只會有一個在執行。遇到鎖的指令會立即停止。若先前的執行被中斷，鎖會留著；移除前請先閱讀 [Sequencing and interrupted operations](lifecycle-recovery-safety.md#sequencing-and-interrupted-operations)（英文）。`--dry-run` 同樣會取得這把鎖，因為它仍是生命週期指令。狀態目錄無法寫入時，指令以 `ERROR:` 結束，不會印出 Python traceback。請以 root 執行。
+
+## reset-password
+
+```bash
+sudo kvm-vm reset-password web01 --password-file /root/credentials/web01-new.json --dry-run
+sudo kvm-vm reset-password web01 --password-file /root/credentials/web01-new.json --yes
+```
+
+運行中的受管 Linux VM 必須有可用的 QGA（含 `guest-set-user-password` 及 `guest-exec`）、已完成 cloud-init，以及可驗證的 SSH key-only 政策。只重設有效定義檔指定的非 root 管理帳號。若原有 `console_password: false`，必須另加 `--enable-console`；成功後會保存 `console_password: true`。`--dry-run` 會連線 Guest 做唯讀預檢，但不產生密碼；`--yes` 只略過確認。`--timeout` 是 virsh 密碼 RPC 的逾時秒數（1–300，預設 30），預檢另有其時限。請見 [線上重設密碼](access.zh-TW.md#線上重設密碼qga) 的安全要求與故障處理。
 
 ## maintenance
 

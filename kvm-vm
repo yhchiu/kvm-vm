@@ -1433,6 +1433,11 @@ def deliver_console_credential(cfg: Dict[str, Any], destination: Optional[str], 
         return None
     if not destination:
         raise KVMError("Console password login requires --console-password-file")
+    return deliver_password_credential(cfg, destination, preview=preview)
+
+
+def deliver_password_credential(cfg: Dict[str, Any], destination: str, *, preview: bool) -> Optional[str]:
+    """Generate and deliver a password without exposing plaintext to argv or logs."""
     if os.name != "posix":
         raise KVMError("Console credential delivery requires POSIX permissions")
     require_commands(["openssl"])
@@ -2093,8 +2098,12 @@ def cmd_clone(args: argparse.Namespace) -> int:
         restore_selinux([disk])
         sysprep_clone_disk(disk)
         users_to_lock = {cfg["cloud_init"]["user"]}
-        if source_config.get("cloud_init", {}).get("console_password"):
-            users_to_lock.add(source_config["cloud_init"].get("user", "admin"))
+        # A runtime reset may have succeeded even when its policy update failed.
+        # Never clone a managed source user's usable password, even if its saved
+        # console policy is false (and the target uses a different account).
+        source_user = source_config.get("cloud_init", {}).get("user", "admin")
+        if source_config and source_user != "root":
+            users_to_lock.add(source_user)
         for user in sorted(users_to_lock):
             quoted = shlex.quote(user)
             run(["virt-customize", "-a", str(disk), "--run-command",
@@ -4120,7 +4129,7 @@ def maintenance_guest_exec(name: str, script: str, *, mutate: bool = False) -> s
     return stdout
 
 
-def maintenance_target(name: str) -> Tuple[Path, Dict[str, Any]]:
+def maintenance_target(name: str, *, operation: str = "Maintenance") -> Tuple[Path, Dict[str, Any]]:
     """Only managed VMs with their canonical, effective definition are eligible."""
     if not NAME_RE.fullmatch(name):
         raise KVMError("Invalid domain name")
@@ -4131,7 +4140,7 @@ def maintenance_target(name: str) -> Tuple[Path, Dict[str, Any]]:
     path = DEF_DIR / f"{name}.yaml"
     if (not isinstance(state, dict) or state.get("managed_by") != "kvm-vm" or state.get("name") != name
             or state.get("definition") != str(path) or path.is_symlink() or not path.is_file()):
-        raise KVMError(f"Maintenance requires a managed VM with its effective definition: {name}")
+        raise KVMError(f"{operation} requires a managed VM with its effective definition: {name}")
     cfg = yaml_load(path)
     mac = dig(cfg, "network", "mac")
     if dig(cfg, "vm", "name") != name or not isinstance(mac, str) or not MAC_RE.fullmatch(mac):
@@ -4271,10 +4280,10 @@ fi
 '''
 
 
-def save_maintenance_definition(path: Path, cfg: Dict[str, Any]) -> None:
+def save_effective_definition(path: Path, cfg: Dict[str, Any]) -> None:
     """Atomically update only the effective definition, retaining its permissions."""
     original = path.stat()
-    fd, tmp_name = tempfile.mkstemp(prefix=".maintenance-", dir=path.parent)
+    fd, tmp_name = tempfile.mkstemp(prefix=".definition-", dir=path.parent)
     tmp = Path(tmp_name)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as stream:
@@ -4311,7 +4320,7 @@ def cmd_maintenance_change(args: argparse.Namespace) -> int:
     try:
         script = maintenance_command(schedules, reconcile=True, resources=maintenance_resources(cfg))
         print(maintenance_guest_exec(name, MAINTENANCE_READY + script, mutate=True), end="")
-        save_maintenance_definition(path, cfg)
+        save_effective_definition(path, cfg)
     except (KVMError, OSError, KeyboardInterrupt) as exc:
         log.error("Maintenance may be partially applied on %s. Inspect status and retry the intended policy; "
                   "the guest and saved definition are not a single transaction.", name)
@@ -4319,6 +4328,199 @@ def cmd_maintenance_change(args: argparse.Namespace) -> int:
             raise KVMError(str(exc)) from exc
         raise
     print(f"Saved maintenance policy: {path}")
+    return 0
+
+
+# Check the current guest policy without changing SSH or reading a password
+# into the host. Reject ambiguous Match/Include configurations rather than
+# silently enabling a password for an SSH-accessible account.
+PASSWORD_LOGIN_CHECK = r'''
+import glob
+import os
+import pwd
+import shlex
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+user = sys.argv[1]
+try:
+    account = pwd.getpwnam(user)
+    assert account.pw_uid >= 1000 and account.pw_shell not in ("", "/bin/false", "/sbin/nologin", "/usr/sbin/nologin")
+    assert any(line.split(":", 1)[0] == user for line in Path("/etc/passwd").read_text().splitlines())
+    shadow = next(line.split(":") for line in Path("/etc/shadow").read_text().splitlines() if line.split(":", 1)[0] == user)
+    assert len(shadow) >= 8 and (not shadow[7] or int(shadow[7]) > int(time.time() // 86400))
+except (AssertionError, KeyError, ValueError, OSError, StopIteration):
+    sys.exit("Management user must be an existing, non-expired local login account")
+
+# Inspect all included config files, including Match sections. sshd -T alone
+# only evaluates one connection context. Reject any explicit enabling directive
+# even if a preceding rule would currently override it.
+seen = set()
+keys = {"passwordauthentication", "kbdinteractiveauthentication", "challengeresponseauthentication"}
+def inspect(path):
+    path = Path(path).resolve()
+    if path in seen:
+        return
+    seen.add(path)
+    for line in path.read_text().splitlines():
+        fields = shlex.split(line, comments=True)
+        if not fields:
+            continue
+        key, _, rest = fields[0].partition("=")
+        values = ([rest] if rest else []) + fields[1:]
+        if values and values[0] == "=":
+            values = values[1:]
+        key = key.lower()
+        if key in keys and [v.lower() for v in values] != ["no"]:
+            raise ValueError("SSH password or keyboard-interactive authentication is enabled or ambiguous")
+        if key == "include":
+            for pattern in values:
+                if not os.path.isabs(pattern):
+                    pattern = "/etc/ssh/" + pattern
+                for child in sorted(glob.glob(pattern)):
+                    inspect(child)
+try:
+    inspect("/etc/ssh/sshd_config")
+    subprocess.run(["/usr/sbin/sshd", "-t"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    for context in ([], ["-C", "user=" + user + ",host=localhost,addr=127.0.0.1"]):
+        result = subprocess.check_output(["/usr/sbin/sshd", "-T"] + context, universal_newlines=True, stderr=subprocess.DEVNULL)
+        settings = dict(line.split(None, 1) for line in result.splitlines() if " " in line)
+        assert settings.get("passwordauthentication") == "no" and settings.get(
+            "kbdinteractiveauthentication", settings.get("challengeresponseauthentication")) == "no"
+except (AssertionError, ValueError, OSError, subprocess.SubprocessError):
+    sys.exit("Cannot establish SSH key-only policy; inspect/reload sshd before resetting a password")
+'''
+
+
+def password_guest_check(name: str, user: str, *, enable_console: bool) -> None:
+    script = MAINTENANCE_READY + (
+        'if command -v python3 >/dev/null 2>&1; then python=python3; '
+        'else python=/usr/libexec/platform-python; fi\n'
+        '"$python" -I -c ' + shlex.quote(PASSWORD_LOGIN_CHECK) + ' ' + shlex.quote(user) + '\n'
+    )
+    if enable_console:
+        script += '[ "$(systemctl show -p LoadState --value serial-getty@ttyS0.service)" = loaded ] || { echo "Serial console login service unavailable" >&2; exit 1; }\n'
+    else:
+        script += 'systemctl is-active --quiet serial-getty@ttyS0.service || { echo "Serial console login is not active" >&2; exit 1; }\n'
+    maintenance_guest_exec(name, script)
+
+
+def password_agent_check(name: str) -> None:
+    deadline = time.monotonic() + 15
+    info = maintenance_agent_call(name, {"execute": "guest-info"}, deadline)
+    commands = info.get("supported_commands")
+    if not isinstance(commands, list) or not any(
+            isinstance(item, dict) and item.get("name") == "guest-set-user-password"
+            and item.get("enabled") is True and item.get("success-response") is True
+            for item in commands):
+        raise KVMError("Guest agent does not advertise an enabled password reset with a success response")
+
+
+def virsh_reset_password(domain_uuid: str, name: str, user: str, password_hash: str, timeout: int) -> None:
+    """Use virsh's stdin command mode; never expose the hash in argv or logs."""
+    if (not NAME_RE.fullmatch(name) or not re.fullmatch(r"[a-z_][a-z0-9_-]*[$]?", user)
+            or user == "root" or str(uuid.UUID(domain_uuid)) != domain_uuid
+            or not re.fullmatch(r"\$6\$[./A-Za-z0-9]{1,16}\$[./A-Za-z0-9]{86}", password_hash)):
+        raise KVMError("Invalid password reset parameters")
+    # stdin mode may exit 0 even when its subcommand fails. Require the exact
+    # C-locale positive acknowledgement and no stderr; never print raw output.
+    command = f"set-user-password {domain_uuid} '{user}' '{password_hash}' --encrypted\n"
+    env = os.environ.copy()
+    for key in tuple(env):
+        if key.startswith(("VIRSH_", "LIBVIRT_LOG_")) or key == "LIBVIRT_DEBUG":
+            env.pop(key, None)
+    env.update(LC_ALL="C", VIRSH_HISTSIZE="0", LIBVIRT_DEBUG="4", LIBVIRT_LOG_OUTPUTS="4:stderr",
+               TERM="dumb", INPUTRC="/dev/null")
+    try:
+        with tempfile.TemporaryDirectory(prefix="kvm-vm-virsh-") as cache:
+            env["XDG_CACHE_HOME"] = cache
+            result = subprocess.run(["virsh", "-c", LIBVIRT_URI], input=command,
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    text=True, encoding="utf-8", errors="replace", env=env,
+                                    check=False, timeout=timeout)
+    except (OSError, subprocess.SubprocessError, KeyboardInterrupt):
+        raise KVMError("Password reset result uncertain; retain the credential file and verify guest access before retrying") from None
+    expected = {f"Password set successfully for {user} in {target}" for target in (name, domain_uuid)}
+    lines = {line.strip().removeprefix("virsh # ").strip() for line in result.stdout.splitlines()}
+    if result.returncode or result.stderr.strip() or not expected.intersection(lines):
+        raise KVMError("Password reset not confirmed by virsh; retain the credential file and verify guest access before retrying")
+
+
+def password_reset_target(name: str, cfg: Dict[str, Any]) -> str:
+    if domain_state(name) != "running":
+        raise KVMError(f"Password reset requires a running VM: {name}")
+    if cfg["network"]["mac"].lower() not in domain_macs(name):
+        raise KVMError(f"Live VM MAC does not match the effective definition: {name}")
+    check_domain_job(name)
+    record = load_snapshot_record(name)
+    if record is not None and record.get("status") != "ready":
+        raise KVMError("An incomplete snapshot operation must be resolved before password reset")
+    value = output(["virsh", "-c", LIBVIRT_URI, "domuuid", name])
+    try:
+        identifier = str(uuid.UUID(value))
+    except ValueError:
+        raise KVMError("Could not verify domain UUID") from None
+    if output(["virsh", "-c", LIBVIRT_URI, "domname", identifier]) != name:
+        raise KVMError("Domain name does not match its UUID")
+    return identifier
+
+
+@lifecycle_exclusive
+def cmd_reset_password(args: argparse.Namespace) -> int:
+    name = args.name
+    if not 1 <= args.timeout <= 300:
+        raise KVMError("--timeout must be between 1 and 300 seconds")
+    path, cfg = maintenance_target(name, operation="Password reset")
+    ci = cfg["cloud_init"]
+    user = ci.get("user")
+    if not isinstance(user, str) or not re.fullmatch(r"[a-z_][a-z0-9_-]*[$]?", user) or user == "root":
+        raise KVMError("Password reset requires a non-root management user")
+    enabled = ci.get("console_password", False)
+    if type(enabled) is not bool:
+        raise KVMError("Invalid saved console password policy")
+    if not enabled and not args.enable_console:
+        raise KVMError("Console password login is disabled; explicitly specify --enable-console")
+    domain_uuid = password_reset_target(name, cfg)
+    password_agent_check(domain_uuid)
+    password_guest_check(domain_uuid, user, enable_console=args.enable_console)
+    deliver_password_credential(cfg, args.password_file, preview=True)
+    print(f"VM: {name}\nUser: {user}\nGuest Agent: connected\nSSH authentication: unchanged")
+    if not enabled:
+        print("Console password policy: enable on success")
+    if args.dry_run:
+        print("dry-run: all password reset pre-flight checks passed")
+        return 0
+    if not args.yes:
+        if not sys.stdin.isatty():
+            raise KVMError("Refusing password reset without --yes in non-interactive mode")
+        try:
+            answer = input(f"Reset password for '{user}' on '{name}'? [y/N] ").strip().lower()
+        except EOFError:
+            answer = ""
+        if answer not in ("y", "yes"):
+            raise KVMError("Password reset cancelled")
+    if password_reset_target(name, cfg) != domain_uuid:
+        raise KVMError("Domain identity changed during confirmation")
+    password_agent_check(domain_uuid)
+    password_guest_check(domain_uuid, user, enable_console=args.enable_console)
+    password_hash = deliver_password_credential(cfg, args.password_file, preview=False)
+    # Only explicit opt-in may activate the serial getty; no SSH or PAM changes.
+    if args.enable_console:
+        try:
+            maintenance_guest_exec(domain_uuid, "systemctl enable --now serial-getty@ttyS0.service && "
+                                   "systemctl is-active --quiet serial-getty@ttyS0.service", mutate=True)
+        except (KVMError, KeyboardInterrupt):
+            raise KVMError("Console preparation not confirmed; password reset was not sent. Retain the credential and inspect the guest") from None
+    virsh_reset_password(domain_uuid, name, user, password_hash, args.timeout)
+    if not enabled:
+        ci["console_password"] = True
+        try:
+            save_effective_definition(path, cfg)
+        except (OSError, KVMError, KeyboardInterrupt):
+            raise KVMError("Guest password was reset but saving console policy failed; retain the credential and reconcile effective YAML") from None
+    print(f"Password reset confirmed for '{user}' on '{name}'. Verify console login; retain the private credential file.")
     return 0
 
 
@@ -4410,6 +4612,15 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--until", metavar="CHECKPOINT",
                    help="Recovery point to restore, e.g. virtnbdbackup.1 (default: the whole history)")
     b.set_defaults(func=cmd_backup_check)
+
+    q = sp.add_parser("reset-password", help="Generate and reset the managed guest user's password through QGA")
+    q.add_argument("name", help="Managed running VM name")
+    q.add_argument("--password-file", required=True, help="New credential file in a private administrator-owned directory")
+    q.add_argument("--enable-console", action="store_true", help="Explicitly permit console password login")
+    q.add_argument("--yes", action="store_true", help="Skip interactive confirmation")
+    q.add_argument("--dry-run", action="store_true", help="Validate guest and delivery path without resetting the password")
+    q.add_argument("--timeout", type=int, default=30, metavar="SECONDS", help="Password reset RPC timeout (1-300; default: 30)")
+    q.set_defaults(func=cmd_reset_password)
 
     q = sp.add_parser("maintenance", help="Inspect or reconcile guest maintenance timers")
     msp = q.add_subparsers(dest="maintenance_command", required=True)

@@ -147,3 +147,15 @@ Tenant inventory ownership and fail-closed customer access are tested in `test_m
 See [tenant contract](tenancy/README.md) for the opt-in live HTTP harness and offline self-tests. A passing self-test is not a live backend isolation result.
 
 For all monitoring test and rollout gates, see [Monitoring acceptance](../docs/monitoring-acceptance.md). Existing Panel integration has a separate [live acceptance checklist](tenancy/panel-acceptance.md); native tenancy tests are not a substitute.
+
+## QGA password reset acceptance
+
+On a disposable local KVM host with `pexpect`, opt in to the live test. It creates and cleans up two disposable VMs (console password initially enabled and disabled), verifies real serial login, rejection of previous passwords, and preservation of SSH keys and SSH policy. Never commit test credentials.
+
+```bash
+python3 -m pytest tests/test_reset_password.py -q
+sudo KVM_VM_RESET_E2E=1 KVM_VM_E2E_DISTRO=debian13 KVM_VM_E2E_SSH_TIMEOUT=600 \
+  python3 -m pytest tests/test_reset_password_e2e.py -v -s
+```
+
+Repeat with Ubuntu, Rocky or AlmaLinux via `KVM_VM_E2E_DISTRO`. Without `/dev/kvm` or the opt-in flag, live tests are skipped; unit tests are not live acceptance.

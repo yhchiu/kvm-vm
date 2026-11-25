@@ -421,10 +421,11 @@ def test_clone_failure_and_preview_preserve_source(console_machine, monkeypatch,
 
 
 @pytest.mark.skipif(os.name != "posix", reason="Requires POSIX delivery")
-def test_clone_locks_previous_management_account_when_user_changes(console_machine):
+@pytest.mark.parametrize("source_enabled", [True, False])
+def test_clone_locks_previous_management_account_when_user_changes(console_machine, source_enabled):
     source = kvm_vm.DEF_DIR / "test01.yaml"
     raw = kvm_vm.yaml_load(source)
-    raw["cloud_init"].update(user="previous", console_password=True)
+    raw["cloud_init"].update(user="previous", console_password=source_enabled)
     kvm_vm.yaml_dump(source, raw)
     invoke("clone", "test01", console_machine["args"].definition, "--no-start",
            "--console-password-file", str(console_machine["credential"]))
