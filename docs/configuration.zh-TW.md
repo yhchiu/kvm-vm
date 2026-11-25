@@ -30,7 +30,7 @@ cloud_init:
     - file:~/.ssh/id_ed25519.pub
 ```
 
-其餘欄位皆有預設值：2 個 vCPU、2048 MiB 記憶體、20 GiB 磁碟、使用者 `admin`，並透過宿主機的 `br0` 橋接以 DHCP 取得位址。要查看補齊預設值後的完整結果：
+其餘欄位皆有預設值：2 個 vCPU、2048 MiB 記憶體、20 GiB 磁碟、使用者 `admin`、machine type `q35`，並透過宿主機的 `br0` 橋接以 DHCP 取得位址。要查看補齊預設值後的完整結果：
 
 ```bash
 kvm-vm validate test01.yaml
@@ -50,6 +50,7 @@ vm:
   vcpus: 4
   memory_mib: 8192
   cpu: host-passthrough
+  machine: q35
   autostart: true
   start: true
   os_variant: ubuntu24.04
@@ -106,6 +107,7 @@ cloud_init:
 | `vcpus` | `2` | 1 到 1024。 |
 | `memory_mib` | `2048` | 至少 256。 |
 | `cpu` | `host-passthrough` | 傳給 `virt-install --cpu`。詳見 [CPU 模型](#cpu-模型)。 |
+| `machine` | `q35` | 傳給 `virt-install --machine` 的 QEMU machine type。詳見 [Machine type](#machine-type)。 |
 | `autostart` | `true` | 宿主機開機時自動啟動 VM。 |
 | `start` | `true` | `create` 或 `clone` 後開機。`--no-start` 可在單次執行時覆寫。 |
 | `os_variant` | 依映像檔別名選擇，否則為 `generic` | `virt-install` 使用的 libosinfo 名稱。設定後會取代別名的選擇。詳見 [os_variant](#os_variant)。 |
@@ -160,6 +162,19 @@ cloud-init 以 MAC 位址找出 guest 的網卡並改名為 `eth0`，因此無�
 | `runcmd` | `[]` | cloud-init 的 `runcmd` 項目，會在 kvm-vm 自己的首次開機步驟（SSH 連接埠、Console 密碼）之前執行。 |
 
 管理帳號的密碼預設鎖定，SSH 僅接受金鑰。詳見[存取與安全](access.zh-TW.md)。
+
+### Machine type
+
+`vm.machine` 指定虛擬晶片組／機器型號。`create`、`clone` 與 `reinstall` 一律將此值傳給 `virt-install --machine`，並記錄於生效定義檔。省略時預設為 `q35`，包含 clone 目標及 reinstall 使用的舊定義檔。明確設定時須為非空的 machine identifier；宿主機不支援指定型號時，建立 domain 會失敗，不會自動退回其他型號。離線 `validate` 僅檢查語法，不檢查宿主機是否支援。
+
+`q35` 是別名，不同 QEMU 版本的宿主機可能將它對應至不同的版本化 machine type。若 clone 必須與來源 VM 一致，請從來源的持久 domain XML 確認實際型號，並明確填入 `vm.machine`（包含既有 i440fx／`pc` VM）。舊 VM 若在 reinstall 時需要保留原型號，也應先明確設定。
+
+```bash
+virsh -c qemu:///system dumpxml VM_NAME --inactive
+virsh -c qemu:///system capabilities
+```
+
+查看 domain XML 的 `<os><type machine="...">` 及目標宿主機支援的型號。例如 `pc-q35-9.2` 只能用於支援此型號的宿主機。YAML 預設值不會改動既有 domain。備份還原與 snapshot rollback 仍使用保存的 domain XML，不使用 YAML 預設值。詳見[完整備份與還原](full-backup-restore.md)。
 
 ### CPU 模型
 

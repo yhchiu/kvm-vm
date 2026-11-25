@@ -58,6 +58,7 @@ STATE_DIR = Path(os.environ.get("KVM_VM_STATE_DIR", "/var/lib/kvm-vm/state"))
 CLOUD_DIR = Path(os.environ.get("KVM_VM_CLOUD_DIR", "/var/lib/libvirt/images/cloud-init"))
 DEF_DIR = Path(os.environ.get("KVM_VM_DEF_DIR", "/etc/kvm-vm/definitions"))
 DEFAULT_BRIDGE = "br0"
+DEFAULT_MACHINE = "q35"
 NET_SYS_DIR = Path("/sys/class/net")
 
 # os_variants: libosinfo IDs to try in order. A host's osinfo-db can predate a
@@ -309,6 +310,10 @@ def normalize_definition(raw: Dict[str, Any], *, for_clone: bool = False) -> Dic
     if memory_mib < 256:
         raise KVMError("vm.memory_mib must be >= 256")
 
+    machine = vm.get("machine", DEFAULT_MACHINE)
+    if not isinstance(machine, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", machine):
+        raise KVMError("vm.machine must be a non-empty QEMU machine type (e.g. q35, pc, pc-q35-9.2)")
+
     env_disk = os.environ.get("KVM_VM_DISK") or os.environ.get("KVM_VM_DISK_GIB")
     if env_disk is not None:
         try:
@@ -455,6 +460,7 @@ def normalize_definition(raw: Dict[str, Any], *, for_clone: bool = False) -> Dic
             "vcpus": vcpus,
             "memory_mib": memory_mib,
             "cpu": vm.get("cpu", "host-passthrough"),
+            "machine": machine,
             "autostart": bool(vm.get("autostart", True)),
             "start": bool(vm.get("start", True)),
             "os_variant": os_variant_val,
@@ -1456,6 +1462,7 @@ def define_vm(cfg: Dict[str, Any], disk: Path, seed: Path, *, no_start: bool = F
         "--memory", str(vm["memory_mib"]),
         "--vcpus", str(vm["vcpus"]),
         "--cpu", str(vm["cpu"]),
+        "--machine", vm["machine"],
         "--import",
         "--disk", disk_opts,
         "--disk", f"path={seed},device=cdrom,readonly=on,format=raw",

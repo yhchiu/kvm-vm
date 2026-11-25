@@ -192,6 +192,12 @@ copies of the saved persistent XML and JSON, leaving the sealed set untouched.
 | Effective YAML | Preserve guest identity and provisioning settings; if host network mapping must change, keep YAML and XML consistent and document the mapping |
 | kvm-vm environment | Set `KVM_VM_DISK_DIR`, `KVM_VM_CLOUD_DIR`, `KVM_VM_STATE_DIR`, `KVM_VM_DEF_DIR` to the intended roots on every invocation |
 
+The `vm.machine` YAML setting defaults to `q35` for new domain definitions
+created by `kvm-vm`. It is not a restore-time override: keep the captured
+XML machine type whenever the destination supports it. The `q35` alias can
+resolve to different versions across hosts; do not replace a saved versioned
+machine type with that alias merely because it is the default.
+
 Keep the disk under `KVM_VM_DISK_DIR` and cloud directory under
 `KVM_VM_CLOUD_DIR` so later lifecycle commands can manage them. Install the JSON
 as `STATE_DIR/NAME.json`, YAML as `DEF_DIR/NAME.yaml`, and cloud files without

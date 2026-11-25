@@ -5,6 +5,7 @@ vm:
   vcpus: 2
   memory_mib: 4096
   cpu: host-passthrough
+  machine: q35
   autostart: true
   start: true
 

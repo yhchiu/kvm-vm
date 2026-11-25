@@ -5,6 +5,7 @@ vm:
   vcpus: 4
   memory_mib: 8192
   cpu: host-passthrough
+  machine: q35
   autostart: true
   start: true
   # Optional. If unavailable in the host's osinfo-db, kvm-vm falls back to generic.

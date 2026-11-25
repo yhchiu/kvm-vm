@@ -7,6 +7,8 @@ vm:
   vcpus: 4
   memory_mib: 8192
   cpu: host-passthrough
+  # Match the source domain machine type when cloning an older or pinned VM.
+  machine: q35
   autostart: true
   start: true
   # os_variant is optional: the clone uses the source VM's variant by default.

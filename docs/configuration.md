@@ -34,7 +34,7 @@ cloud_init:
 ```
 
 Everything else gets a default: 2 vCPUs, 2048 MiB of memory, a 20 GiB disk, the
-user `admin`, and DHCP on the host bridge `br0`. To see the complete result, run:
+user `admin`, machine type `q35`, and DHCP on the host bridge `br0`. To see the complete result, run:
 
 ```bash
 kvm-vm validate test01.yaml
@@ -55,6 +55,7 @@ vm:
   vcpus: 4
   memory_mib: 8192
   cpu: host-passthrough
+  machine: q35
   autostart: true
   start: true
   os_variant: ubuntu24.04
@@ -113,6 +114,7 @@ and [`clone-target.yaml`](../examples/clone-target.yaml) (target of `clone`).
 | `vcpus` | `2` | 1 to 1024. |
 | `memory_mib` | `2048` | At least 256. |
 | `cpu` | `host-passthrough` | Passed to `virt-install --cpu`. See [CPU model](#cpu-model). |
+| `machine` | `q35` | QEMU machine type passed to `virt-install --machine`. See [Machine type](#machine-type). |
 | `autostart` | `true` | Start the VM when the host boots. |
 | `start` | `true` | Boot the VM after `create` or `clone`. `--no-start` overrides this for one run. |
 | `os_variant` | chosen from the image alias, otherwise `generic` | libosinfo name used by `virt-install`. Setting it overrides the alias. See [os_variant](#os_variant). |
@@ -172,6 +174,33 @@ card `ens3`, `enp1s0` or something else.
 
 The user's password is locked and SSH accepts keys only. See
 [Access and security](access.md).
+
+### Machine type
+
+`vm.machine` selects the virtual chipset/machine model. `create`, `clone` and
+`reinstall` always pass it to `virt-install --machine` and save it in the
+effective definition. When omitted, it is `q35`, including for clone targets
+and older definitions used by `reinstall`. An explicit value must be a non-empty
+machine identifier; a host that does not support it will reject VM definition
+rather than silently falling back to another machine type. Offline `validate`
+checks syntax, not host support.
+
+`q35` is an alias and can resolve to different versioned machine types on
+hosts with different QEMU versions. For a clone that must match its source,
+inspect the actual persistent domain XML and set `vm.machine` to that exact
+machine type (including for existing i440fx/`pc` VMs). Do the same before
+reinstalling older VMs if their previous machine type must be preserved.
+
+```bash
+virsh -c qemu:///system dumpxml VM_NAME --inactive
+virsh -c qemu:///system capabilities
+```
+
+Check `<os><type machine="...">` in the domain XML and the destination's
+supported machine types. A versioned type such as `pc-q35-9.2` is only usable
+on hosts that support it. The YAML default does not change existing domains.
+Backup restore and snapshot rollback continue to use captured domain XML,
+not the YAML default. See [Full backup and restore](full-backup-restore.md).
 
 ### CPU model
 

@@ -118,6 +118,24 @@ class TestNormalizeDefinition:
         assert cfg["network"]["mac"] == "auto"
         assert cfg["cloud_init"]["ssh_port"] == 22
 
+    @pytest.mark.parametrize("for_clone", [False, True])
+    @pytest.mark.parametrize("requested, expected", [(None, "q35"), ("q35", "q35"),
+                                                       ("pc", "pc"), ("pc-q35-9.2", "pc-q35-9.2")])
+    def test_machine(self, for_clone, requested, expected):
+        raw = _minimal_raw()
+        if requested is not None:
+            raw["vm"]["machine"] = requested
+        cfg = kvm_vm.normalize_definition(raw, for_clone=for_clone)
+        assert cfg["vm"]["machine"] == expected
+        assert kvm_vm.normalize_definition(cfg, for_clone=for_clone)["vm"]["machine"] == expected
+
+    @pytest.mark.parametrize("machine", [None, "", " ", 123, True, [], {}, "q35,foo=bar", "--help", "q35 pc"])
+    def test_invalid_machine(self, machine):
+        raw = _minimal_raw()
+        raw["vm"]["machine"] = machine
+        with pytest.raises(kvm_vm.KVMError, match="vm.machine"):
+            kvm_vm.normalize_definition(raw)
+
     @pytest.mark.parametrize("port", [1, 22, 2222, 65535])
     def test_ssh_port(self, port):
         raw = _minimal_raw()
@@ -1567,6 +1585,26 @@ def test_clone_can_replace_stale_target_state(reinstall_machine):
     assert kvm_vm.load_state("clone01")["instance_id"] != "stale"
 
 
+@pytest.mark.parametrize("operation", ["clone", "reinstall"])
+@pytest.mark.parametrize("requested, expected", [(None, "q35"), ("pc", "pc"), ("pc-q35-9.2", "pc-q35-9.2")])
+def test_machine_lifecycle(reinstall_machine, operation, requested, expected):
+    machine = reinstall_machine
+    name = "clone01" if operation == "clone" else "test01"
+    definition = (Path(machine["args"].definition) if operation == "clone"
+                  else kvm_vm.DEF_DIR / "test01.yaml")
+    raw = kvm_vm.yaml_load(definition)
+    if requested is None:
+        raw["vm"].pop("machine", None)
+    else:
+        raw["vm"]["machine"] = requested
+    kvm_vm.yaml_dump(definition, raw)
+    machine.update(failure=None, install_succeeds=True)
+    assert getattr(kvm_vm, "cmd_" + operation)(machine["args"]) == 0
+    install = machine["install_command"]
+    assert install[install.index("--machine") + 1] == expected
+    assert kvm_vm.yaml_load(kvm_vm.DEF_DIR / f"{name}.yaml")["vm"]["machine"] == expected
+
+
 def osinfo_rows(*short_ids):
     rows = [f" {short:<12} | Some OS | 1 | http://example.org/{short}" for short in short_ids]
     return "\n".join([" Short ID | Name | Version | ID", "----+----+----+----"] + rows)
@@ -2102,6 +2140,19 @@ def osinfo_host(monkeypatch, known):
 def installed_variant(commands):
     install = next(cmd for cmd in commands if cmd[0] == "virt-install")
     return install[install.index("--os-variant") + 1]
+
+
+@pytest.mark.parametrize("requested, expected", [(None, "q35"), ("pc", "pc"), ("pc-q35-9.2", "pc-q35-9.2")])
+def test_define_vm_passes_machine(tmp_path, monkeypatch, requested, expected):
+    commands = osinfo_host(monkeypatch, ["ubuntu24.04"])
+    raw = _minimal_raw()
+    if requested is not None:
+        raw["vm"]["machine"] = requested
+    cfg = kvm_vm.normalize_definition(raw)
+    kvm_vm.define_vm(cfg, tmp_path / "disk.qcow2", tmp_path / "seed.img", no_start=True)
+    install = next(cmd for cmd in commands if cmd[0] == "virt-install")
+    assert install.count("--machine") == 1
+    assert install[install.index("--machine") + 1] == expected
 
 
 class TestOsVariantChoice:
