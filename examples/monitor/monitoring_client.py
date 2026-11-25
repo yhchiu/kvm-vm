@@ -24,7 +24,7 @@ GAUGE_WINDOW = 60
 # Bound on source timestamp uncertainty (collector cache, balloon stats, clocks).
 # An operator must verify this bound on all hosts before customer integration.
 SOURCE_GUARD = 180
-CATALOG = json.loads((Path(__file__).resolve().parents[1] / 'tools/monitoring/queries/v1.json').read_text())['metrics']
+CATALOG = json.loads((Path(__file__).resolve().parents[2] / 'tools/monitoring/queries/v1.json').read_text())['metrics']
 
 
 class AccessDenied(Exception):

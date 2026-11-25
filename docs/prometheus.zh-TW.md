@@ -80,7 +80,7 @@ Counter 在 VM 重啟後可能歸零，應由 PromQL `rate()` 處理重設。
 
 ## Prometheus 設定（管理員）
 
-將 [examples/prometheus-kvm-vm.yml](../examples/prometheus-kvm-vm.yml)
+將 [examples/monitor/prometheus-kvm-vm.yml](../examples/monitor/prometheus-kvm-vm.yml)
 中的 job 合併到 `prometheus.yml` 的 `scrape_configs`。若 Prometheus 與
 Exporter 在**同一宿主機／同一網路命名空間**，可使用 `127.0.0.1:9179`。
 若 Prometheus 位於別台機器、容器或 KVM VM，`127.0.0.1` 指的是 Prometheus
@@ -114,10 +114,10 @@ kvm_vm_collector_success == 0
 ## 選用 systemd 服務
 
 `install.sh` **不會**自動安裝或啟用 exporter。若需常駐監控，可套用範例
-[systemd unit](../examples/kvm-vm-exporter.service)：
+[systemd unit](../examples/monitor/kvm-vm-exporter.service)：
 
 ```sh
-sudo cp examples/kvm-vm-exporter.service /etc/systemd/system/
+sudo cp examples/monitor/kvm-vm-exporter.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now kvm-vm-exporter
 sudo systemctl status kvm-vm-exporter

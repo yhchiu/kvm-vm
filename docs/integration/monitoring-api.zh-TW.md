@@ -45,7 +45,7 @@ sequenceDiagram
 
 ## Panel Backend 介面
 
-`examples/monitoring_client.py` 為 Python 3.10+ 可匯入參考模組，使用版本化
+`examples/monitor/monitoring_client.py` 為 Python 3.10+ 可匯入參考模組，使用版本化
 `tools/monitoring/queries/v1.json` 指標清單。支援 18 種 CPU/vCPU、RAM、Disk 容量、
 讀寫流量/IOPS、Network 流量/封包/錯誤/丟棄指標。採固定 Host UUID + Domain UUID
 精確比對，並去除結果的內部 Labels；不提供原始累積計數、Host 層指標、任意查詢。

@@ -70,7 +70,7 @@ The browser never reaches NGINX/TSDB directly. The Panel owns the business ident
 Discover the exact UUIDs with [`kvm-vm identity --json`](identity.md) on each KVM Host. A null Host UUID means central identity is not configured. Discovery is not proof of ownership.
 
 [Versioned catalog](../../tools/monitoring/queries/v1.json) is the metric
-allowlist, not a user-editable query language. [Python reference module](../../examples/monitoring_client.py)
+allowlist, not a user-editable query language. [Python reference module](../../examples/monitor/monitoring_client.py)
 uses it. Every selector matches exact canonical `host_id` and libvirt `vm_id`
 (UUIDs), never the display name alone, tenant label or wildcard. Old samples
 without UUID labels are not returned. Host ID must be the monitoring UUID,

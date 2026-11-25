@@ -6,7 +6,7 @@ import sys
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-spec = importlib.util.spec_from_file_location('panel_monitoring_example', ROOT/'examples/monitoring_client.py')
+spec = importlib.util.spec_from_file_location('panel_monitoring_example', ROOT/'examples/monitor/monitoring_client.py')
 m = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = m
 spec.loader.exec_module(m)

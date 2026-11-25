@@ -90,7 +90,7 @@ counter persistence is introduced in the exporter.
 
 ## Prometheus scrape configuration (operator)
 
-Merge [examples/prometheus-kvm-vm.yml](../examples/prometheus-kvm-vm.yml)
+Merge [examples/monitor/prometheus-kvm-vm.yml](../examples/monitor/prometheus-kvm-vm.yml)
 into your Prometheus config. When Prometheus runs on the **same KVM host**,
 `127.0.0.1:9179` works. If Prometheus is on another machine or in a container,
 `127.0.0.1` refers to that other network namespace, **not** this KVM host:
@@ -122,10 +122,10 @@ kvm_vm_collector_success == 0
 ## Optional systemd deployment
 
 `install.sh` **does not** install, start or enable a daemon. If continuous
-monitoring is desired, use [the optional unit](../examples/kvm-vm-exporter.service):
+monitoring is desired, use [the optional unit](../examples/monitor/kvm-vm-exporter.service):
 
 ```sh
-sudo cp examples/kvm-vm-exporter.service /etc/systemd/system/
+sudo cp examples/monitor/kvm-vm-exporter.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now kvm-vm-exporter
 sudo systemctl status kvm-vm-exporter

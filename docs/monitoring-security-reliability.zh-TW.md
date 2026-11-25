@@ -41,7 +41,7 @@ sudo ./tools/setup-monitoring.sh diagnostics --mode hybrid
 
 本機 JSON 診斷不依賴中央可用；缺少資料回傳 null，包含 Agent 積壓 bytes、設定容量與丟棄指標、Hybrid pending samples、估算傳輸延遲與錯誤。不能以 HTTP 可達或 exit 0 認定中央已收到資料。Agent 預設 2 GiB，每 URL 限制，`KVM_VM_REMOTE_DISK_QUEUE_LIMIT` 允許 512 MiB–1 TiB 的整數 bytes；不是磁碟硬配額。超過佇列容量可能丟棄最舊資料。Hybrid 使用 WAL，不能保證長時間中斷完整補傳；新增 allowlisted 自身 Remote Write 指標及 HTTP 429 retry。既有部署需備份客製設定、審閱並重新渲染；注意私人 CA 掛載不得遺失。
 
-中央新增元件 self-scrape、Queue 丟棄／拒絕、Hybrid 失敗／延遲、中央低磁碟空間等告警，Fleet Dashboard 新增相關圖表。審閱 `sync-templates` 再 `reload`。中央完全中斷時需在 Host 本機診斷，並由不同故障域的獨立 Observer 通知。使用新增 `examples/kvm-vm-central-observer.service` 選用範例；詳細權限、HTTPS、CA 及狀態保存見英文文件。
+中央新增元件 self-scrape、Queue 丟棄／拒絕、Hybrid 失敗／延遲、中央低磁碟空間等告警，Fleet Dashboard 新增相關圖表。審閱 `sync-templates` 再 `reload`。中央完全中斷時需在 Host 本機診斷，並由不同故障域的獨立 Observer 通知。使用新增 `examples/monitor/kvm-vm-central-observer.service` 選用範例；詳細權限、HTTPS、CA 及狀態保存見英文文件。
 
 ## 備份與恢復
 
