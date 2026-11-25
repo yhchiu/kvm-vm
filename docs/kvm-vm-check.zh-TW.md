@@ -1,6 +1,6 @@
-# KVM Host Check
+# kvm-vm-check
 
-[English](README.md) | 繁體中文
+[English](kvm-vm-check.md) | 繁體中文
 
 獨立的 Python 3 工具，用於 Linux QEMU/KVM + libvirt Host 的設定巡檢，以及診斷 Guest 發出的 discard（TRIM/UNMAP）是否能在 Host 儲存層及 SSD 觀察到。工具區分「具備傳遞條件」與「實際觀測證據」，不將 Guest `fstrim` 成功直接視為 SSD 已收到 TRIM。
 
@@ -46,12 +46,19 @@ sudo dnf install python3 libvirt-client util-linux
 sudo dnf install lvm2
 ```
 
-在 repo 目錄下執行：
+在 kvm-vm repo 根目錄執行：
 
 ```sh
-chmod +x host-trim-check.py
-./host-trim-check.py --version
-./host-trim-check.py --help
+sudo ./install.sh
+kvm-vm-check --version
+kvm-vm-check --help
+```
+
+安裝程式預設將工具安裝至 `/usr/local/sbin/kvm-vm-check`。可用 `PREFIX` 更改安裝前綴，或用 `CHECK_DEST` 指定執行檔的完整路徑。若只想安裝此工具，或不安裝直接執行：
+
+```sh
+sudo install -Dm0755 tools/kvm-vm-check /usr/local/sbin/kvm-vm-check
+sudo tools/kvm-vm-check --no-qmp
 ```
 
 執行帳號需具備足夠的 libvirt 與儲存檢查權限。以下範例使用 `sudo` 存取 system libvirt connection；Host FITRIM 明確要求 root。若使用 `qemu:///session`，請以該 session 的擁有者身分執行，不宜直接套用所有 `sudo` 範例。
@@ -61,7 +68,7 @@ chmod +x host-trim-check.py
 ### 1. 全 Host 巡檢（建議日常使用）
 
 ```sh
-sudo ./host-trim-check.py --no-qmp
+sudo kvm-vm-check --no-qmp
 ```
 
 靜態檢查所有已定義的 VM，包括已關機的 VM。移除 `--no-qmp` 可對執行中的 VM 加入可取得的 QMP/QOM 查詢。
@@ -69,8 +76,8 @@ sudo ./host-trim-check.py --no-qmp
 ### 2. 指定 VM 或磁碟
 
 ```sh
-sudo ./host-trim-check.py vm01 vm02
-sudo ./host-trim-check.py vm01 --disk vda
+sudo kvm-vm-check vm01 vm02
+sudo kvm-vm-check vm01 --disk vda
 ```
 
 也支援 Domain UUID。即使指定 VM，工具仍會盤點其他 VM，以計算 Host 資源及共用儲存裝置關係。
@@ -80,7 +87,7 @@ sudo ./host-trim-check.py vm01 --disk vda
 先在 Host 執行：
 
 ```sh
-sudo ./host-trim-check.py vm01 --disk vda --watch 60
+sudo kvm-vm-check vm01 --disk vda --watch 60
 ```
 
 等 Host 顯示開始觀測後，在 Linux Guest 內執行：
@@ -94,8 +101,8 @@ sudo fstrim -av
 ### 4. 透過 QEMU Guest Agent 主動執行 Guest FITRIM
 
 ```sh
-sudo ./host-trim-check.py vm01 --guest-trim
-sudo ./host-trim-check.py vm01 --disk vda --guest-trim --mountpoint / --settle 10
+sudo kvm-vm-check vm01 --guest-trim
+sudo kvm-vm-check vm01 --disk vda --guest-trim --mountpoint / --settle 10
 ```
 
 此模式使用 `virsh domfstrim`，VM 必須處於 running 狀態，且 Guest Agent 正常運作並支援此操作。`--disk` 僅限制觀測對象，不限制 Guest Agent 的 FITRIM 操作範圍。若要指定 Guest 檔案系統，使用 `--mountpoint`。
@@ -103,9 +110,9 @@ sudo ./host-trim-check.py vm01 --disk vda --guest-trim --mountpoint / --settle 1
 ### 5. 分階段測試 Guest TRIM 與 Host FITRIM
 
 ```sh
-sudo ./host-trim-check.py vm01 --guest-trim --host-trim --settle 10
+sudo kvm-vm-check vm01 --guest-trim --host-trim --settle 10
 # 沒有 Guest Agent 時，在 watch 期間手動於 Guest 執行 fstrim：
-sudo ./host-trim-check.py vm01 --watch 60 --host-trim
+sudo kvm-vm-check vm01 --watch 60 --host-trim
 ```
 
 第一階段觀測 Guest 的行為，第二階段主動對符合條件的 Host 檔案系統執行 FITRIM，並分別測量各檔案系統的結果。Host FITRIM 會處理**整個選定的 Host 檔案系統**，不僅限該 VM 釋放的空間。沒有 Host 檔案系統的 RAW block disk 不適用此操作。建議於維護時段或低負載時執行。
@@ -113,8 +120,8 @@ sudo ./host-trim-check.py vm01 --watch 60 --host-trim
 ### 6. 自動化與 JSON 輸出
 
 ```sh
-sudo ./host-trim-check.py --no-qmp --strict --json > report.json
-sudo ./host-trim-check.py --no-qmp --min-host-memory-gib 6
+sudo kvm-vm-check --no-qmp --strict --json > report.json
+sudo kvm-vm-check --no-qmp --min-host-memory-gib 6
 ```
 
 JSON 報告使用 `schema_version: 1`，進度訊息輸出至 stderr。可使用 `summary`、`exit_code`、`vms`、`host`、`phases` 等欄位整合自動化。報告包含 VM 名稱、磁碟路徑、Host 資訊與儲存拓撲，應視為可能含機密資訊的資料。參數／相依套件錯誤或中斷時，不一定會產生 JSON 報告。
@@ -207,21 +214,20 @@ Host online discard 與 periodic FITRIM 都是有效策略。採定期 TRIM 時�
 ## 開發與測試
 
 ```sh
-python3 -m py_compile host-trim-check.py test-host-trim-check.py
-python3 test-host-trim-check.py
+python3 -m py_compile tools/kvm-vm-check tests/test_kvm_vm_check.py
+python3 tests/test_kvm_vm_check.py
+# Or: python3 -m pytest tests/test_kvm_vm_check.py -q
 ```
 
 14 項離線單元測試使用 fixtures/mocks，不執行真實 VM、QMP 或 FITRIM 指令。正式營運使用動態診斷前，建議先在非關鍵 KVM Host 驗證。
 
 ```text
-host-trim-check/
-├── host-trim-check.py       # 獨立 CLI 主程式
-├── test-host-trim-check.py  # 離線單元測試
-├── README.md              # 英文文件
-├── README.zh-TW.md        # 繁體中文文件
-└── .gitignore
+tools/kvm-vm-check
+tests/test_kvm_vm_check.py
+docs/kvm-vm-check.md
+docs/kvm-vm-check.zh-TW.md
 ```
 
 ## 授權
 
-目前尚未指定授權條款。Git repository 的存在不代表已採用開源授權。
+主專案授權請參閱 [LICENSE](../LICENSE)。原獨立巡檢工具未另外指定授權條款；本次整合不變更其授權。

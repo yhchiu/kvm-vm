@@ -2323,7 +2323,7 @@ def _deny_state_dir_mkdir(monkeypatch):
 
 def test_shipped_commands_are_executable():
     root = Path(__file__).resolve().parent.parent
-    for name in ("kvm-vm", "tools/kvm-vm-bridge"):
+    for name in ("kvm-vm", "tools/kvm-vm-bridge", "tools/kvm-vm-check"):
         path = root / name
         assert path.is_file()
         assert path.stat().st_mode & 0o111, f"{name} must be executable so a fresh checkout can run it"

@@ -19,6 +19,8 @@ BRIDGE_DEST="${BRIDGE_DEST:-$PREFIX/sbin/kvm-vm-bridge}"
 if [ -f "$BRIDGE_SRC" ]; then
   install -Dm0755 "$BRIDGE_SRC" "$BRIDGE_DEST"
 fi
+CHECK_DEST="${CHECK_DEST:-$PREFIX/sbin/kvm-vm-check}"
+install -Dm0755 "$SOURCE_DIR/tools/kvm-vm-check" "$CHECK_DEST"
 # Reject untrusted template directories (including existing ancestors) before
 # creating or updating vendor files. These paths are used later by a root CLI.
 check_template_directory() {
@@ -97,6 +99,7 @@ if command -v restorecon >/dev/null 2>&1; then
 fi
 
 echo "Installed: $DEST"
+echo "Installed: $CHECK_DEST"
 echo "Built-in templates: $BUILTIN_TEMPLATE_DIR"
 echo "Local templates: $TEMPLATE_DIR"
 if [ -f "$BRIDGE_SRC" ]; then
@@ -106,3 +109,4 @@ if [ -f "$BRIDGE_SRC" ]; then
 else
   echo "Run: kvm-vm --help"
 fi
+echo "Run: kvm-vm-check --help"

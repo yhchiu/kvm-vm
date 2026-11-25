@@ -32,6 +32,9 @@ changing a real interface. Its live dry-run stays skipped unless
 `KVM_VM_BRIDGE_LIVE=1` and `KVM_VM_BRIDGE_LIVE_UPLINK` are set on a disposable
 host.
 
+`tests/test_kvm_vm_check.py` covers host audit and layered TRIM diagnostics
+using mocks; it does not execute real VM, QMP or FITRIM commands.
+
 > [!WARNING]
 > On a KVM host, running this command as root also runs the real-VM tests, which
 > create and delete VMs. To run only the offline tests there, add `-m "not e2e"`

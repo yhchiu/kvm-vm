@@ -315,6 +315,7 @@ def test_guest_archive_contains_only_runtime_files(tmp_path, monkeypatch):
     t.install_repo('central')
     with tarfile.open(fileobj=io.BytesIO(t.scp_bytes.call_args.args[1])) as archive:
         assert set(archive.getnames()) == {'kvm-vm/' + name for name in lab.GUEST_FILES}
+        assert archive.extractfile('kvm-vm/tools/kvm-vm-check').read() == (root / 'tools/kvm-vm-check').read_bytes()
     (root / 'install.sh').unlink()
     (root / 'install.sh').symlink_to(root / '.env')
     with pytest.raises(lab.LabError, match='regular guest source'):

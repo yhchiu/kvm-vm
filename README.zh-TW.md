@@ -50,7 +50,7 @@ RHEL 9 以上使用 libvirt 的模組化 daemon（`virtqemud` 等），安裝套
 sudo ./install.sh
 ```
 
-會安裝 `/usr/local/sbin/kvm-vm`、內建 VM 範本並建立所需目錄。重新執行即可升級。安裝程式使用 POSIX `sh`，不需要 Bash，也可以執行 `sudo sh ./install.sh`。其他安裝設定腳本仍可能需要 Bash。
+會安裝 `/usr/local/sbin/kvm-vm`、輔助工具 `kvm-vm-bridge` 與 `kvm-vm-check`、內建 VM 範本並建立所需目錄。重新執行即可升級。安裝程式使用 POSIX `sh`，不需要 Bash，也可以執行 `sudo sh ./install.sh`。其他安裝設定腳本仍可能需要 Bash。
 
 **3. 確認已有 SSH 金鑰。** 範例使用 `~/.ssh/id_ed25519.pub`，若不存在，請用 `ssh-keygen -t ed25519` 建立。
 
@@ -149,6 +149,7 @@ Prometheus metrics endpoint、systemd、PromQL 與安全設定請見 [Prometheus
 | 分散 Guest 維護作業並選擇性降低資源優先權 | [Guest 維護排程](docs/maintenance.zh-TW.md) |
 | 在橋接、NAT、Macvtap 之間做選擇 | [網路設定](docs/networking.zh-TW.md) |
 | 建立橋接模式需要的宿主機 bridge | [宿主機 bridge 設定](docs/bridge-host.zh-TW.md) |
+| 巡檢宿主機並診斷 VM 至 SSD 的 TRIM 傳遞 | [宿主機巡檢與 TRIM 診斷（kvm-vm-check）](docs/kvm-vm-check.zh-TW.md) |
 | 查詢指令的作用 | [指令參考](docs/commands.zh-TW.md) |
 | 整合 Prometheus 監控 | [Prometheus 指標輸出](docs/prometheus.zh-TW.md) |
 | 從主控台登入，或重新取得存取權 | [存取與安全](docs/access.zh-TW.md) |

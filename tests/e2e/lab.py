@@ -44,6 +44,7 @@ GUEST_FILES = (
     'install.sh',
     'kvm-vm',
     'tools/kvm-vm-bridge',
+    'tools/kvm-vm-check',
     'tools/setup-central-monitoring.sh',
     'tools/setup-monitoring.sh',
     'tools/setup-remote-monitoring.sh',

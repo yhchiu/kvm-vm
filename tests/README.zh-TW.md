@@ -27,6 +27,8 @@ python3 -m pytest tests -q
 
 `tests/test_bridge_tool.py` 檢查選用的宿主機 bridge 工具，不會改動真實介面。它的實機 dry-run 預設略過，除非在可犧牲的宿主機上設定 `KVM_VM_BRIDGE_LIVE=1` 與 `KVM_VM_BRIDGE_LIVE_UPLINK`。
 
+`tests/test_kvm_vm_check.py` 使用 mock 測試宿主機巡檢與分層 TRIM 診斷，不執行真實 VM、QMP 或 FITRIM 指令。
+
 > [!WARNING]
 > 在 KVM 宿主機上以 root 執行此指令，也會執行會建立與刪除 VM 的實機測試。在宿主機上若只要跑離線測試，請加上 `-m "not e2e"`（或改用一般使用者執行）：
 >

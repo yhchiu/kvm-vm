@@ -31,6 +31,7 @@ def installer(tmp_path, request):
     (source / 'tools').mkdir()
     bridge = source / 'tools/kvm-vm-bridge'
     bridge.touch()
+    shutil.copy2(ROOT / "tools/kvm-vm-check", source / "tools/kvm-vm-check")
     bin_dir = tmp_path / 'bin'
     bin_dir.mkdir()
     (bin_dir / 'dirname').symlink_to(dirname)
@@ -63,7 +64,7 @@ def installer(tmp_path, request):
                'TEST_UID': uid, 'INSTALL_STATUS': install_status,
                'RESTORECON_STATUS': restorecon_status, 'TEST_ROOT': str(tmp_path),
                'REAL_INSTALL': real_install, 'REAL_STAT': real_stat}
-        for name in ('PREFIX', 'DEST', 'BRIDGE_DEST', 'EUID', 'BASH_ENV', 'ENV', 'KVM_VM_DEF_DIR', 'KVM_VM_TEMPLATE_DIR',
+        for name in ('PREFIX', 'DEST', 'BRIDGE_DEST', 'CHECK_DEST', 'EUID', 'BASH_ENV', 'ENV', 'KVM_VM_DEF_DIR', 'KVM_VM_TEMPLATE_DIR',
                      'KVM_VM_BUILTIN_TEMPLATE_DIR'):
             env.pop(name, None)
         env.update(KVM_VM_DEF_DIR=str(tmp_path / 'definitions'),
@@ -85,6 +86,7 @@ def test_default_install(installer):
     assert calls == [
         'install', '-Dm0755', str(source / 'kvm-vm'), '/usr/local/sbin/kvm-vm',
         'install', '-Dm0755', str(bridge), '/usr/local/sbin/kvm-vm-bridge',
+        'install', '-Dm0755', str(source / 'tools/kvm-vm-check'), '/usr/local/sbin/kvm-vm-check',
         *[arg for directory in ('definitions', 'local', 'builtin')
           for arg in ('install', '-d', '-m0755', str(source.parent / directory))],
         *[arg for file in sorted((source / 'examples').glob('*.yaml'))
@@ -93,21 +95,26 @@ def test_default_install(installer):
         'restorecon', '-RF', *DIRECTORIES[1:],
     ]
     assert 'Installed: /usr/local/sbin/kvm-vm-bridge' in result.stdout
+    assert 'Installed: /usr/local/sbin/kvm-vm-check' in result.stdout
+    assert 'Run: kvm-vm-check --help' in result.stdout
     assert sorted(p.name for p in (source.parent / 'builtin').iterdir()) == sorted(p.name for p in (source / 'examples').glob('*.yaml'))
 
 
 def test_custom_paths_and_optional_bridge(installer):
     run, source, bridge, bin_dir = installer
     result, calls = run(PREFIX='/opt/custom prefix', DEST='/opt/custom destination',
-                        BRIDGE_DEST='/opt/custom bridge')
+                        BRIDGE_DEST='/opt/custom bridge', CHECK_DEST='/opt/custom check')
     assert result.returncode == 0, result.stderr
-    assert calls[:8] == ['install', '-Dm0755', str(source / 'kvm-vm'), '/opt/custom destination',
-                        'install', '-Dm0755', str(bridge), '/opt/custom bridge']
+    assert calls[:12] == ['install', '-Dm0755', str(source / 'kvm-vm'), '/opt/custom destination',
+                        'install', '-Dm0755', str(bridge), '/opt/custom bridge',
+                        'install', '-Dm0755', str(source / 'tools/kvm-vm-check'), '/opt/custom check']
     bridge.unlink()
     (bin_dir / 'restorecon').unlink()
     result, calls = run(PREFIX='/opt/custom prefix')
     assert result.returncode == 0, result.stderr
     assert calls[:4] == ['install', '-Dm0755', str(source / 'kvm-vm'), '/opt/custom prefix/sbin/kvm-vm']
+    assert calls[4:8] == ['install', '-Dm0755', str(source / 'tools/kvm-vm-check'),
+                          '/opt/custom prefix/sbin/kvm-vm-check']
     assert str(bridge) not in calls and 'restorecon' not in calls
     assert 'kvm-vm-bridge' not in result.stdout
 
@@ -152,6 +159,12 @@ def test_prefix_chooses_vendor_dir(installer):
     result, _ = run(PREFIX=str(prefix), KVM_VM_BUILTIN_TEMPLATE_DIR='')
     assert result.returncode == 0, result.stderr
     assert (prefix / 'share/kvm-vm/templates/ubuntu24-nat.yaml').is_file()
+    check = prefix / 'sbin/kvm-vm-check'
+    assert check.read_bytes() == (source / 'tools/kvm-vm-check').read_bytes()
+    assert check.stat().st_mode & 0o777 == 0o755
+    result = subprocess.run([str(check), '--help'], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    assert 'usage: kvm-vm-check' in result.stdout
 
 
 def test_reject_unsafe_template_directories(installer):

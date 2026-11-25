@@ -2,6 +2,7 @@
 """Offline tests; no real VM, FITRIM or QMP commands are executed."""
 import contextlib
 import importlib.util
+from importlib.machinery import SourceFileLoader
 import io
 import json
 from pathlib import Path
@@ -9,7 +10,9 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-spec = importlib.util.spec_from_file_location('checker', Path(__file__).with_name('host-trim-check.py'))
+script = Path(__file__).resolve().parents[1] / 'tools' / 'kvm-vm-check'
+loader = SourceFileLoader('checker', str(script))
+spec = importlib.util.spec_from_loader('checker', loader)
 c = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(c)
 XML = '''<domain><name>vm1</name><uuid>id-1</uuid><memory unit="MiB">4096</memory><vcpu current="2">4</vcpu><os><type machine="pc-i440fx-9.2">hvm</type></os><devices>

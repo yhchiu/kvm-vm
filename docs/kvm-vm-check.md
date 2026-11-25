@@ -1,6 +1,6 @@
-# KVM Host Check
+# kvm-vm-check
 
-English | [繁體中文](README.zh-TW.md)
+English | [繁體中文](kvm-vm-check.zh-TW.md)
 
 A standalone Python 3 tool for auditing local Linux QEMU/KVM hosts managed by libvirt and diagnosing whether guest discard (TRIM/UNMAP) is observed at the host storage and SSD layers. It distinguishes configuration capability from runtime evidence, rather than treating a successful guest `fstrim` as proof of SSD discard.
 
@@ -46,12 +46,19 @@ sudo dnf install python3 libvirt-client util-linux
 sudo dnf install lvm2
 ```
 
-From the repository directory:
+Install from the root of the kvm-vm repository:
 
 ```sh
-chmod +x host-trim-check.py
-./host-trim-check.py --version
-./host-trim-check.py --help
+sudo ./install.sh
+kvm-vm-check --version
+kvm-vm-check --help
+```
+
+The installer places the tool in `/usr/local/sbin/kvm-vm-check` by default. Use `PREFIX` to change the installation prefix or `CHECK_DEST` to set the exact executable path. For standalone installation or use without installing:
+
+```sh
+sudo install -Dm0755 tools/kvm-vm-check /usr/local/sbin/kvm-vm-check
+sudo tools/kvm-vm-check --no-qmp
 ```
 
 Use an account with sufficient libvirt and storage inspection privileges. The examples use `sudo` for the system libvirt connection; Host FITRIM explicitly requires root. For `qemu:///session`, run as the owner of the session rather than using `sudo` indiscriminately.
@@ -61,7 +68,7 @@ Use an account with sufficient libvirt and storage inspection privileges. The ex
 ### 1. Audit all VMs (recommended for routine checks)
 
 ```sh
-sudo ./host-trim-check.py --no-qmp
+sudo kvm-vm-check --no-qmp
 ```
 
 This is a static inspection of defined domains, including stopped domains. Omit `--no-qmp` to include available runtime QMP/QOM queries for active domains.
@@ -69,8 +76,8 @@ This is a static inspection of defined domains, including stopped domains. Omit 
 ### 2. Inspect selected VMs or one disk
 
 ```sh
-sudo ./host-trim-check.py vm01 vm02
-sudo ./host-trim-check.py vm01 --disk vda
+sudo kvm-vm-check vm01 vm02
+sudo kvm-vm-check vm01 --disk vda
 ```
 
 Domain UUIDs are also accepted. The tool still inventories the other domains for resource totals and shared-storage mapping.
@@ -80,7 +87,7 @@ Domain UUIDs are also accepted. The tool still inventories the other domains for
 On the host:
 
 ```sh
-sudo ./host-trim-check.py vm01 --disk vda --watch 60
+sudo kvm-vm-check vm01 --disk vda --watch 60
 ```
 
 After the host reports that observation has started, run inside the Linux guest:
@@ -94,8 +101,8 @@ The script captures before/after snapshots over the observation window; it does 
 ### 4. Trigger guest FITRIM using QEMU Guest Agent
 
 ```sh
-sudo ./host-trim-check.py vm01 --guest-trim
-sudo ./host-trim-check.py vm01 --disk vda --guest-trim --mountpoint / --settle 10
+sudo kvm-vm-check vm01 --guest-trim
+sudo kvm-vm-check vm01 --disk vda --guest-trim --mountpoint / --settle 10
 ```
 
 This uses `virsh domfstrim`. The VM must be running with a working guest agent that supports the operation. `--disk` filters the observations only, not the guest agent's FITRIM scope. Use `--mountpoint` to request a specific guest filesystem.
@@ -103,9 +110,9 @@ This uses `virsh domfstrim`. The VM must be running with a working guest agent t
 ### 5. Separate guest discard from Host FITRIM
 
 ```sh
-sudo ./host-trim-check.py vm01 --guest-trim --host-trim --settle 10
+sudo kvm-vm-check vm01 --guest-trim --host-trim --settle 10
 # Without a Guest Agent (run fstrim in the guest during the watch window):
-sudo ./host-trim-check.py vm01 --watch 60 --host-trim
+sudo kvm-vm-check vm01 --watch 60 --host-trim
 ```
 
 The first phase measures guest activity; the second explicitly trims eligible host filesystems and measures each separately. The host operation trims the **entire selected filesystem**, not just VM-owned free space. It is not applicable to raw block disks without a host filesystem. Use a maintenance or low-traffic window.
@@ -113,8 +120,8 @@ The first phase measures guest activity; the second explicitly trims eligible ho
 ### 6. Automation and JSON
 
 ```sh
-sudo ./host-trim-check.py --no-qmp --strict --json > report.json
-sudo ./host-trim-check.py --no-qmp --min-host-memory-gib 6
+sudo kvm-vm-check --no-qmp --strict --json > report.json
+sudo kvm-vm-check --no-qmp --min-host-memory-gib 6
 ```
 
 JSON output uses `schema_version: 1`; progress is sent to stderr. Inspect `summary`, `exit_code`, `vms`, `host`, and `phases`. JSON includes domain names, disk paths, host details and storage topology; treat reports as potentially sensitive. A CLI/dependency error or interrupted execution may not produce a JSON report.
@@ -207,21 +214,20 @@ For example, QEMU unmap and file reclamation without immediate SSD discard, foll
 ## Development and testing
 
 ```sh
-python3 -m py_compile host-trim-check.py test-host-trim-check.py
-python3 test-host-trim-check.py
+python3 -m py_compile tools/kvm-vm-check tests/test_kvm_vm_check.py
+python3 tests/test_kvm_vm_check.py
+# Or: python3 -m pytest tests/test_kvm_vm_check.py -q
 ```
 
 The 14 offline unit tests use fixtures/mocks; they do not issue real VM, QMP or FITRIM commands. Validate on a noncritical KVM host before relying on runtime diagnostics in production.
 
 ```text
-host-trim-check/
-├── host-trim-check.py       # Standalone CLI
-├── test-host-trim-check.py  # Offline unit tests
-├── README.md              # English documentation
-├── README.zh-TW.md        # Traditional Chinese documentation
-└── .gitignore
+tools/kvm-vm-check
+tests/test_kvm_vm_check.py
+docs/kvm-vm-check.md
+docs/kvm-vm-check.zh-TW.md
 ```
 
 ## License
 
-No license has been selected. Do not infer an open-source license from the presence of a Git repository.
+See the main project’s [LICENSE](../LICENSE). The original standalone check tool did not specify separate license terms; this integration does not change its licensing.

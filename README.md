@@ -61,7 +61,8 @@ For older releases, see [Requirements](#requirements).
 sudo ./install.sh
 ```
 
-This installs `/usr/local/sbin/kvm-vm`, built-in VM templates and their directories. Run it again
+This installs `/usr/local/sbin/kvm-vm`, the companion tools `kvm-vm-bridge` and
+`kvm-vm-check`, built-in VM templates and their directories. Run it again
 to upgrade. The installer uses POSIX `sh` (no Bash required);
 `sudo sh ./install.sh` also works. The other setup scripts may still require Bash.
 
@@ -171,6 +172,7 @@ For running managed VMs, use `sudo kvm-vm maintenance apply web01 --profile bala
 | Stagger and optionally deprioritize guest maintenance jobs | [Guest maintenance](docs/maintenance.md) |
 | Choose between bridge, NAT and Macvtap | [Networking](docs/networking.md) |
 | Create the host bridge that bridge mode needs | [Host bridge setup](docs/bridge-host.md) |
+| Audit the host and diagnose VM-to-SSD TRIM | [Host audit and TRIM diagnostics (kvm-vm-check)](docs/kvm-vm-check.md) |
 | Look up what a command does | [Command reference](docs/commands.md) |
 | Configure Prometheus metrics | [Prometheus exporter](docs/prometheus.md) |
 | Log in on the console, or regain access | [Access and security](docs/access.md) |
