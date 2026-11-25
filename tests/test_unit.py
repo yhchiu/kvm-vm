@@ -502,7 +502,7 @@ class TestParser:
             parser.parse_args(["reinstall", "myvm", "--os", "debian13", "--image-url", "https://example.com/img.qcow2"])
 
     def test_version(self):
-        assert kvm_vm.VERSION == "1.3.0"
+        assert kvm_vm.VERSION == "2.0.0"
 
 
 # --- sysprep compatibility verification ---
