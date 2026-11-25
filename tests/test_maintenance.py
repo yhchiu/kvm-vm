@@ -99,7 +99,8 @@ def test_clone_identity_and_reinstall_schedule():
     assert kvm.maintenance_schedules(source) == kvm.maintenance_schedules(kvm.normalize_definition(source))
 
 
-@pytest.mark.parametrize("policy", [None, {"profile": "balanced"}])
+@pytest.mark.parametrize("policy", [None, {"profile": "balanced"},
+    {"profile": "balanced", "timers": {"fstrim.timer": {"resources": {"nice": 10}}}}])
 def test_cloud_init_integration(tmp_path, monkeypatch, policy):
     monkeypatch.setattr(kvm, "CLOUD_DIR", tmp_path / "cloud")
     effective = cfg(policy, mac="auto")
@@ -110,7 +111,7 @@ def test_cloud_init_integration(tmp_path, monkeypatch, policy):
     data = kvm.yaml.safe_load(user_data.read_text())
     assert data["runcmd"][0] == ["echo", "user command"]
     if policy:
-        assert data["runcmd"][-1] == ["sh", "-c", kvm.maintenance_command(kvm.maintenance_schedules(effective))]
+        assert data["runcmd"][-1] == ["sh", "-c", kvm.maintenance_command(kvm.maintenance_schedules(effective), resources=kvm.maintenance_resources(effective))]
         assert "fstrim.timer" in data["runcmd"][-1][2]
     else:
         assert len(data["runcmd"]) == 2
@@ -130,9 +131,16 @@ def test_clone_cleanup_is_scoped(tmp_path, monkeypatch):
     other = dropin / "user.conf"
     own.touch()
     other.touch()
+    service_dir = root / "fstrim.service.d"
+    service_dir.mkdir()
+    own_service = service_dir / kvm.MAINTENANCE_RESOURCE_DROPIN
+    other_service = service_dir / "user.conf"
+    own_service.touch()
+    other_service.touch()
     cleanup = next(part.strip() for part in command[-1].split(";") if "rm -f /etc/systemd/system/" in part)
     subprocess.run(["sh", "-c", cleanup.replace("/etc/systemd/system/", str(root) + "/")], check=True)
     assert not own.exists() and other.exists()
+    assert not own_service.exists() and other_service.exists()
 
 
 def test_guest_application(tmp_path):
@@ -365,3 +373,159 @@ def test_cloud_init_ready_guard(tmp_path, status, code, ok):
     result = subprocess.run(["sh", "-c", kvm.MAINTENANCE_READY + "echo applied"], env=env, capture_output=True)
     assert (result.returncode == 0) == ok
     assert (b"applied" in result.stdout) == ok
+
+
+RESOURCE_POLICY = {"profile": "balanced", "timers": {"fstrim.timer": {"resources": {
+    "nice": 10, "io_scheduling_class": "idle", "cpu_weight": 20, "io_weight": 20}}}}
+RESOURCE_CONTENT = "[Service]\nNice=10\nIOSchedulingClass=idle\nCPUWeight=20\nIOWeight=20\n"
+
+
+def test_resources_opt_in_and_roundtrip():
+    effective = cfg(RESOURCE_POLICY)
+    assert kvm.maintenance_resources(effective) == {"fstrim.timer": RESOURCE_CONTENT}
+    assert effective == kvm.normalize_definition(copy.deepcopy(effective))
+    assert kvm.maintenance_schedules(effective) == kvm.maintenance_schedules(cfg({"profile": "balanced"}))
+    for policy in [None, {"profile": "balanced"}, {**RESOURCE_POLICY, "enabled": False},
+                   {"profile": "balanced", "timers": {"fstrim.timer": {"enabled": False, "resources": {"nice": 10}}}},
+                   {"profile": "balanced", "timers": {"fstrim.timer": {"resources": {}}}}]:
+        assert not kvm.maintenance_resources(cfg(policy))
+
+
+@pytest.mark.parametrize("resources", [None, [], {"unknown": 1}, {"nice": True}, {"nice": -1}, {"nice": 20},
+    {"nice": "10"}, {"cpu_weight": 0}, {"cpu_weight": 10001}, {"io_weight": 1.0}, {"io_weight": True},
+    {"io_scheduling_class": "realtime"}, {"io_scheduling_class": ["idle"]}, {"io_scheduling_class": "idle\nExecStart=bad"}])
+def test_invalid_resources(resources):
+    with pytest.raises(kvm.KVMError, match="maintenance resources"):
+        cfg({"profile": "balanced", "timers": {"fstrim.timer": {"resources": resources}}})
+
+
+@pytest.mark.parametrize("value", [0, 19])
+def test_resource_boundaries(value):
+    result = kvm.normalize_maintenance_resources({"nice": value, "io_scheduling_class": "best-effort",
+                                                   "cpu_weight": 1, "io_weight": 10000})
+    assert result["nice"] == value
+
+
+@pytest.fixture
+def resource_guest(tmp_path):
+    root = tmp_path / "system"
+    root.mkdir()
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    fake = bindir / "systemctl"
+    fake.write_text('''#!/bin/sh
+printf '%s\\n' "$*" >> "$CALL_LOG"
+case "$*" in
+    "show --property=LoadState --value missing.timer"|"show --property=LoadState --value missing.service") echo not-found; exit 1 ;;
+    "show --property=LoadState --value masked.timer"|"show --property=LoadState --value masked.service") echo masked; exit 1 ;;
+    "show --property=LoadState --value "*) echo loaded ;;
+    "show --property=Unit --value missing-target.timer") echo missing.service ;;
+    "show --property=Unit --value masked-target.timer") echo masked.service ;;
+    "show --property=Unit --value bad.timer") echo "../bad.service" ;;
+    "show --property=Unit --value mount.timer") echo data.mount ;;
+    "show --property=Unit --value second.timer") echo alias.service ;;
+    "show --property=Unit --value "*) echo actual.service ;;
+    "show --property=Id --value "*) echo actual.service ;;
+    "show actual.service -p "*) echo Nice=10 ;;
+esac
+''')
+    fake.chmod(0o755)
+    log = tmp_path / "calls"
+    env = dict(os.environ, PATH=str(bindir) + ":" + os.environ["PATH"], CALL_LOG=str(log))
+    def execute(script, *, check=True):
+        return subprocess.run(["sh", "-c", script.replace("/etc/systemd/system/", str(root) + "/")],
+                              env=env, check=check, capture_output=True, text=True)
+    return root, log, execute
+
+
+def test_service_resolution_reconciliation_and_no_service_restart(resource_guest):
+    root, log, execute = resource_guest
+    schedules = {"fstrim.timer": "[Timer]\nOnCalendar=daily\n"}
+    resources = {"fstrim.timer": RESOURCE_CONTENT}
+    target = root / "actual.service.d" / kvm.MAINTENANCE_RESOURCE_DROPIN
+    target.parent.mkdir()
+    (target.parent / "admin.conf").write_text("admin")
+    stale = root / "old.service.d" / kvm.MAINTENANCE_RESOURCE_DROPIN
+    stale.parent.mkdir()
+    stale.write_text("old")
+    script = kvm.maintenance_command(schedules, resources=resources, reconcile=True)
+    execute(script)
+    assert target.read_text() == RESOURCE_CONTENT
+    assert target.stat().st_mode & 0o777 == 0o644
+    assert not stale.exists()
+    assert not (root / "fstrim.service.d").exists()
+    # Reapplication is idempotent; the first-boot path skips unchanged files.
+    log.unlink()
+    execute(kvm.maintenance_command(schedules, resources=resources))
+    assert "daemon-reload" not in log.read_text()
+    # Updating only resources still reloads systemd.
+    execute(kvm.maintenance_command(schedules, resources={"fstrim.timer": "[Service]\nNice=15\n"}))
+    assert target.read_text() == "[Service]\nNice=15\n"
+    assert "daemon-reload" in log.read_text()
+    # Leaving the schedule but removing resources restores the vendor service policy.
+    execute(kvm.maintenance_command(schedules, reconcile=True))
+    assert not target.exists()
+    assert (target.parent / "admin.conf").read_text() == "admin"
+    assert (root / "fstrim.timer.d" / kvm.MAINTENANCE_DROPIN).exists()
+    assert not any(line.startswith(("start ", "restart ", "try-restart ", "stop ", "enable ", "disable "))
+                   and line.endswith(".service") for line in log.read_text().splitlines())
+
+
+@pytest.mark.parametrize("timer", ["missing.timer", "masked.timer", "missing-target.timer", "masked-target.timer"])
+def test_resource_skips_unavailable_units(resource_guest, timer):
+    root, _, execute = resource_guest
+    execute(kvm.maintenance_command({timer: "[Timer]\n"}, resources={timer: RESOURCE_CONTENT}))
+    assert not list(root.glob("*.service.d"))
+
+
+@pytest.mark.parametrize("timer", ["bad.timer", "mount.timer", "second.timer"])
+def test_resource_preflight_refuses_invalid_or_conflicting_targets(resource_guest, timer):
+    root, log, execute = resource_guest
+    schedules = {"first.timer": "[Timer]\n", timer: "[Timer]\n"}
+    resources = {"first.timer": RESOURCE_CONTENT, timer: "[Service]\nNice=15\n"}
+    result = execute(kvm.maintenance_command(schedules, resources=resources, reconcile=True), check=False)
+    assert result.returncode != 0
+    assert not list(root.iterdir())
+    assert "daemon-reload" not in log.read_text()
+    assert ("conflicting resources" if timer == "second.timer" else "unsupported service target") in result.stderr
+
+
+def test_same_resource_policy_shared_service_and_status(resource_guest):
+    root, log, execute = resource_guest
+    schedules = {"first.timer": "[Timer]\n", "second.timer": "[Timer]\n"}
+    resources = dict.fromkeys(schedules, RESOURCE_CONTENT)
+    execute(kvm.maintenance_command(schedules, resources=resources))
+    assert len(list(root.glob("*.service.d"))) == 1
+    stale = root / "stale.service.d" / kvm.MAINTENANCE_RESOURCE_DROPIN
+    stale.parent.mkdir()
+    stale.write_text("stale")
+    log.unlink()
+    status = execute(kvm.maintenance_status_script(schedules, resources)).stdout
+    assert "Resource target for first.timer: actual.service" in status
+    assert "Resource target for second.timer: actual.service" in status
+    assert status.count("=== actual.service resources ===") == 1
+    assert "=== stale.service resources ===" in status
+    assert RESOURCE_CONTENT in status
+    assert "-p Nice -p IOSchedulingClass -p CPUWeight -p IOWeight" in log.read_text()
+    assert "daemon-reload" not in log.read_text()
+    assert stale.read_text() == "stale"
+    execute(kvm.maintenance_command({}, reconcile=True))
+    assert not list(root.glob("*.service.d/" + kvm.MAINTENANCE_RESOURCE_DROPIN))
+    assert not list(root.glob("*.timer.d/" + kvm.MAINTENANCE_DROPIN))
+
+
+def test_resources_live_policy(live_vm, tmp_path, capsys):
+    definition, _ = live_vm
+    policy = tmp_path / "policy.yaml"
+    policy.write_text(kvm.yaml.safe_dump(RESOURCE_POLICY))
+    with patch.object(kvm, "maintenance_guest_exec", return_value="") as guest:
+        assert cli("preview", "test01", "--policy", str(policy)) == 0
+        assert "service_drop_ins_by_timer" in capsys.readouterr().out
+        guest.assert_not_called()
+        assert cli("apply", "test01", "--policy", str(policy), "--yes") == 0
+        assert "plan_resource fstrim.timer" in guest.call_args.args[1]
+        assert kvm.maintenance_resources(kvm.yaml_load(definition)) == {"fstrim.timer": RESOURCE_CONTENT}
+        assert cli("status", "test01") == 0
+        assert "report_resource_timer fstrim.timer" in guest.call_args.args[1]
+        assert cli("remove", "test01", "--yes") == 0
+        assert not kvm.maintenance_resources(kvm.yaml_load(definition))

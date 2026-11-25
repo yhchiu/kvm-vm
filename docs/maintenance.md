@@ -4,7 +4,8 @@
 
 Multiple guests sharing a storage device can generate an I/O spike when their
 periodic maintenance jobs run together. The optional maintenance policy spreads
-selected systemd timers over the week or over a daily maintenance window. No
+selected systemd timers over the week or over a daily maintenance window.
+Optional service resource priorities complement staggering. No
 host scheduler or new guest daemon is required. Live management uses the existing QEMU Guest Agent.
 
 ## Quick start
@@ -70,6 +71,77 @@ name, not a glob or uninstantiated template. The policy overrides both calendar
 and monotonic triggers; only select jobs that can safely be rescheduled this
 way. Other unit settings, including `Persistent`, are not changed.
 
+## Optional service resource controls
+
+No resource controls are enabled by default, including under `balanced`.
+Add `resources` to an enabled timer to configure its target service:
+
+```yaml
+cloud_init:
+  maintenance:
+    profile: balanced
+    timers:
+      fstrim.timer:
+        resources:
+          nice: 10
+          io_scheduling_class: idle
+          cpu_weight: 20
+          io_weight: 20
+```
+
+| Field | systemd directive | Accepted values |
+|---|---|---|
+| `nice` | `Nice` | Integer 0–19; higher values lower process CPU scheduling priority. |
+| `io_scheduling_class` | `IOSchedulingClass` | `best-effort` or `idle`; no realtime class. |
+| `cpu_weight` | `CPUWeight` | Integer 1–10000; relative CPU cgroup weight (systemd default 100). |
+| `io_weight` | `IOWeight` | Integer 1–10000; relative I/O cgroup weight (systemd default 100). |
+
+All fields are optional. Omit fields to leave them unmanaged; `{}` requests
+no resource settings. Disabling the timer policy also excludes its resource
+settings. These are priorities, not limits; weights above 100 may increase
+relative priority. The example uses a low priority; evaluate completion time
+before using `idle` on important or time-sensitive jobs.
+
+The guest resolves the timer's actual `Unit=` target and canonical service
+`Id` through systemctl. Only loaded, unmasked services with concrete names
+using ASCII letters, digits, underscores, dots, `@` and hyphens are supported.
+Missing/masked targets are skipped; non-service or unsupported target names
+fail the operation. Two timers requesting different settings for the same
+canonical service are rejected before any drop-in is changed. Identical
+settings share a drop-in. An unconfigured timer does not request a competing
+policy: the resource settings apply to **every** activation of the service,
+including manual activation and activation by other timers.
+
+The service file is `/etc/systemd/system/<service>.d/90-kvm-vm-maintenance-resources.conf`:
+
+```ini
+[Service]
+Nice=10
+IOSchedulingClass=idle
+CPUWeight=20
+IOWeight=20
+```
+
+Only the reserved drop-in is written or removed. Systemd is reloaded, but
+services are never explicitly restarted, stopped or started by the resource
+configuration. Process scheduling attributes apply at subsequent execution;
+changes to an already active cgroup may take effect earlier. Existing
+`Persistent` catch-up and timer restart behavior remain unchanged.
+`maintenance preview` shows the proposed service contents keyed by timer;
+actual targets are only resolved inside the guest. `status` also reports
+actual service drop-ins and `Nice`, `IOSchedulingClass`, `CPUWeight`,
+`IOWeight`, and `DropInPaths` properties. Apply a policy without resources
+(or use `maintenance remove`) to remove obsolete service drop-ins. Clone
+cleanup also removes both reserved timer and service drop-ins.
+
+CPU/I/O weight effectiveness depends on cgroup controllers and the guest
+kernel/storage scheduler (particularly cgroup v2 for these directives).
+Guest I/O priorities need not propagate to host storage; TRIM/discard is not
+guaranteed to be throttled. The displayed systemd properties do not prove
+actual enforcement. Keep host-side IOPS/bandwidth controls and test on the
+actual storage stack. See [systemd.exec](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html)
+and [systemd.resource-control](https://www.freedesktop.org/software/systemd/man/latest/systemd.resource-control.html).
+
 ## How it works
 
 SHA-256 of a versioned namespace, effective VM name, resolved MAC address and
@@ -97,7 +169,8 @@ administrator or vendor drop-ins can also alter the effective schedule.
 
 Cloud-init appends a first-boot `runcmd` step after the user's commands and
 kvm-vm provisioning. It inspects systemd LoadState, skips absent or masked
-units, writes only `/etc/systemd/system/<timer>.d/90-kvm-vm-maintenance.conf`,
+units, writes `/etc/systemd/system/<timer>.d/90-kvm-vm-maintenance.conf` and
+optional reserved service drop-ins,
 reloads systemd and uses `try-restart` for changed units. It does not enable
 or start inactive timers. User drop-ins are left intact. Identical files do
 not trigger a reload. The operation is logged in cloud-init output; unexpected
@@ -218,4 +291,9 @@ confirm the drop-in remains. Apply a narrower window, verify the new
 schedule, then remove and verify that only the reserved drop-in disappeared
 and the timer's original enablement is unchanged. Repeat on at least one
 Debian/Ubuntu and one RHEL-family guest. Do not use a production VM as the
-first acceptance target.
+first acceptance target. For resources, also apply the example above,
+compare `status` with `systemctl cat fstrim.service` and `systemctl show
+fstrim.service -p Nice -p IOSchedulingClass -p CPUWeight -p IOWeight`, verify
+that the actual service is not restarted by configuration, then remove just
+the resources by applying plain `balanced`. Check controller availability and
+measure maintenance runtime and host I/O latency under representative load.

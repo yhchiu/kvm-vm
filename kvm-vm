@@ -287,6 +287,13 @@ MAINTENANCE_PROFILES = {
     "custom": {},
 }
 MAINTENANCE_DROPIN = "90-kvm-vm-maintenance.conf"
+MAINTENANCE_RESOURCE_DROPIN = "90-kvm-vm-maintenance-resources.conf"
+MAINTENANCE_RESOURCE_FIELDS = {
+    "nice": ("Nice", 0, 19),
+    "io_scheduling_class": ("IOSchedulingClass", "best-effort", "idle"),
+    "cpu_weight": ("CPUWeight", 1, 10000),
+    "io_weight": ("IOWeight", 1, 10000),
+}
 MAINTENANCE_TIMER_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.@-]{0,246}\.timer")
 
 
@@ -300,6 +307,23 @@ def maintenance_window(value: Any) -> Tuple[int, int]:
     if sh > 23 or sm > 59 or eh > 24 or em > 59 or (eh == 24 and em) or a >= b:
         raise KVMError("maintenance window must be within one day, with start before end (end may be 24:00)")
     return a, b
+
+
+def normalize_maintenance_resources(raw: Any) -> Dict[str, Any]:
+    if not isinstance(raw, dict) or raw.keys() - MAINTENANCE_RESOURCE_FIELDS.keys():
+        raise KVMError("maintenance resources must be a mapping of supported fields")
+    result = {}
+    for key, (_, low, high) in MAINTENANCE_RESOURCE_FIELDS.items():
+        if key not in raw:
+            continue
+        value = raw[key]
+        if isinstance(low, int):
+            if type(value) is not int or not low <= value <= high:
+                raise KVMError(f"maintenance resources.{key} must be an integer from {low} to {high}")
+        elif value not in (low, high):
+            raise KVMError(f"maintenance resources.{key} must be {low} or {high}")
+        result[key] = value
+    return result
 
 
 def normalize_maintenance(raw: Any) -> Dict[str, Any]:
@@ -323,13 +347,15 @@ def normalize_maintenance(raw: Any) -> Dict[str, Any]:
         if (not isinstance(name, str) or not MAINTENANCE_TIMER_RE.fullmatch(name)
                 or name.endswith("@.timer")):
             raise KVMError(f"Invalid maintenance timer name: {name!r}")
-        if not isinstance(spec, dict) or spec.keys() - {"enabled", "frequency", "window"}:
+        if not isinstance(spec, dict) or spec.keys() - {"enabled", "frequency", "window", "resources"}:
             raise KVMError(f"Invalid maintenance timer policy: {name}")
         timers.setdefault(name, {}).update(spec)
     for name, spec in timers.items():
         spec.setdefault("enabled", True)
         if type(spec["enabled"]) is not bool:
             raise KVMError(f"maintenance timer {name}: enabled must be boolean")
+        if "resources" in spec:
+            spec["resources"] = normalize_maintenance_resources(spec["resources"])
         if spec["enabled"] or "frequency" in spec or "window" in spec:
             if spec.get("frequency") not in ("daily", "weekly"):
                 raise KVMError(f"maintenance timer {name}: frequency must be daily or weekly")
@@ -366,8 +392,111 @@ def maintenance_schedules(cfg: Dict[str, Any]) -> Dict[str, str]:
     return schedules
 
 
-def maintenance_command(schedules: Dict[str, str], *, reconcile: bool = False) -> str:
-    """Install only existing timer units; never enable or start inactive units."""
+def maintenance_resources(cfg: Dict[str, Any]) -> Dict[str, str]:
+    """Return service drop-in content keyed by timer, not guessed service name."""
+    policy = cfg["cloud_init"].get("maintenance", {})
+    if not policy.get("enabled"):
+        return {}
+    return {name: "[Service]\n" + "".join(
+        f"{directive}={spec['resources'][key]}\n"
+        for key, (directive, _, _) in MAINTENANCE_RESOURCE_FIELDS.items()
+        if key in spec["resources"])
+        for name, spec in sorted(policy["timers"].items())
+        if spec["enabled"] and spec.get("resources")}
+
+
+# Resolve the real Unit= target and canonical name instead of guessing the service.
+MAINTENANCE_SERVICE_LOOKUP = r'''valid_service() {
+    case "$1" in
+        [!A-Za-z0-9]*|*[!A-Za-z0-9_.@-]*|*@.service) return 1 ;;
+        *.service) [ "${#1}" -le 253 ] ;;
+        *) return 1 ;;
+    esac
+}
+resolve_service() {
+    service=$(systemctl show --property=Unit --value "$1") || return 1
+    valid_service "$service" || { echo "kvm-vm maintenance: unsupported service target for $1: $service" >&2; return 1; }
+    service_state=$(systemctl show --property=LoadState --value "$service") || [ "$service_state" = not-found ] || [ "$service_state" = masked ] || return 1
+    case "$service_state" in
+        not-found|masked) return 0 ;;
+        loaded) ;;
+        *) echo "kvm-vm maintenance: unexpected LoadState for $service: $service_state" >&2; return 1 ;;
+    esac
+    service=$(systemctl show --property=Id --value "$service") || return 1
+    valid_service "$service" || { echo "kvm-vm maintenance: invalid canonical service name: $service" >&2; return 1; }
+}
+'''
+
+
+def maintenance_resource_command(resources: Dict[str, str], reconcile: bool) -> str:
+    """Stage service targets before changing drop-ins; reject conflicting policies."""
+    if not resources and not reconcile:
+        return ""
+    script = MAINTENANCE_SERVICE_LOOKUP + r'''plan=$(mktemp -d)
+trap 'rm -rf -- "$plan"' EXIT
+plan_resource() {
+    timer=$1
+    content=$2
+    state=$(systemctl show --property=LoadState --value "$timer") || [ "$state" = not-found ] || [ "$state" = masked ] || return 1
+    case "$state" in
+        not-found|masked) return 0 ;;
+        loaded) ;;
+        *) echo "kvm-vm maintenance: unexpected LoadState for $timer: $state" >&2; return 1 ;;
+    esac
+    resolve_service "$timer"
+    if [ "$service_state" != loaded ]; then
+        echo "kvm-vm maintenance: skipping resources for $timer ($service: $service_state)"
+        return 0
+    fi
+    printf '%s' "$content" > "$plan/candidate"
+    if [ -f "$plan/$service" ] && ! cmp -s "$plan/candidate" "$plan/$service"; then
+        echo "kvm-vm maintenance: conflicting resources for $service (timer $timer)" >&2
+        return 1
+    fi
+    mv -fT "$plan/candidate" "$plan/$service"
+}
+'''
+    for name, content in resources.items():
+        script += f"plan_resource {shlex.quote(name)} {shlex.quote(content)}\n"
+    if reconcile:
+        script += r'''for target in /etc/systemd/system/*.service.d/90-kvm-vm-maintenance-resources.conf; do
+    [ -f "$target" ] || [ -L "$target" ] || continue
+    dir=${target%/*}; service=${dir##*/}; service=${service%.d}
+    valid_service "$service" || { echo "kvm-vm maintenance: unexpected managed service: $service" >&2; exit 1; }
+    if [ ! -f "$plan/$service" ]; then
+        rm -f -- "$target"
+        resource_changed=1
+        echo "kvm-vm maintenance: removed resources for $service"
+    fi
+done
+'''
+    script += r'''for source in "$plan"/*.service; do
+    [ -f "$source" ] || continue
+    service=${source##*/}
+    dir="/etc/systemd/system/$service.d"
+    target="$dir/90-kvm-vm-maintenance-resources.conf"
+    install -d -m 0755 "$dir"
+    tmp=$(mktemp "$dir/.kvm-vm-maintenance-resources.XXXXXX")
+    trap 'rm -f -- "$tmp"; rm -rf -- "$plan"' EXIT
+    cat "$source" > "$tmp"
+    chmod 0644 "$tmp"
+    if ! cmp -s "$tmp" "$target"; then
+        mv -fT "$tmp" "$target"
+        resource_changed=1
+        echo "kvm-vm maintenance: configured resources for $service"
+    fi
+    rm -f -- "$tmp"
+    trap 'rm -rf -- "$plan"' EXIT
+done
+rm -rf -- "$plan"
+trap - EXIT
+'''
+    return script
+
+
+def maintenance_command(schedules: Dict[str, str], *, reconcile: bool = False,
+                        resources: Optional[Dict[str, str]] = None) -> str:
+    """Reconcile installed timer/service drop-ins without restarting services."""
     script = "set -eu\nexport LC_ALL=C\nreconcile=" + ("1" if reconcile else "0") + "\n"
     script += r'''if ! command -v systemctl >/dev/null 2>&1; then
     echo "kvm-vm maintenance: systemctl unavailable" >&2
@@ -375,6 +504,7 @@ def maintenance_command(schedules: Dict[str, str], *, reconcile: bool = False) -
     exit
 fi
 changed=""
+resource_changed=0
 apply_timer() {
     timer=$1
     content=$2
@@ -406,6 +536,7 @@ apply_timer() {
     trap - EXIT
 }
 '''
+    script += maintenance_resource_command(resources or {}, reconcile)
     if reconcile:
         script += 'keep_timer() {\n    case "$1" in\n'
         for name in schedules:
@@ -432,7 +563,7 @@ done
 '''
     for name, content in schedules.items():
         script += f"apply_timer {shlex.quote(name)} {shlex.quote(content)}\n"
-    script += r'''if [ -n "$changed" ] || [ "$reconcile" = 1 ]; then
+    script += r'''if [ -n "$changed" ] || [ "$resource_changed" = 1 ] || [ "$reconcile" = 1 ]; then
     systemctl daemon-reload
     for timer in $changed; do
         systemctl try-restart "$timer"
@@ -1214,7 +1345,8 @@ def sysprep_clone_disk(disk: Path) -> None:
         "cloud-init clean --logs; "
         "else rm -rf /var/lib/cloud/*; fi; "
         "rm -f /etc/netplan/* /etc/network/interfaces.d/*; "
-        f"rm -f /etc/systemd/system/*.timer.d/{MAINTENANCE_DROPIN} || exit 1; "
+        f"rm -f /etc/systemd/system/*.timer.d/{MAINTENANCE_DROPIN} "
+        f"/etc/systemd/system/*.service.d/{MAINTENANCE_RESOURCE_DROPIN} || exit 1; "
         "systemd-machine-id-setup 2>/dev/null || touch /etc/machine-id"
     )
     run(["virt-customize", "-a", str(disk), "--run-command", cleanup])
@@ -1462,7 +1594,7 @@ def make_cloud_files(cfg: Dict[str, Any], source_def_dir: Path, *, reset_ssh_por
         user_cfg["timezone"] = cfg["cloud_init"]["timezone"]
     schedules = maintenance_schedules(cfg)
     if schedules:
-        runcmd.append(["sh", "-c", maintenance_command(schedules)])
+        runcmd.append(["sh", "-c", maintenance_command(schedules, resources=maintenance_resources(cfg))])
     if runcmd:
         user_cfg["runcmd"] = runcmd
 
@@ -4023,9 +4155,13 @@ def maintenance_policy(args: argparse.Namespace, cfg: Dict[str, Any]) -> Dict[st
 
 def maintenance_preview(name: str, cfg: Dict[str, Any]) -> None:
     print(f"VM: {name}")
+    resources = maintenance_resources(cfg)
     print(yaml.safe_dump({"maintenance": cfg["cloud_init"]["maintenance"],
-                          "drop_ins": maintenance_schedules(cfg)}, sort_keys=False), end="")
-    print("Only installed, unmasked timers are configured; other managed drop-ins are removed on apply.")
+                          "drop_ins": maintenance_schedules(cfg),
+                          "service_drop_ins_by_timer": resources}, sort_keys=False), end="")
+    print("Only installed, unmasked timers and service targets are configured; obsolete managed drop-ins are removed on apply.")
+    if resources:
+        print("Service targets are resolved inside the guest; resource controls affect every activation of the target service.")
 
 
 def maintenance_require_running(name: str, cfg: Dict[str, Any]) -> None:
@@ -4035,7 +4171,7 @@ def maintenance_require_running(name: str, cfg: Dict[str, Any]) -> None:
         raise KVMError(f"Live VM MAC does not match the effective definition: {name}")
 
 
-def maintenance_status_script(schedules: Dict[str, str]) -> str:
+def maintenance_status_script(schedules: Dict[str, str], resources: Optional[Dict[str, str]] = None) -> str:
     script = r'''set -eu
 export LC_ALL=C
 command -v systemctl >/dev/null
@@ -4048,7 +4184,7 @@ report_timer() {
     state=$(systemctl show --property=LoadState --value "$timer") || [ "$state" = not-found ] || [ "$state" = masked ] || exit 1
     printf 'LoadState=%s\n' "$state"
     if [ "$state" = loaded ]; then
-        systemctl show "$timer" -p ActiveState -p UnitFileState -p TimersCalendar -p TimersMonotonic -p RandomizedDelayUSec -p AccuracyUSec -p Persistent -p NextElapseUSecRealtime
+        systemctl show "$timer" -p Unit -p ActiveState -p UnitFileState -p TimersCalendar -p TimersMonotonic -p RandomizedDelayUSec -p AccuracyUSec -p Persistent -p NextElapseUSecRealtime
     fi
 }
 '''
@@ -4066,6 +4202,41 @@ report_timer() {
     esac
 done
 '''
+    script += MAINTENANCE_SERVICE_LOOKUP + r'''reported_services=" "
+report_service() {
+    service=$1
+    case "$reported_services" in *" $service "*) return 0 ;; esac
+    reported_services="$reported_services$service "
+    printf '\n=== %s resources ===\n' "$service"
+    target="/etc/systemd/system/$service.d/90-kvm-vm-maintenance-resources.conf"
+    if [ -f "$target" ]; then cat "$target"; else echo "No managed resource drop-in"; fi
+    state=$(systemctl show --property=LoadState --value "$service") || [ "$state" = not-found ] || [ "$state" = masked ] || exit 1
+    printf 'LoadState=%s\n' "$state"
+    if [ "$state" = loaded ]; then
+        systemctl show "$service" -p ActiveState -p Nice -p IOSchedulingClass -p CPUWeight -p IOWeight -p DropInPaths
+    fi
+}
+report_resource_timer() {
+    state=$(systemctl show --property=LoadState --value "$1") || [ "$state" = not-found ] || [ "$state" = masked ] || return 1
+    case "$state" in
+        not-found|masked) return 0 ;;
+        loaded) ;;
+        *) echo "kvm-vm maintenance: unexpected LoadState for $1: $state" >&2; return 1 ;;
+    esac
+    resolve_service "$1"
+    printf '\nResource target for %s: %s\n' "$1" "$service"
+    report_service "$service"
+}
+'''
+    for name in resources or {}:
+        script += f"report_resource_timer {shlex.quote(name)}\n"
+    script += r'''for target in /etc/systemd/system/*.service.d/90-kvm-vm-maintenance-resources.conf; do
+    [ -f "$target" ] || [ -L "$target" ] || continue
+    dir=${target%/*}; service=${dir##*/}; service=${service%.d}
+    valid_service "$service" || { echo "Unexpected managed service: $service" >&2; exit 1; }
+    report_service "$service"
+done
+'''
     return script
 
 
@@ -4081,8 +4252,9 @@ def cmd_maintenance_status(args: argparse.Namespace) -> int:
     cfg["cloud_init"]["maintenance"] = maintenance_policy(args, cfg)
     maintenance_preview(args.name, cfg)
     maintenance_require_running(args.name, cfg)
-    print("\nGuest timer state:")
-    print(maintenance_guest_exec(args.name, maintenance_status_script(maintenance_schedules(cfg))), end="")
+    print("\nGuest timer and service state:")
+    script = maintenance_status_script(maintenance_schedules(cfg), maintenance_resources(cfg))
+    print(maintenance_guest_exec(args.name, script), end="")
     return 0
 
 
@@ -4137,8 +4309,8 @@ def cmd_maintenance_change(args: argparse.Namespace) -> int:
     maintenance_require_running(name, cfg)
     check_domain_job(name)
     try:
-        print(maintenance_guest_exec(name, MAINTENANCE_READY + maintenance_command(schedules, reconcile=True),
-                                     mutate=True), end="")
+        script = maintenance_command(schedules, reconcile=True, resources=maintenance_resources(cfg))
+        print(maintenance_guest_exec(name, MAINTENANCE_READY + script, mutate=True), end="")
         save_maintenance_definition(path, cfg)
     except (KVMError, OSError, KeyboardInterrupt) as exc:
         log.error("Maintenance may be partially applied on %s. Inspect status and retry the intended policy; "

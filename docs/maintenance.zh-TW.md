@@ -59,6 +59,48 @@ cloud_init:
 
 啟用的 custom 政策至少需要一個啟用的 timer。未知欄位、不合法名稱、時段會在驗證時報錯。請使用具體 unit 名稱，不使用萬用字元或未實例化的 template。本政策會取代 timer 原本的 calendar 及 monotonic 觸發條件，請只選擇適合如此改排程的工作。其他 unit 設定（包含 `Persistent`）保持不變。
 
+## 選用：維護服務資源控制
+
+包括 `balanced` 在內的所有 profile 均不會預設調整服務資源。可在啟用的 timer 下明確設定 `resources`：
+
+```yaml
+cloud_init:
+  maintenance:
+    profile: balanced
+    timers:
+      fstrim.timer:
+        resources:
+          nice: 10
+          io_scheduling_class: idle
+          cpu_weight: 20
+          io_weight: 20
+```
+
+| 欄位 | systemd 指令 | 允許值 |
+|---|---|---|
+| `nice` | `Nice` | 整數 0–19；越高 CPU process 排程優先權越低。 |
+| `io_scheduling_class` | `IOSchedulingClass` | `best-effort` 或 `idle`，不允許 realtime。 |
+| `cpu_weight` | `CPUWeight` | 整數 1–10000；相對 CPU cgroup 權重，systemd 預設 100。 |
+| `io_weight` | `IOWeight` | 整數 1–10000；相對 I/O cgroup 權重，systemd 預設 100。 |
+
+所有欄位均為選填；省略欄位或使用 `{}` 即不管理該資源設定。排除 timer 政策也會排除其資源設定。權重不是硬性上限，高於 100 的權重可能提高相對優先權。範例採較低優先權；使用 `idle` 前應評估重要維護作業是否會過度延遲。
+
+Guest 透過 systemctl 解析 timer 實際 `Unit=` 與 service 的 canonical `Id`，不猜測同名 service。僅支援存在、未 masked 且具體名稱由 ASCII 英數字、底線、點、`@`、連字號構成的 service。不存在或 masked 的目標會跳過；非 service 或不支援名稱會報錯。若兩個 timer 對同一個 canonical service 指定不同資源設定，會在修改 drop-in 前拒絕；相同設定可共用。未設定資源的 timer 不構成衝突，但資源優先權會影響該 service 的**所有啟動方式**，包括手動啟動或其他 timer 觸發。
+
+生成的 `/etc/systemd/system/<service>.d/90-kvm-vm-maintenance-resources.conf` 示意：
+
+```ini
+[Service]
+Nice=10
+IOSchedulingClass=idle
+CPUWeight=20
+IOWeight=20
+```
+
+只寫入或移除專屬 drop-in 並 reload systemd，不會為套用資源設定而主動重啟、停止或啟動 service。Process 排程屬性於後續執行生效；已運行的 cgroup 權重可能較早變更。Timer 重啟及 Persistent 補跑行為維持原樣。`maintenance preview` 以 timer 名稱顯示預期 service 設定，實際目標只能在 Guest 解析；`status` 顯示實際 service drop-in 與 `Nice`、`IOSchedulingClass`、`CPUWeight`、`IOWeight`、`DropInPaths` 屬性。套用不含 resources 的政策（或 `maintenance remove`）會移除不再需要的 service drop-in；clone 也會離線清理兩種專屬 drop-in。
+
+CPU/I/O 權重取決於 cgroup controller（這些指令尤其適用於 cgroup v2）、Guest 核心與儲存排程器。Guest I/O 優先權不保證傳遞至 Host，TRIM/discard 亦不保證受到限制。systemd 顯示設定不等於實際執行效力。仍須搭配 Host IOPS/頻寬控制並在實際儲存架構測試。參考 [systemd.exec](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html) 與 [systemd.resource-control](https://www.freedesktop.org/software/systemd/man/latest/systemd.resource-control.html)。
+
 ## 運作方式
 
 透過版本化命名空間、VM 生效名稱、MAC 及 timer 名稱的 SHA-256 hash 選擇時段內的分鐘（每週 timer 另選擇星期幾）。生效定義檔保存名稱、MAC 與展開後的政策。相同輸入 reinstall 會維持原日期和分鐘；clone 通常採用不同識別。名稱/MAC 或 hash slot 仍可能碰撞，並非保證互斥的排程器或 I/O admission control。
@@ -75,7 +117,7 @@ AccuracySec=1s
 
 隨機延遲最多 15 分鐘（狹窄時段會縮短），並預留一秒精度，使一般 calendar 排程落在指定時段。排程依 Guest 當地時區執行；關機、時鐘/DST 變動、服務延誤、Persistent 補跑或其他管理員及發行版 drop-in 仍可能改變實際時間。
 
-Cloud-init 會在使用者命令與 kvm-vm 初始化操作之後追加首次開機的 `runcmd`。檢查 systemd LoadState、跳過不存在及 masked 的 unit，只寫入 `/etc/systemd/system/<timer>.d/90-kvm-vm-maintenance.conf`，再 reload systemd 並對有變更的 timer 執行 `try-restart`。不啟用、不啟動未運行的 timer；其他 drop-in 保留。檔案未變更不 reload。可由 cloud-init log 查看結果；非預期的 systemctl 或檔案系統錯誤會使維護步驟失敗。
+Cloud-init 會在使用者命令與 kvm-vm 初始化操作之後追加首次開機的 `runcmd`。檢查 systemd LoadState、跳過不存在及 masked 的 unit，寫入 `/etc/systemd/system/<timer>.d/90-kvm-vm-maintenance.conf` 及選用的專屬 service drop-in，再 reload systemd 並對有變更的 timer 執行 `try-restart`。不啟用、不啟動未運行的 timer；其他 drop-in 保留。檔案未變更不 reload。可由 cloud-init log 查看結果；非預期的 systemctl 或檔案系統錯誤會使維護步驟失敗。
 
 ## VM 生命週期
 
@@ -114,7 +156,7 @@ sudo kvm-vm maintenance remove web01 --yes
 ```
 
 - `preview` 顯示預期政策與生成的 drop-in，不連線 Guest；關機中的受管 VM 也可預覽。
-- `status` 顯示已保存政策、Guest 所有 systemd timer，以及預期管理或曾經管理的 timer 的實際 drop-in 與生效屬性。請比較預期與生效值；其他 drop-in 可能覆寫。此指令不修改 Guest 或有效定義檔。
+- `status` 顯示已保存政策、Guest 所有 systemd timer，以及預期管理或曾經管理的 timer/service 的實際 drop-in 與生效屬性。請比較預期與生效值；其他 drop-in 可能覆寫。此指令不修改 Guest 或有效定義檔。
 - `apply` 取代受管政策（未指定選項時重新套用已保存政策），清除不再管理的專用 drop-in，設定存在且未 masked 的 timer。`remove` 將政策改為 `profile: none`。兩者不會停用 timer、啟用原本未運行的 timer 或刪除其他管理員的 drop-in。運行中套用會 reload systemd 並對受影響的 timer 執行 `try-restart`（包含內容未變更的受選 timer），以便重試先前 reload 失敗的操作。
 
 自訂政策使用獨立 YAML mapping，而非完整 VM 定義檔：
@@ -143,3 +185,5 @@ Guest 檔案系統與 Host 定義檔無法形成單一原子交易。Agent 斷�
 ### 實機驗收清單
 
 使用可拋棄的運行中受管 VM，等待 cloud-init 完成並確認 Guest Agent 可用。記錄 `systemctl list-timers --all` 及管理員自訂的 `fstrim.timer.d` 檔案。先預覽再套用 balanced，以 `status` 比較 Guest 內 `systemctl cat fstrim.timer` 與 `systemctl show fstrim.timer`。重新開機確認 drop-in 保留。套用較窄時段確認排程更新，最後移除政策，驗證僅專用 drop-in 被移除，timer 原本的啟用狀態不變。至少在一台 Debian/Ubuntu 與一台 RHEL 系 Guest 執行。勿以正式環境 VM 作為首次驗收對象。
+
+資源控制驗收：另套用上述 resources 範例，比對 `status` 與 Guest 內 `systemctl cat fstrim.service`、`systemctl show fstrim.service -p Nice -p IOSchedulingClass -p CPUWeight -p IOWeight`，確認套用不會主動重啟 service。再套用未指定 resources 的 balanced，驗證專屬 service drop-in 移除。檢查 cgroup controller 並在代表性負載下量測維護時間及 Host I/O latency。

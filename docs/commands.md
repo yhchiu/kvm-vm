@@ -69,7 +69,7 @@ sudo kvm-vm maintenance status web01
 sudo kvm-vm maintenance remove web01 --yes
 ```
 
-`preview` and `--dry-run` only preview on the host. `status` reads live timers via the guest agent. `apply` and `remove` require a running managed VM, guest agent access and confirmation (or `--yes`), take the lifecycle lock and update the effective definition on success. See [Guest maintenance](maintenance.md#manage-existing-vms-from-the-host) for policy syntax, prerequisites and recovery.
+`preview` and `--dry-run` only preview on the host. `status` reads live timers and managed service resource settings via the guest agent. Use `--policy` for optional per-timer `resources`. `apply` and `remove` require a running managed VM, guest agent access and confirmation (or `--yes`), take the lifecycle lock and update the effective definition on success. See [Guest maintenance](maintenance.md#manage-existing-vms-from-the-host) for policy syntax, prerequisites and recovery.
 
 ## validate
 

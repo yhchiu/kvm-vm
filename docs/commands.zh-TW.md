@@ -60,7 +60,7 @@ sudo kvm-vm maintenance status web01
 sudo kvm-vm maintenance remove web01 --yes
 ```
 
-`preview` 及 `--dry-run` 只在 Host 預覽；`status` 透過 Guest Agent 讀取實際排程。`apply` / `remove` 需運行中的受管 VM、Guest Agent 及確認（或 `--yes`），沿用 lifecycle lock，成功後更新有效定義檔。完整政策、限制及故障恢復見 [Guest 維護錯峰排程](maintenance.zh-TW.md#從-host-管理既有-vm)。
+`preview` 及 `--dry-run` 只在 Host 預覽；`status` 透過 Guest Agent 讀取實際排程及受管 service 資源設定。可用 `--policy` 指定選用的 `resources`。`apply` / `remove` 需運行中的受管 VM、Guest Agent 及確認（或 `--yes`），沿用 lifecycle lock，成功後更新有效定義檔。完整政策、限制及故障恢復見 [Guest 維護錯峰排程](maintenance.zh-TW.md#從-host-管理既有-vm)。
 
 ## validate
 

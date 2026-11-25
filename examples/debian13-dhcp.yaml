@@ -26,6 +26,14 @@ network:
 cloud_init:
   maintenance:
     profile: balanced
+    # Optional: lower maintenance service priority (not a hard I/O limit).
+    # timers:
+    #   fstrim.timer:
+    #     resources:
+    #       nice: 10
+    #       io_scheduling_class: idle
+    #       cpu_weight: 20
+    #       io_weight: 20
   user: admin
   ssh_authorized_keys:
     - file:~/.ssh/id_ed25519.pub

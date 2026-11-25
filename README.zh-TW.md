@@ -138,7 +138,7 @@ Prometheus metrics endpoint、systemd、PromQL 與安全設定請見 [Prometheus
 | 我想要… | 請閱讀 |
 |---|---|
 | 撰寫 VM 定義檔：欄位、預設值、映像檔、覆寫 | [VM 定義檔參考](docs/configuration.zh-TW.md) |
-| 分散 Guest TRIM 與其他維護作業 | [Guest 維護排程](docs/maintenance.zh-TW.md) |
+| 分散 Guest 維護作業並選擇性降低資源優先權 | [Guest 維護排程](docs/maintenance.zh-TW.md) |
 | 在橋接、NAT、Macvtap 之間做選擇 | [網路設定](docs/networking.zh-TW.md) |
 | 建立橋接模式需要的宿主機 bridge | [宿主機 bridge 設定](docs/bridge-host.zh-TW.md) |
 | 查詢指令的作用 | [指令參考](docs/commands.zh-TW.md) |

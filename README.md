@@ -159,7 +159,7 @@ For running managed VMs, use `sudo kvm-vm maintenance apply web01 --profile bala
 | I want to... | Read |
 |---|---|
 | Write a VM definition: fields, defaults, images, overrides | [VM definition reference](docs/configuration.md) |
-| Stagger guest TRIM and other maintenance jobs | [Guest maintenance](docs/maintenance.md) |
+| Stagger and optionally deprioritize guest maintenance jobs | [Guest maintenance](docs/maintenance.md) |
 | Choose between bridge, NAT and Macvtap | [Networking](docs/networking.md) |
 | Create the host bridge that bridge mode needs | [Host bridge setup](docs/bridge-host.md) |
 | Look up what a command does | [Command reference](docs/commands.md) |

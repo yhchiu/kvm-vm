@@ -173,7 +173,7 @@ card `ens3`, `enp1s0` or something else.
 | `packages` | `[]` | Packages to install at first boot. |
 | `timezone` | image default | Such as `Asia/Taipei`. |
 | `runcmd` | `[]` | cloud-init `runcmd` entries. They run before kvm-vm's own first-boot steps (SSH port, console password, maintenance). |
-| `maintenance` | `profile: none` | Opt-in guest timer staggering. See [Guest maintenance](maintenance.md). |
+| `maintenance` | `profile: none` | Opt-in guest timer staggering and optional service resource priorities. See [Guest maintenance](maintenance.md). |
 
 The user's password is locked and SSH accepts keys only. See
 [Access and security](access.md).
