@@ -11,6 +11,10 @@ kvm-vm identity [--json]
 kvm-vm monitor [<vm>] [--managed] [--interval <seconds>] [--count <n>] [--json]
 kvm-vm exporter [<vm>] [--managed] [--listen <ipv4>] [--port <port>] [--interval <seconds>] [--timeout <seconds>]
 kvm-vm console <vm>
+kvm-vm maintenance preview <vm> [--profile none|balanced | --policy <policy.yaml>]
+kvm-vm maintenance status <vm>
+kvm-vm maintenance apply <vm> [--profile none|balanced | --policy <policy.yaml>] [--dry-run] [--yes]
+kvm-vm maintenance remove <vm> [--dry-run] [--yes]
 kvm-vm reinstall <vm> [--os <alias|url|path> | --image-url <url> | --image-path <path>] [--os-variant <variant>]
                       [--console-password-file <path>] [--refresh-image] [--no-start] [--dry-run] [--yes] [--force]
 kvm-vm clone <source-vm> <target.yaml> [--console-password-file <path>] [--no-start] [--dry-run]
@@ -27,7 +31,7 @@ kvm-vm backup check <backup-dir> [--until <checkpoint>]
 - [Before you start](#before-you-start)
 - [validate](#validate) · [create](#create) · [list](#list) · [status](#status) · [monitor](#monitor) · [identity](#identity) · [exporter](#exporter) · [console](#console)
 - [reinstall](#reinstall) · [clone](#clone) · [delete](#delete)
-- [snapshot](#snapshot) · [backup check](#backup-check)
+- [maintenance](#maintenance) · [snapshot](#snapshot) · [backup check](#backup-check)
 - [When a command refuses to run](#when-a-command-refuses-to-run)
 
 ## Before you start
@@ -40,20 +44,32 @@ Options shared by several commands:
 
 | Option | Commands | Effect |
 |---|---|---|
+| `--dry-run` | `maintenance apply`, `maintenance remove` | Preview the policy and schedule without contacting the guest. |
 | `--dry-run` | `create`, `clone`, `reinstall`, `snapshot create` | Run the checks and stop before changing anything: nothing is downloaded, no disk is changed and no VM is defined. `create`, `clone` and `reinstall` also print the effective definition. When the base image is already on disk, `create` and `reinstall` also reject a `disk_gib` smaller than that image. `clone` rejects a `disk_gib` smaller than the source disk. Dry-run does not download an image in order to measure it. |
 | `--no-start` | `create`, `clone`, `reinstall`, `snapshot rollback` | Leave the VM shut off afterwards, for example to inspect `virsh dumpxml` first. |
-| `--yes` | `reinstall`, `delete`, `snapshot delete`, `snapshot rollback` | Skip the prompt that asks you to type the VM name. Required when there is no terminal, such as in scripts. |
+| `--yes` | `create`, `maintenance apply`, `maintenance remove`, `reinstall`, `delete`, `snapshot delete`, `snapshot rollback` | Skip the confirmation prompt. Required for changes when there is no terminal, such as in scripts. |
 | `--force` | `reinstall`, `delete`, `snapshot rollback` | Power off a running VM first (`virsh destroy`). Without it, a running VM is refused. |
 | `--console-password-file` | `create`, `clone`, `reinstall` | Where to write a new console password. Required when the definition has `console_password: true`, and an error otherwise. See [Access and security](access.md#console-password-login). |
 
-`create`, `clone`, `reinstall`, `delete` and the `snapshot` commands that change
-something take a lock, `/var/lib/kvm-vm/state/.lifecycle-lock`, so only one runs
+`create`, `clone`, `reinstall`, `delete`, `maintenance apply`, `maintenance remove`
+and the `snapshot` commands that change something take a lock, `/var/lib/kvm-vm/state/.lifecycle-lock`, so only one runs
 at a time. A command that finds the lock stops at once. If an earlier run was
 interrupted, the lock stays; see
 [Sequencing and interrupted operations](lifecycle-recovery-safety.md#sequencing-and-interrupted-operations)
 before you remove it. `--dry-run` takes this lock as well: it is still a
 lifecycle command. If the state directory is not writable, the command stops
 with `ERROR:` and does not print a Python traceback. Run it as root.
+
+## maintenance
+
+```bash
+sudo kvm-vm maintenance preview web01 --profile balanced
+sudo kvm-vm maintenance apply web01 --profile balanced --yes
+sudo kvm-vm maintenance status web01
+sudo kvm-vm maintenance remove web01 --yes
+```
+
+`preview` and `--dry-run` only preview on the host. `status` reads live timers via the guest agent. `apply` and `remove` require a running managed VM, guest agent access and confirmation (or `--yes`), take the lifecycle lock and update the effective definition on success. See [Guest maintenance](maintenance.md#manage-existing-vms-from-the-host) for policy syntax, prerequisites and recovery.
 
 ## validate
 

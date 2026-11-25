@@ -152,6 +152,8 @@ Start with the [monitoring architecture and guide](docs/monitoring.md): Local hi
 
 Central Grafana and TSDB stay operator-only (`customer-readiness` BLOCKED). A trusted private Panel service can integrate, but its customer feature requires separate live acceptance.
 
+For running managed VMs, use `sudo kvm-vm maintenance apply web01 --profile balanced --yes` and `kvm-vm maintenance status web01` without reinstalling. See [Guest maintenance](docs/maintenance.md).
+
 ## Documentation
 
 | I want to... | Read |

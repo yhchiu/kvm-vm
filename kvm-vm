@@ -8,6 +8,8 @@ standard libvirt/qemu tools instead of requiring libvirt Python bindings.
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import datetime as dt
 import functools
 import hashlib
@@ -364,12 +366,13 @@ def maintenance_schedules(cfg: Dict[str, Any]) -> Dict[str, str]:
     return schedules
 
 
-def maintenance_command(schedules: Dict[str, str]) -> str:
+def maintenance_command(schedules: Dict[str, str], *, reconcile: bool = False) -> str:
     """Install only existing timer units; never enable or start inactive units."""
-    script = r'''set -eu
-if ! command -v systemctl >/dev/null 2>&1; then
-    echo "kvm-vm maintenance: systemctl unavailable; skipping" >&2
-    exit 0
+    script = "set -eu\nexport LC_ALL=C\nreconcile=" + ("1" if reconcile else "0") + "\n"
+    script += r'''if ! command -v systemctl >/dev/null 2>&1; then
+    echo "kvm-vm maintenance: systemctl unavailable" >&2
+    [ "$reconcile" = 0 ]
+    exit
 fi
 changed=""
 apply_timer() {
@@ -396,14 +399,40 @@ apply_timer() {
         mv -fT "$tmp" "$target"
         changed="$changed $timer"
         echo "kvm-vm maintenance: configured $timer"
+    elif [ "$reconcile" = 1 ]; then
+        changed="$changed $timer"
     fi
     rm -f "$tmp"
     trap - EXIT
 }
 '''
+    if reconcile:
+        script += 'keep_timer() {\n    case "$1" in\n'
+        for name in schedules:
+            script += f'        {shlex.quote(name)}) return 0 ;;\n'
+        script += r'''        *) return 1 ;;
+    esac
+}
+for target in /etc/systemd/system/*.timer.d/90-kvm-vm-maintenance.conf; do
+    [ -f "$target" ] || [ -L "$target" ] || continue
+    dir=${target%/*}
+    timer=${dir##*/}
+    timer=${timer%.d}
+    case "$timer" in
+        [!A-Za-z0-9]*|*[!A-Za-z0-9_.@-]*) echo "kvm-vm maintenance: unexpected managed timer: $timer" >&2; exit 1 ;;
+    esac
+    if ! keep_timer "$timer"; then
+        rm -f -- "$target"
+        echo "kvm-vm maintenance: removed $timer"
+        # A removed unit may no longer be installed. Do not restart it.
+        state=$(systemctl show --property=LoadState --value "$timer") || [ "$state" = not-found ] || [ "$state" = masked ] || exit 1
+        if [ "$state" = loaded ]; then changed="$changed $timer"; fi
+    fi
+done
+'''
     for name, content in schedules.items():
         script += f"apply_timer {shlex.quote(name)} {shlex.quote(content)}\n"
-    script += r'''if [ -n "$changed" ]; then
+    script += r'''if [ -n "$changed" ] || [ "$reconcile" = 1 ]; then
     systemctl daemon-reload
     for timer in $changed; do
         systemctl try-restart "$timer"
@@ -3899,6 +3928,228 @@ def cmd_exporter(args: argparse.Namespace) -> int:
     return 0
 
 
+# QGA runs a small, fixed-purpose script inside the guest; no SSH credentials
+# or public arbitrary guest-exec CLI are required.
+def maintenance_agent_call(name: str, request: Dict[str, Any], deadline: float) -> Dict[str, Any]:
+    remaining = deadline - time.monotonic()
+    if remaining < 1:
+        raise KVMError(f"Guest agent deadline exceeded for {name}")
+    seconds = min(10, int(remaining))
+    try:
+        result = run(["virsh", "-c", LIBVIRT_URI, "qemu-agent-command", name,
+                      json.dumps(request), "--timeout", str(seconds)],
+                     check=False, capture=True, timeout=min(remaining, seconds + 2))
+    except subprocess.TimeoutExpired as exc:
+        raise KVMError(f"Guest agent request timed out for {name}") from exc
+    if result.returncode:
+        raise KVMError(f"Guest agent request failed for {name}: {result.stderr.strip()}")
+    try:
+        response = json.loads(result.stdout)
+        if not isinstance(response, dict) or "error" in response or not isinstance(response.get("return"), dict):
+            raise ValueError("missing successful return object")
+        return response["return"]
+    except (ValueError, TypeError) as exc:
+        raise KVMError(f"Invalid guest agent response for {name}: {exc}") from exc
+
+
+def maintenance_guest_exec(name: str, script: str, *, mutate: bool = False) -> str:
+    """Run a bounded guest command and require a complete successful result."""
+    deadline = time.monotonic() + 85
+    # Also bound runtime inside the guest; host RPC timeout alone cannot kill
+    # a guest process. flock prevents overlapping live policy changes.
+    argv = ["--kill-after=5s", "60s"]
+    if mutate:
+        argv += ["flock", "-n", "/run/kvm-vm-maintenance.lock"]
+    argv += ["/bin/sh", "-c", script]
+    started = maintenance_agent_call(name, {"execute": "guest-exec", "arguments": {
+        "path": "/usr/bin/timeout", "arg": argv, "capture-output": True}}, deadline)
+    pid = started.get("pid")
+    if type(pid) is not int or pid <= 0:
+        raise KVMError(f"Invalid guest-exec PID for {name}")
+    while True:
+        result = maintenance_agent_call(name, {"execute": "guest-exec-status", "arguments": {"pid": pid}}, deadline)
+        if result.get("exited") is True:
+            break
+        if result.get("exited") is not False:
+            raise KVMError(f"Invalid guest-exec status for {name}")
+        time.sleep(0.25)
+    if result.get("out-truncated") or result.get("err-truncated"):
+        raise KVMError(f"Guest maintenance output truncated for {name}")
+    try:
+        stdout, stderr = (base64.b64decode(result.get(key, ""), validate=True).decode("utf-8", errors="replace")
+                          for key in ("out-data", "err-data"))
+    except (ValueError, TypeError, binascii.Error) as exc:
+        raise KVMError(f"Invalid guest-exec output for {name}") from exc
+    if type(result.get("exitcode")) is not int or result["exitcode"] != 0 or "signal" in result:
+        raise KVMError(f"Guest maintenance failed for {name} (exit={result.get('exitcode')}, "
+                       f"signal={result.get('signal')}): {(stderr + stdout).strip()}")
+    if stderr.strip():
+        log.warning("Guest maintenance on %s: %s", name, stderr.strip())
+    return stdout
+
+
+def maintenance_target(name: str) -> Tuple[Path, Dict[str, Any]]:
+    """Only managed VMs with their canonical, effective definition are eligible."""
+    if not NAME_RE.fullmatch(name):
+        raise KVMError("Invalid domain name")
+    require_commands(["virsh"])
+    if not domain_exists(name):
+        raise KVMError(f"Domain does not exist: {name}")
+    state = load_state(name)
+    path = DEF_DIR / f"{name}.yaml"
+    if (not isinstance(state, dict) or state.get("managed_by") != "kvm-vm" or state.get("name") != name
+            or state.get("definition") != str(path) or path.is_symlink() or not path.is_file()):
+        raise KVMError(f"Maintenance requires a managed VM with its effective definition: {name}")
+    cfg = yaml_load(path)
+    mac = dig(cfg, "network", "mac")
+    if dig(cfg, "vm", "name") != name or not isinstance(mac, str) or not MAC_RE.fullmatch(mac):
+        raise KVMError(f"Invalid saved VM identity for {name}")
+    if not isinstance(cfg.get("cloud_init"), dict):
+        raise KVMError(f"Invalid saved cloud_init mapping for {name}")
+    return path, cfg
+
+
+def maintenance_policy(args: argparse.Namespace, cfg: Dict[str, Any]) -> Dict[str, Any]:
+    if args.maintenance_command == "remove":
+        raw = {"profile": "none"}
+    elif getattr(args, "policy", None):
+        raw = yaml_load(Path(args.policy))
+    elif getattr(args, "profile", None):
+        raw = {"profile": args.profile}
+    else:
+        raw = cfg["cloud_init"].get("maintenance", {})
+    return normalize_maintenance(raw)
+
+
+def maintenance_preview(name: str, cfg: Dict[str, Any]) -> None:
+    print(f"VM: {name}")
+    print(yaml.safe_dump({"maintenance": cfg["cloud_init"]["maintenance"],
+                          "drop_ins": maintenance_schedules(cfg)}, sort_keys=False), end="")
+    print("Only installed, unmasked timers are configured; other managed drop-ins are removed on apply.")
+
+
+def maintenance_require_running(name: str, cfg: Dict[str, Any]) -> None:
+    if domain_state(name) != "running":
+        raise KVMError(f"Maintenance requires a running VM: {name}")
+    if cfg["network"]["mac"].lower() not in domain_macs(name):
+        raise KVMError(f"Live VM MAC does not match the effective definition: {name}")
+
+
+def maintenance_status_script(schedules: Dict[str, str]) -> str:
+    script = r'''set -eu
+export LC_ALL=C
+command -v systemctl >/dev/null
+systemctl list-timers --all --no-pager
+report_timer() {
+    timer=$1
+    printf '\n=== %s ===\n' "$timer"
+    target="/etc/systemd/system/$timer.d/90-kvm-vm-maintenance.conf"
+    if [ -f "$target" ]; then cat "$target"; else echo "No managed drop-in"; fi
+    state=$(systemctl show --property=LoadState --value "$timer") || [ "$state" = not-found ] || [ "$state" = masked ] || exit 1
+    printf 'LoadState=%s\n' "$state"
+    if [ "$state" = loaded ]; then
+        systemctl show "$timer" -p ActiveState -p UnitFileState -p TimersCalendar -p TimersMonotonic -p RandomizedDelayUSec -p AccuracyUSec -p Persistent -p NextElapseUSecRealtime
+    fi
+}
+'''
+    for name in schedules:
+        script += f"report_timer {shlex.quote(name)}\n"
+    script += 'for target in /etc/systemd/system/*.timer.d/90-kvm-vm-maintenance.conf; do\n'
+    script += r'''    [ -f "$target" ] || continue
+    dir=${target%/*}; timer=${dir##*/}; timer=${timer%.d}
+    case "$timer" in
+        [!A-Za-z0-9]*|*[!A-Za-z0-9_.@-]*) echo "Unexpected managed timer: $timer" >&2; exit 1 ;;
+'''
+    for name in schedules:
+        script += f'        {shlex.quote(name)}) continue ;;\n'
+    script += r'''        *) report_timer "$timer" ;;
+    esac
+done
+'''
+    return script
+
+
+def cmd_maintenance_preview(args: argparse.Namespace) -> int:
+    _, cfg = maintenance_target(args.name)
+    cfg["cloud_init"]["maintenance"] = maintenance_policy(args, cfg)
+    maintenance_preview(args.name, cfg)
+    return 0
+
+
+def cmd_maintenance_status(args: argparse.Namespace) -> int:
+    _, cfg = maintenance_target(args.name)
+    cfg["cloud_init"]["maintenance"] = maintenance_policy(args, cfg)
+    maintenance_preview(args.name, cfg)
+    maintenance_require_running(args.name, cfg)
+    print("\nGuest timer state:")
+    print(maintenance_guest_exec(args.name, maintenance_status_script(maintenance_schedules(cfg))), end="")
+    return 0
+
+
+# Do not race with the first-boot script from the original seed.
+MAINTENANCE_READY = r'''set -eu
+export LC_ALL=C
+if command -v cloud-init >/dev/null 2>&1; then
+    status=$(cloud-init status) || { echo "cloud-init has not completed successfully: $status" >&2; exit 1; }
+    case "$status" in
+        "status: done"|"status: disabled") ;;
+        *) echo "cloud-init not ready: $status" >&2; exit 1 ;;
+    esac
+fi
+'''
+
+
+def save_maintenance_definition(path: Path, cfg: Dict[str, Any]) -> None:
+    """Atomically update only the effective definition, retaining its permissions."""
+    original = path.stat()
+    fd, tmp_name = tempfile.mkstemp(prefix=".maintenance-", dir=path.parent)
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            os.fchown(stream.fileno(), original.st_uid, original.st_gid)
+            os.fchmod(stream.fileno(), stat.S_IMODE(original.st_mode))
+            yaml.safe_dump(cfg, stream, sort_keys=False, allow_unicode=True)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+@lifecycle_exclusive
+def cmd_maintenance_change(args: argparse.Namespace) -> int:
+    name = args.name
+    path, cfg = maintenance_target(name)
+    cfg["cloud_init"]["maintenance"] = maintenance_policy(args, cfg)
+    schedules = maintenance_schedules(cfg)
+    maintenance_preview(name, cfg)
+    if args.dry_run:
+        return 0
+    if not args.yes:
+        if not sys.stdin.isatty():
+            raise KVMError("Refusing maintenance change without --yes in non-interactive mode")
+        try:
+            answer = input(f"Change maintenance policy for '{name}'? [y/N] ").strip().lower()
+        except EOFError:
+            answer = ""
+        if answer not in ("y", "yes"):
+            raise KVMError("Maintenance change cancelled")
+    maintenance_require_running(name, cfg)
+    check_domain_job(name)
+    try:
+        print(maintenance_guest_exec(name, MAINTENANCE_READY + maintenance_command(schedules, reconcile=True),
+                                     mutate=True), end="")
+        save_maintenance_definition(path, cfg)
+    except (KVMError, OSError, KeyboardInterrupt) as exc:
+        log.error("Maintenance may be partially applied on %s. Inspect status and retry the intended policy; "
+                  "the guest and saved definition are not a single transaction.", name)
+        if isinstance(exc, OSError):
+            raise KVMError(str(exc)) from exc
+        raise
+    print(f"Saved maintenance policy: {path}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="kvm-vm", description="Declarative KVM/libvirt VM manager")
     p.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
@@ -3987,6 +4238,24 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--until", metavar="CHECKPOINT",
                    help="Recovery point to restore, e.g. virtnbdbackup.1 (default: the whole history)")
     b.set_defaults(func=cmd_backup_check)
+
+    q = sp.add_parser("maintenance", help="Inspect or reconcile guest maintenance timers")
+    msp = q.add_subparsers(dest="maintenance_command", required=True)
+    for action, handler in (("preview", cmd_maintenance_preview), ("status", cmd_maintenance_status),
+                            ("apply", cmd_maintenance_change), ("remove", cmd_maintenance_change)):
+        m = msp.add_parser(action, help={"preview": "Preview desired schedule without contacting the guest",
+                           "status": "Compare saved policy with live guest timer state",
+                           "apply": "Apply and save a maintenance policy on a running VM",
+                           "remove": "Remove managed drop-ins and save profile none"}[action])
+        m.add_argument("name", help="Managed VM name")
+        if action in ("preview", "apply"):
+            group = m.add_mutually_exclusive_group()
+            group.add_argument("--profile", choices=("none", "balanced"), help="Replace saved policy with a preset")
+            group.add_argument("--policy", help="YAML file containing a maintenance policy mapping")
+        if action in ("apply", "remove"):
+            m.add_argument("--dry-run", action="store_true", help="Preview only; no guest changes")
+            m.add_argument("--yes", action="store_true", help="Skip interactive confirmation")
+        m.set_defaults(func=handler)
 
     q = sp.add_parser("snapshot", help="Create, inspect, delete or roll back the VM's single short-lived Snapshot")
     ssp = q.add_subparsers(dest="snapshot_command", required=True)

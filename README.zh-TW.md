@@ -131,6 +131,8 @@ Prometheus metrics endpoint、systemd、PromQL 與安全設定請見 [Prometheus
 
 中央 Grafana 與 TSDB 只供管理員，`customer-readiness` 維持 BLOCKED。Panel 是受信任私有查詢服務，客戶功能須另行實機驗收。
 
+既有 VM 可使用 `sudo kvm-vm maintenance apply web01 --profile balanced --yes` 套用錯峰政策，並以 `kvm-vm maintenance status web01` 檢查；不需重灌。詳見 [Guest 維護排程](docs/maintenance.zh-TW.md)。
+
 ## 文件導覽
 
 | 我想要… | 請閱讀 |

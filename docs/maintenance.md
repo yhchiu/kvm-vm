@@ -5,7 +5,7 @@
 Multiple guests sharing a storage device can generate an I/O spike when their
 periodic maintenance jobs run together. The optional maintenance policy spreads
 selected systemd timers over the week or over a daily maintenance window. No
-host scheduler, guest daemon, or additional guest package is required.
+host scheduler or new guest daemon is required. Live management uses the existing QEMU Guest Agent.
 
 ## Quick start
 
@@ -113,6 +113,7 @@ systemctl or filesystem errors fail the maintenance step.
 | `reinstall` | Generate from the effective definition for the new system disk. |
 | Backup restore / snapshot rollback | Preserve the captured guest filesystem and configuration. |
 | Reboot / migration | Keep the installed drop-ins. |
+| `maintenance apply` / `remove` | Reconcile a running guest, then save the effective policy for future reinstall. |
 
 Cloud-init runs its user commands late in first boot. An original timer may
 already have run before the policy takes effect, especially after clone or
@@ -132,8 +133,89 @@ journalctl -u fstrim.service --since '30 days ago'
 ```
 
 Check `/var/log/cloud-init-output.log` for `kvm-vm maintenance:` messages.
-Existing guests are not modified by editing the saved YAML alone. A future
-maintenance management command may support applying policies to running guests;
-for now administrators can manage the named drop-ins manually. When removing a
-managed drop-in, reload systemd and try-restart the affected timer. Do not
-remove other administrator drop-ins or disable maintenance services.
+Existing guests are not modified by editing the saved YAML alone.
+
+## Manage existing VMs from the host
+
+```sh
+sudo kvm-vm maintenance status web01
+sudo kvm-vm maintenance preview web01 --profile balanced
+sudo kvm-vm maintenance apply web01 --profile balanced --dry-run
+sudo kvm-vm maintenance apply web01 --profile balanced --yes
+sudo kvm-vm maintenance remove web01 --yes
+```
+
+- `preview` prints the proposed policy and generated drop-ins without a guest
+  agent connection. It works for shut-off managed VMs too.
+- `status` prints the saved desired policy, all live systemd timers, and the
+  actual managed drop-ins and timer properties for desired or previously
+  managed units. Compare the desired and effective values; other drop-ins
+  may override them. It does not change the guest or saved definition.
+- `apply` replaces the managed policy (or reapplies the saved policy if no
+  option is given). It removes obsolete kvm-vm drop-ins and configures the
+  selected installed, unmasked timers. `remove` reconciles to `profile: none`.
+  Neither command disables a timer, enables an inactive timer, or removes
+  other administrators' drop-ins. Live reconciliation reloads systemd and
+  try-restarts affected active timers, including selected unchanged timers,
+  so retries can recover from earlier reload failures.
+
+For custom settings, supply a standalone policy mapping (not a complete VM YAML):
+
+```yaml
+# maintenance.yaml
+profile: balanced
+timers:
+  fstrim.timer:
+    window: "02:00-05:00"
+  man-db.timer:
+    enabled: false
+```
+
+```sh
+sudo kvm-vm maintenance preview web01 --policy maintenance.yaml
+sudo kvm-vm maintenance apply web01 --policy maintenance.yaml --yes
+```
+
+`--profile` and `--policy` are mutually exclusive. `--dry-run` is a host-side
+preview, not a guest connectivity check. Live changes require affirmative
+confirmation (`[y/N]`), or `--yes` in automation. Both change commands take
+the existing host lifecycle lock. They require a running managed VM, a
+matching saved MAC, no active libvirt domain job, a Linux systemd guest with
+QEMU Guest Agent `guest-exec` / `guest-exec-status` enabled, GNU `timeout` and
+`flock` (for mutations). No SSH access is needed. If cloud-init exists, it
+must report `done` or `disabled` with a successful exit code before applying
+or removing a policy; resolve first-boot errors before retrying. Guest
+commands have a 60-second runtime limit (plus 5 seconds to terminate) and
+bounded host RPC/polling deadlines. The guest lock prevents overlapping
+live changes.
+
+On success the effective definition in `/etc/kvm-vm/definitions/NAME.yaml`
+is atomically replaced, preserving other values and permissions. This does
+not rewrite the original input YAML or the existing cloud-init seed; ordinary
+reboot retains the new drop-ins, and reinstall generates a new seed from the
+updated definition. Do not manually rerun the old cloud-init seed with
+`cloud-init clean` without reconciling the policy afterwards. A snapshot
+rollback or backup restore returns to the captured state. Coordinate external
+backup and migration operations separately.
+
+The guest filesystem and host definition cannot be updated in one atomic
+transaction. If the agent disconnects, a systemctl operation fails, or the
+host cannot save the definition, the command returns an error and the guest
+may be partly changed. Wait for the bounded guest command to finish, inspect
+`status`, and retry with the same explicit policy. If an obsolete drop-in was
+already removed before a failed timer restart, inspect that timer and use
+`systemctl daemon-reload` and `systemctl try-restart NAME.timer` inside the
+guest if necessary. Persistent catch-up can still run immediately after a
+schedule change. Do not expose these administrator commands as tenant APIs.
+
+### Real-host acceptance checklist
+
+On a disposable running managed VM, wait for cloud-init and verify that the
+agent responds. Record `systemctl list-timers --all` and any administrator
+`fstrim.timer.d` files. Preview, apply balanced, and compare `status` with
+`systemctl cat fstrim.timer` and `systemctl show fstrim.timer`. Reboot and
+confirm the drop-in remains. Apply a narrower window, verify the new
+schedule, then remove and verify that only the reserved drop-in disappeared
+and the timer's original enablement is unchanged. Repeat on at least one
+Debian/Ubuntu and one RHEL-family guest. Do not use a production VM as the
+first acceptance target.
