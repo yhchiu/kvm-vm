@@ -2,7 +2,9 @@
 
 # kvm-vm
 
-`kvm-vm` 以簡短的 YAML 檔，在單一 KVM/libvirt 宿主機上建立與管理 VM。它使用標準工具（`virt-install`、`virsh`、`qemu-img`、cloud-init），並為每台建立的 VM 保存兩份紀錄：生效定義檔與狀態清單。之後的 `reinstall`、`clone`、`delete` 等指令都依這些紀錄運作，不必猜測 VM 當初是怎麼建立的。
+適用於 KVM/libvirt 的輕量級宣告式 VM 管理工具。
+
+透過 YAML 定義檔管理單一宿主機上的 VM 生命週期，無須額外的常駐管理服務或中央控制平面。`kvm-vm` 使用標準工具（`virt-install`、`virsh`、`qemu-img`、cloud-init），並為每台建立的 VM 保存兩份紀錄：生效定義檔與狀態清單。之後的 `reinstall`、`clone`、`delete` 等指令都依這些紀錄運作，不必猜測 VM 當初是怎麼建立的。
 
 它取代的是手寫的 `virt-install` 指令，而不是 OpenStack 或 Proxmox。詳見[kvm-vm 不做的事](#kvm-vm-不做的事)。
 

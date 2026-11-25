@@ -2,11 +2,14 @@ English | [繁體中文](README.zh-TW.md)
 
 # kvm-vm
 
-`kvm-vm` creates and manages VMs on a single KVM/libvirt host from small
-YAML files. It uses the standard tools (`virt-install`, `virsh`, `qemu-img`,
-cloud-init) and keeps two records for every VM it creates: the effective
-definition and a state manifest. Later commands such as `reinstall`, `clone` and
-`delete` use these records, so they never have to guess how a VM was built.
+A lightweight declarative VM manager for KVM/libvirt.
+
+Manage the VM lifecycle on a single host using YAML definitions, without
+requiring an additional management daemon or a centralized control plane.
+`kvm-vm` uses standard tools (`virt-install`, `virsh`, `qemu-img`, cloud-init)
+and keeps two records for every VM it creates: the effective definition and a
+state manifest. Later commands such as `reinstall`, `clone` and `delete` use
+these records, so they never have to guess how a VM was built.
 
 It replaces hand-written `virt-install` command lines, not OpenStack or Proxmox.
 See [What kvm-vm does not do](#what-kvm-vm-does-not-do).
