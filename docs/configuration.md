@@ -96,6 +96,8 @@ cloud_init:
     - curl
     - vim
   runcmd: []
+  maintenance:
+    profile: balanced
 ```
 
 Other examples: [`debian13-dhcp.yaml`](../examples/debian13-dhcp.yaml) (bridge
@@ -170,7 +172,8 @@ card `ens3`, `enp1s0` or something else.
 | `package_update` | `false` | Refresh the package index at first boot (cloud-init `package_update`). |
 | `packages` | `[]` | Packages to install at first boot. |
 | `timezone` | image default | Such as `Asia/Taipei`. |
-| `runcmd` | `[]` | cloud-init `runcmd` entries. They run before kvm-vm's own first-boot steps (SSH port, console password). |
+| `runcmd` | `[]` | cloud-init `runcmd` entries. They run before kvm-vm's own first-boot steps (SSH port, console password, maintenance). |
+| `maintenance` | `profile: none` | Opt-in guest timer staggering. See [Guest maintenance](maintenance.md). |
 
 The user's password is locked and SSH accepts keys only. See
 [Access and security](access.md).

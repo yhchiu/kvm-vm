@@ -91,6 +91,8 @@ cloud_init:
     - curl
     - vim
   runcmd: []
+  maintenance:
+    profile: balanced
 ```
 
 其他範例：[`debian13-dhcp.yaml`](../examples/debian13-dhcp.yaml)（橋接＋DHCP）、[`ubuntu24-nat.yaml`](../examples/ubuntu24-nat.yaml)（libvirt NAT）、[`clone-target.yaml`](../examples/clone-target.yaml)（`clone` 的目標）。
@@ -159,7 +161,8 @@ cloud-init 以 MAC 位址找出 guest 的網卡並改名為 `eth0`，因此無�
 | `package_update` | `false` | 首次開機時更新套件索引（cloud-init 的 `package_update`）。 |
 | `packages` | `[]` | 首次開機時安裝的套件。 |
 | `timezone` | 映像檔預設 | 例如 `Asia/Taipei`。 |
-| `runcmd` | `[]` | cloud-init 的 `runcmd` 項目，會在 kvm-vm 自己的首次開機步驟（SSH 連接埠、Console 密碼）之前執行。 |
+| `runcmd` | `[]` | cloud-init 的 `runcmd` 項目，會在 kvm-vm 自己的首次開機步驟（SSH 連接埠、Console 密碼、維護排程）之前執行。 |
+| `maintenance` | `profile: none` | 選用的 Guest 維護錯峰排程。詳見 [Guest 維護排程](maintenance.zh-TW.md)。 |
 
 管理帳號的密碼預設鎖定，SSH 僅接受金鑰。詳見[存取與安全](access.zh-TW.md)。
 

@@ -33,6 +33,8 @@ network:
       - 1.1.1.1
 
 cloud_init:
+  maintenance:
+    profile: balanced
   user: admin
   ssh_authorized_keys:
     - file:~/.ssh/id_ed25519.pub

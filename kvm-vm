@@ -272,6 +272,147 @@ def dig(d: Dict[str, Any], *keys: str, default: Any = None) -> Any:
     return cur
 
 
+# Keep profile defaults separate from the generic schedule generator.
+MAINTENANCE_PROFILES = {
+    "none": {},
+    "balanced": {
+        "fstrim.timer": {"frequency": "weekly", "window": "01:00-06:00"},
+        "logrotate.timer": {"frequency": "daily", "window": "00:00-06:00"},
+        "man-db.timer": {"frequency": "daily", "window": "01:00-06:00"},
+        "plocate-updatedb.timer": {"frequency": "daily", "window": "01:00-06:00"},
+        "e2scrub_all.timer": {"frequency": "weekly", "window": "01:00-06:00"},
+    },
+    "custom": {},
+}
+MAINTENANCE_DROPIN = "90-kvm-vm-maintenance.conf"
+MAINTENANCE_TIMER_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.@-]{0,246}\.timer")
+
+
+def maintenance_window(value: Any) -> Tuple[int, int]:
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9]{2}:[0-9]{2}-[0-9]{2}:[0-9]{2}", value):
+        raise KVMError("maintenance window must be HH:MM-HH:MM")
+    start, end = value.split("-")
+    sh, sm = map(int, start.split(":"))
+    eh, em = map(int, end.split(":"))
+    a, b = sh * 60 + sm, eh * 60 + em
+    if sh > 23 or sm > 59 or eh > 24 or em > 59 or (eh == 24 and em) or a >= b:
+        raise KVMError("maintenance window must be within one day, with start before end (end may be 24:00)")
+    return a, b
+
+
+def normalize_maintenance(raw: Any) -> Dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise KVMError("cloud_init.maintenance must be a mapping")
+    if raw.keys() - {"enabled", "profile", "strategy", "timers"}:
+        raise KVMError("Unknown cloud_init.maintenance field")
+    profile = raw.get("profile", "none")
+    if not isinstance(profile, str) or profile not in MAINTENANCE_PROFILES:
+        raise KVMError("maintenance.profile must be none, balanced, or custom")
+    enabled = raw.get("enabled", profile != "none")
+    if type(enabled) is not bool or (enabled and profile == "none"):
+        raise KVMError("maintenance.enabled must be boolean; profile none cannot be enabled")
+    if raw.get("strategy", "staggered") != "staggered":
+        raise KVMError("maintenance.strategy must be staggered")
+    overrides = raw.get("timers", {})
+    if not isinstance(overrides, dict) or (profile == "none" and overrides):
+        raise KVMError("maintenance.timers must be a mapping (empty for profile none)")
+    timers = {name: dict(spec) for name, spec in MAINTENANCE_PROFILES[profile].items()}
+    for name, spec in overrides.items():
+        if (not isinstance(name, str) or not MAINTENANCE_TIMER_RE.fullmatch(name)
+                or name.endswith("@.timer")):
+            raise KVMError(f"Invalid maintenance timer name: {name!r}")
+        if not isinstance(spec, dict) or spec.keys() - {"enabled", "frequency", "window"}:
+            raise KVMError(f"Invalid maintenance timer policy: {name}")
+        timers.setdefault(name, {}).update(spec)
+    for name, spec in timers.items():
+        spec.setdefault("enabled", True)
+        if type(spec["enabled"]) is not bool:
+            raise KVMError(f"maintenance timer {name}: enabled must be boolean")
+        if spec["enabled"] or "frequency" in spec or "window" in spec:
+            if spec.get("frequency") not in ("daily", "weekly"):
+                raise KVMError(f"maintenance timer {name}: frequency must be daily or weekly")
+            maintenance_window(spec.get("window"))
+    if enabled and not any(spec["enabled"] for spec in timers.values()):
+        raise KVMError("Enabled maintenance policy requires at least one enabled timer")
+    return {"enabled": enabled, "profile": profile, "strategy": "staggered", "timers": timers}
+
+
+def maintenance_schedules(cfg: Dict[str, Any]) -> Dict[str, str]:
+    """Generate stable local-calendar drop-ins from the effective VM name and MAC."""
+    policy = cfg["cloud_init"].get("maintenance", {})
+    if not policy.get("enabled"):
+        return {}
+    mac = cfg["network"]["mac"].lower()
+    if mac == "auto":
+        raise KVMError("Maintenance schedule requires a resolved VM MAC address")
+    schedules = {}
+    for name, spec in sorted(policy["timers"].items()):
+        if not spec["enabled"]:
+            continue
+        start, end = maintenance_window(spec["window"])
+        # Leave room for the jitter and timer coalescing within the window.
+        jitter = min(15, end - start - 1)
+        slots = end - start - jitter
+        days = 7 if spec["frequency"] == "weekly" else 1
+        digest = hashlib.sha256(f"kvm-vm-maintenance-v1:{cfg['vm']['name']}:{mac}:{name}".encode()).digest()
+        day, offset = divmod(int.from_bytes(digest, "big") % (days * slots), slots)
+        minute = start + offset
+        weekday = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")[day] + " " if days == 7 else ""
+        calendar = f"{weekday}*-*-* {minute // 60:02d}:{minute % 60:02d}:00"
+        schedules[name] = (f"[Timer]\nOnCalendar=\nOnCalendar={calendar}\n"
+                           f"RandomizedDelaySec={jitter}min\nAccuracySec=1s\n")
+    return schedules
+
+
+def maintenance_command(schedules: Dict[str, str]) -> str:
+    """Install only existing timer units; never enable or start inactive units."""
+    script = r'''set -eu
+if ! command -v systemctl >/dev/null 2>&1; then
+    echo "kvm-vm maintenance: systemctl unavailable; skipping" >&2
+    exit 0
+fi
+changed=""
+apply_timer() {
+    timer=$1
+    content=$2
+    # Missing units are normal on minimal or different distro images.
+    state=$(systemctl show --property=LoadState --value "$timer") || [ "$state" = not-found ] || [ "$state" = masked ] || {
+        echo "kvm-vm maintenance: cannot inspect $timer" >&2
+        return 1
+    }
+    case "$state" in
+        not-found|masked) echo "kvm-vm maintenance: skipping $timer ($state)"; return 0 ;;
+        loaded) ;;
+        *) echo "kvm-vm maintenance: unexpected LoadState for $timer: $state" >&2; return 1 ;;
+    esac
+    dir="/etc/systemd/system/$timer.d"
+    target="$dir/90-kvm-vm-maintenance.conf"
+    install -d -m 0755 "$dir"
+    tmp=$(mktemp "$dir/.kvm-vm-maintenance.XXXXXX")
+    trap 'rm -f "$tmp"' EXIT
+    printf '%s' "$content" > "$tmp"
+    chmod 0644 "$tmp"
+    if ! cmp -s "$tmp" "$target"; then
+        mv -fT "$tmp" "$target"
+        changed="$changed $timer"
+        echo "kvm-vm maintenance: configured $timer"
+    fi
+    rm -f "$tmp"
+    trap - EXIT
+}
+'''
+    for name, content in schedules.items():
+        script += f"apply_timer {shlex.quote(name)} {shlex.quote(content)}\n"
+    script += r'''if [ -n "$changed" ]; then
+    systemctl daemon-reload
+    for timer in $changed; do
+        systemctl try-restart "$timer"
+    done
+fi
+'''
+    return script
+
+
 def normalize_definition(raw: Dict[str, Any], *, for_clone: bool = False) -> Dict[str, Any]:
     version = raw.get("version", 1)
     if version != 1:
@@ -497,6 +638,7 @@ def normalize_definition(raw: Dict[str, Any], *, for_clone: bool = False) -> Dic
             "packages": packages,
             "timezone": ci.get("timezone"),
             "runcmd": runcmd,
+            "maintenance": normalize_maintenance(ci.get("maintenance", {})),
         },
     }
     return effective
@@ -1043,6 +1185,7 @@ def sysprep_clone_disk(disk: Path) -> None:
         "cloud-init clean --logs; "
         "else rm -rf /var/lib/cloud/*; fi; "
         "rm -f /etc/netplan/* /etc/network/interfaces.d/*; "
+        f"rm -f /etc/systemd/system/*.timer.d/{MAINTENANCE_DROPIN} || exit 1; "
         "systemd-machine-id-setup 2>/dev/null || touch /etc/machine-id"
     )
     run(["virt-customize", "-a", str(disk), "--run-command", cleanup])
@@ -1288,6 +1431,9 @@ def make_cloud_files(cfg: Dict[str, Any], source_def_dir: Path, *, reset_ssh_por
         user_cfg["packages"] = packages
     if cfg["cloud_init"].get("timezone"):
         user_cfg["timezone"] = cfg["cloud_init"]["timezone"]
+    schedules = maintenance_schedules(cfg)
+    if schedules:
+        runcmd.append(["sh", "-c", maintenance_command(schedules)])
     if runcmd:
         user_cfg["runcmd"] = runcmd
 

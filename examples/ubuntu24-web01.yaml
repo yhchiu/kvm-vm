@@ -39,6 +39,8 @@ network:
     method: disabled
 
 cloud_init:
+  maintenance:
+    profile: balanced
   user: admin
   ssh_port: 22  # Optional; use e.g. 2222 and connect with ssh -p 2222.
   ssh_authorized_keys:
