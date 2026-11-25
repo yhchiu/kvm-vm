@@ -17,6 +17,8 @@ VM's **effective definition** in `/etc/kvm-vm/definitions/NAME.yaml`.
 
 Network fields are explained in [Networking](networking.md).
 
+See [VM templates](templates.md) for installed examples, lookup and customization.
+
 ## Minimal definition
 
 Only three things are required: a VM name, an image (for `create`) and at least
@@ -399,7 +401,7 @@ uses the saved definition and ignores them.
 ```bash
 sudo KVM_VM_OS=debian13 KVM_VM_NAME=web02 KVM_VM_VCPUS=16 KVM_VM_DISK=100 \
   KVM_VM_MEMORY=32000 KVM_VM_IPV4=192.168.10.52/24 \
-  kvm-vm create examples/ubuntu24-web01.yaml
+  kvm-vm create @ubuntu24-web01
 ```
 
 This uses `ubuntu24-web01.yaml` as a template and creates a different VM, `web02`,
@@ -429,6 +431,8 @@ variable.
 | Variable | Default | Contents |
 |---|---|---|
 | `KVM_VM_DEF_DIR` | `/etc/kvm-vm/definitions` | Effective definitions, `NAME.yaml`. |
+| `KVM_VM_TEMPLATE_DIR` | `/etc/kvm-vm/templates` | Local templates. |
+| `KVM_VM_BUILTIN_TEMPLATE_DIR` | `/usr/local/share/kvm-vm/templates` | Built-in templates (prefix-relative by default). |
 | `KVM_VM_STATE_DIR` | `/var/lib/kvm-vm/state` | State manifests, Snapshot records (`snapshots/NAME/`) and the lifecycle lock (`.lifecycle-lock`). |
 | `KVM_VM_BASE_DIR` | `/var/lib/libvirt/images/base` | Cached cloud images. |
 | `KVM_VM_DISK_DIR` | `/var/lib/libvirt/images/vm` | VM system disks, `NAME.qcow2`. |

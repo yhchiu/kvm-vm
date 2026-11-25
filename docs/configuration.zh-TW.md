@@ -15,6 +15,8 @@ VM 定義檔是描述一台 VM 的 YAML 檔。`validate`、`create`、`clone` �
 
 網路欄位請見[網路設定](networking.zh-TW.md)。
 
+已安裝範本、查找及自訂方式請見 [VM 範本](templates.zh-TW.md)。
+
 ## 最小定義檔
 
 只有三項是必填：VM 名稱、映像檔（`create` 需要），以及至少一把 SSH 公鑰。
@@ -323,7 +325,7 @@ cloud_init:
 ```bash
 sudo KVM_VM_OS=debian13 KVM_VM_NAME=web02 KVM_VM_VCPUS=16 KVM_VM_DISK=100 \
   KVM_VM_MEMORY=32000 KVM_VM_IPV4=192.168.10.52/24 \
-  kvm-vm create examples/ubuntu24-web01.yaml
+  kvm-vm create @ubuntu24-web01
 ```
 
 此例以 `ubuntu24-web01.yaml` 為範本，不必另寫檔案就建立了另一台 VM `web02`。
@@ -350,6 +352,8 @@ Console 密碼登入無法用環境變數開啟。它在 YAML 中設定，憑證
 | 變數 | 預設值 | 內容 |
 |---|---|---|
 | `KVM_VM_DEF_DIR` | `/etc/kvm-vm/definitions` | 生效定義檔 `NAME.yaml`。 |
+| `KVM_VM_TEMPLATE_DIR` | `/etc/kvm-vm/templates` | 管理員自訂範本。 |
+| `KVM_VM_BUILTIN_TEMPLATE_DIR` | `/usr/local/share/kvm-vm/templates` | 內建範本（預設依安裝 prefix）。 |
 | `KVM_VM_STATE_DIR` | `/var/lib/kvm-vm/state` | 狀態清單、快照紀錄（`snapshots/NAME/`）與生命週期鎖（`.lifecycle-lock`）。 |
 | `KVM_VM_BASE_DIR` | `/var/lib/libvirt/images/base` | 快取的雲端映像檔。 |
 | `KVM_VM_DISK_DIR` | `/var/lib/libvirt/images/vm` | VM 系統磁碟 `NAME.qcow2`。 |

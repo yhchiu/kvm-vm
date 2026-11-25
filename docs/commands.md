@@ -3,8 +3,10 @@ English | [繁體中文](commands.zh-TW.md)
 # Command reference
 
 ```text
-kvm-vm validate <vm.yaml> [--clone]
-kvm-vm create <vm.yaml> [--console-password-file <path>] [--refresh-image] [--no-start] [--dry-run] [--yes]
+kvm-vm template list
+kvm-vm template show <NAME>
+kvm-vm validate (<vm.yaml> | @NAME | --template NAME) [--clone]
+kvm-vm create (<vm.yaml> | @NAME | --template NAME) [--console-password-file <path>] [--refresh-image] [--no-start] [--dry-run] [--yes]
 kvm-vm list [--managed] [--ips]
 kvm-vm status <vm>
 kvm-vm identity [--json]
@@ -18,7 +20,7 @@ kvm-vm maintenance apply <vm> [--profile none|balanced | --policy <policy.yaml>]
 kvm-vm maintenance remove <vm> [--dry-run] [--yes]
 kvm-vm reinstall <vm> [--os <alias|url|path> | --image-url <url> | --image-path <path>] [--os-variant <variant>]
                       [--console-password-file <path>] [--refresh-image] [--no-start] [--dry-run] [--yes] [--force]
-kvm-vm clone <source-vm> <target.yaml> [--console-password-file <path>] [--no-start] [--dry-run]
+kvm-vm clone <source-vm> (<target.yaml> | @NAME | --template NAME) [--console-password-file <path>] [--no-start] [--dry-run]
 kvm-vm delete <vm> [--yes] [--force] [--keep-storage]
 kvm-vm snapshot create <vm> [--no-quiesce] [--dry-run]
 kvm-vm snapshot status <vm>
@@ -30,7 +32,7 @@ kvm-vm backup check <backup-dir> [--until <checkpoint>]
 `kvm-vm --help` and `kvm-vm COMMAND --help` show the same options.
 
 - [Before you start](#before-you-start)
-- [validate](#validate) · [create](#create) · [list](#list) · [status](#status) · [monitor](#monitor) · [identity](#identity) · [exporter](#exporter) · [console](#console)
+- [template](#template) · [validate](#validate) · [create](#create) · [list](#list) · [status](#status) · [monitor](#monitor) · [identity](#identity) · [exporter](#exporter) · [console](#console)
 - [reinstall](#reinstall) · [clone](#clone) · [delete](#delete)
 - [reset-password](#reset-password) · [maintenance](#maintenance) · [snapshot](#snapshot) · [backup check](#backup-check)
 - [When a command refuses to run](#when-a-command-refuses-to-run)
@@ -80,6 +82,23 @@ sudo kvm-vm maintenance remove web01 --yes
 ```
 
 `preview` and `--dry-run` only preview on the host. `status` reads live timers and managed service resource settings via the guest agent. Use `--policy` for optional per-timer `resources`. `apply` and `remove` require a running managed VM, guest agent access and confirmation (or `--yes`), take the lifecycle lock and update the effective definition on success. See [Guest maintenance](maintenance.md#manage-existing-vms-from-the-host) for policy syntax, prerequisites and recovery.
+
+## template
+
+List installed template names with source and type, or inspect the raw YAML:
+
+```sh
+kvm-vm template list
+kvm-vm template show ubuntu24-nat
+sudo kvm-vm validate @ubuntu24-nat
+sudo kvm-vm create --template ubuntu24-nat --dry-run
+sudo kvm-vm clone nat01 @clone-target-nat --dry-run
+```
+
+`@NAME` and `--template NAME` are explicit alternatives to a definition path
+for `validate`, `create` and `clone`. `.yaml` is optional. Local templates take
+precedence over built-ins; invalid local files never fall back. See
+[VM templates](templates.md) for installation, naming, paths and examples.
 
 ## validate
 

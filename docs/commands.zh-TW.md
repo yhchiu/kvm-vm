@@ -3,8 +3,10 @@
 # 指令參考
 
 ```text
-kvm-vm validate <vm.yaml> [--clone]
-kvm-vm create <vm.yaml> [--console-password-file <path>] [--refresh-image] [--no-start] [--dry-run] [--yes]
+kvm-vm template list
+kvm-vm template show <NAME>
+kvm-vm validate (<vm.yaml> | @NAME | --template NAME) [--clone]
+kvm-vm create (<vm.yaml> | @NAME | --template NAME) [--console-password-file <path>] [--refresh-image] [--no-start] [--dry-run] [--yes]
 kvm-vm list [--managed] [--ips]
 kvm-vm status <vm>
 kvm-vm identity [--json]
@@ -18,7 +20,7 @@ kvm-vm maintenance apply <vm> [--profile none|balanced | --policy <policy.yaml>]
 kvm-vm maintenance remove <vm> [--dry-run] [--yes]
 kvm-vm reinstall <vm> [--os <alias|url|path> | --image-url <url> | --image-path <path>] [--os-variant <variant>]
                       [--console-password-file <path>] [--refresh-image] [--no-start] [--dry-run] [--yes] [--force]
-kvm-vm clone <source-vm> <target.yaml> [--console-password-file <path>] [--no-start] [--dry-run]
+kvm-vm clone <source-vm> (<target.yaml> | @NAME | --template NAME) [--console-password-file <path>] [--no-start] [--dry-run]
 kvm-vm delete <vm> [--yes] [--force] [--keep-storage]
 kvm-vm snapshot create <vm> [--no-quiesce] [--dry-run]
 kvm-vm snapshot status <vm>
@@ -30,7 +32,7 @@ kvm-vm backup check <backup-dir> [--until <checkpoint>]
 `kvm-vm --help` 與 `kvm-vm 指令 --help` 會列出相同的選項。
 
 - [開始之前](#開始之前)
-- [validate](#validate) · [create](#create) · [list](#list) · [status](#status) · [monitor](#monitor) · [identity](#identity) · [exporter](#exporter) · [console](#console)
+- [template](#template) · [validate](#validate) · [create](#create) · [list](#list) · [status](#status) · [monitor](#monitor) · [identity](#identity) · [exporter](#exporter) · [console](#console)
 - [reinstall](#reinstall) · [clone](#clone) · [delete](#delete)
 - [reset-password](#reset-password) · [maintenance](#maintenance) · [snapshot](#snapshot) · [backup check](#backup-check)
 - [指令拒絕執行時](#指令拒絕執行時)
@@ -71,6 +73,20 @@ sudo kvm-vm maintenance remove web01 --yes
 ```
 
 `preview` 及 `--dry-run` 只在 Host 預覽；`status` 透過 Guest Agent 讀取實際排程及受管 service 資源設定。可用 `--policy` 指定選用的 `resources`。`apply` / `remove` 需運行中的受管 VM、Guest Agent 及確認（或 `--yes`），沿用 lifecycle lock，成功後更新有效定義檔。完整政策、限制及故障恢復見 [Guest 維護錯峰排程](maintenance.zh-TW.md#從-host-管理既有-vm)。
+
+## template
+
+列出已安裝範本的名稱、來源及類型，或查看原始 YAML：
+
+```sh
+kvm-vm template list
+kvm-vm template show ubuntu24-nat
+sudo kvm-vm validate @ubuntu24-nat
+sudo kvm-vm create --template ubuntu24-nat --dry-run
+sudo kvm-vm clone nat01 @clone-target-nat --dry-run
+```
+
+`validate`、`create` 及 `clone` 可使用 `@NAME` 或 `--template NAME` 取代一般定義檔路徑，`.yaml` 可省略。自訂範本優先於內建範本；不合法的自訂範本不會 fallback。安裝、命名、路徑與範例詳見 [VM 範本](templates.zh-TW.md)。
 
 ## validate
 

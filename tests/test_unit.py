@@ -2650,3 +2650,54 @@ def test_create_validation_failure_never_prompts_or_provisions(tmp_path, monkeyp
     prompt.assert_not_called()
     acquire.assert_not_called()
     assert not (kvm_vm.CLOUD_DIR / "test01").exists()
+
+
+@pytest.mark.parametrize('reference', [['@create-target'], ['--template', 'create-target']])
+def test_create_template_dry_run_uses_resolver(tmp_path, monkeypatch, capsys, reference):
+    args = _create_args(tmp_path, monkeypatch, _minimal_raw())
+    vendor = tmp_path / 'vendor'
+    vendor.mkdir()
+    shutil.copy2(args.definition, vendor / 'create-target.yaml')
+    monkeypatch.setattr(kvm_vm, 'TEMPLATE_DIR', tmp_path / 'missing-local')
+    monkeypatch.setattr(kvm_vm, 'BUILTIN_TEMPLATE_DIR', vendor)
+    args = kvm_vm.build_parser().parse_args(['create', *reference, '--dry-run'])
+    assert kvm_vm.cmd_create(args) == 0
+    preview = kvm_vm.yaml.safe_load(capsys.readouterr().out.split('passed\n', 1)[1])
+    assert preview['vm']['name'] == 'test01'
+    assert not (kvm_vm.VM_DIR / 'test01.qcow2').exists()
+
+
+@pytest.mark.parametrize('reference', [['@clone-target'], ['--template', 'clone-target']])
+def test_clone_template_saves_source(reinstall_machine, monkeypatch, reference):
+    machine = reinstall_machine
+    vendor = Path(machine['args'].definition).parent / 'vendor'
+    vendor.mkdir()
+    path = vendor / 'clone-target.yaml'
+    shutil.copy2(machine['args'].definition, path)
+    original = path.read_bytes()
+    monkeypatch.setattr(kvm_vm, 'TEMPLATE_DIR', vendor.parent / 'missing-local')
+    monkeypatch.setattr(kvm_vm, 'BUILTIN_TEMPLATE_DIR', vendor)
+    machine['install_succeeds'] = True
+    args = kvm_vm.build_parser().parse_args(['clone', 'test01', *reference, '--no-start'])
+    assert kvm_vm.cmd_clone(args) == 0
+    assert kvm_vm.load_state('clone01')['definition_source'] == str(path)
+    assert path.read_bytes() == original
+
+
+def test_create_template_saves_effective_definition(stale_create, monkeypatch, tmp_path):
+    args, manifest, disk = stale_create
+    vendor = tmp_path / 'vendor'
+    vendor.mkdir()
+    path = vendor / 'create-target.yaml'
+    shutil.copy2(args.definition, path)
+    before = path.read_bytes()
+    monkeypatch.setattr(kvm_vm, 'TEMPLATE_DIR', tmp_path / 'missing-local')
+    monkeypatch.setattr(kvm_vm, 'BUILTIN_TEMPLATE_DIR', vendor)
+    monkeypatch.setattr(kvm_vm, 'resolve_ssh_keys', lambda keys, directory: ['ssh-ed25519 AAAA resolved'])
+    args = kvm_vm.build_parser().parse_args(['create', '@create-target', '--yes', '--no-start'])
+    assert kvm_vm.cmd_create(args) == 0
+    assert json.loads(manifest.read_text())['definition_source'] == str(path)
+    assert disk.read_bytes() == b'new disk'
+    saved = kvm_vm.DEF_DIR / 'test01.yaml'
+    assert kvm_vm.yaml_load(saved)['cloud_init']['ssh_authorized_keys'] == ['ssh-ed25519 AAAA resolved']
+    assert path.read_bytes() == before

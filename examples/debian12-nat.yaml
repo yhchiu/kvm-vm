@@ -1,0 +1,39 @@
+# debian12 / nat / DHCP. Review VM name and network before creating.
+version: 1
+
+vm:
+  name: debian12-nat01
+  vcpus: 2
+  memory_mib: 4096
+  cpu: host-passthrough
+  machine: q35
+  autostart: true
+  start: true
+
+storage:
+  disk_gib: 40
+  bus: virtio
+  cache: none
+  discard: unmap
+  image:
+    distro: debian12
+
+network:
+  mode: nat
+  # Active libvirt NAT network.
+  libvirt_network: default
+  model: virtio
+  mac: auto
+  ipv4:
+    method: dhcp
+  ipv6:
+    method: disabled
+
+cloud_init:
+  maintenance:
+    profile: balanced
+  user: admin
+  ssh_authorized_keys:
+    - file:~/.ssh/id_ed25519.pub
+  qemu_guest_agent: true
+  timezone: Asia/Taipei

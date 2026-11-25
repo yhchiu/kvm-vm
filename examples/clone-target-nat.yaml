@@ -1,0 +1,30 @@
+# Clone a shut-off source VM to the default NAT network using DHCP.
+# storage.image is omitted; the source disk and its size are inherited.
+version: 1
+
+vm:
+  name: clone-nat01
+  vcpus: 2
+  memory_mib: 4096
+  # Match the source machine type if it is not q35.
+  machine: q35
+  autostart: true
+  start: true
+
+network:
+  mode: nat
+  libvirt_network: default
+  mac: auto
+  ipv4:
+    method: dhcp
+  ipv6:
+    method: disabled
+
+cloud_init:
+  maintenance:
+    profile: balanced
+  user: admin
+  ssh_authorized_keys:
+    - file:~/.ssh/id_ed25519.pub
+  qemu_guest_agent: true
+  timezone: Asia/Taipei

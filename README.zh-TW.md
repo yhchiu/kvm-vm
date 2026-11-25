@@ -48,7 +48,7 @@ RHEL 9 以上使用 libvirt 的模組化 daemon（`virtqemud` 等），安裝套
 sudo ./install.sh
 ```
 
-會安裝 `/usr/local/sbin/kvm-vm` 並建立所需目錄。重新執行即可升級。安裝程式使用 POSIX `sh`，不需要 Bash，也可以執行 `sudo sh ./install.sh`。其他安裝設定腳本仍可能需要 Bash。
+會安裝 `/usr/local/sbin/kvm-vm`、內建 VM 範本並建立所需目錄。重新執行即可升級。安裝程式使用 POSIX `sh`，不需要 Bash，也可以執行 `sudo sh ./install.sh`。其他安裝設定腳本仍可能需要 Bash。
 
 **3. 確認已有 SSH 金鑰。** 範例使用 `~/.ssh/id_ed25519.pub`，若不存在，請用 `ssh-keygen -t ed25519` 建立。
 
@@ -65,12 +65,14 @@ sudo virsh net-start default
 sudo virsh net-autostart default
 ```
 
-**5. 建立 VM。** [`examples/ubuntu24-nat.yaml`](examples/ubuntu24-nat.yaml) 描述一台名為 `nat01` 的 Ubuntu 24.04 VM，有 2 個 vCPU、4 GiB 記憶體與 40 GiB 磁碟。
+**5. 從已安裝的範本建立 VM。** `ubuntu24-nat`（[原始 YAML](examples/ubuntu24-nat.yaml)）描述一台名為 `nat01` 的 Ubuntu 24.04 VM，有 2 個 vCPU、4 GiB 記憶體與 40 GiB 磁碟。
 
 ```bash
-sudo kvm-vm validate examples/ubuntu24-nat.yaml          # 檢查檔案並列出所有值
-sudo kvm-vm create examples/ubuntu24-nat.yaml --dry-run  # 一併檢查宿主機
-sudo kvm-vm create examples/ubuntu24-nat.yaml
+kvm-vm template list
+kvm-vm template show ubuntu24-nat
+sudo kvm-vm validate @ubuntu24-nat          # 檢查檔案並列出所有值
+sudo kvm-vm create @ubuntu24-nat --dry-run  # 一併檢查宿主機
+sudo kvm-vm create @ubuntu24-nat
 ```
 
 `create` 會自動驗證定義檔及執行宿主機預檢，再顯示生效定義檔並要求確認（Enter 預設 yes）。自動化請使用 `create --yes`；`--dry-run` 不會提示確認。
@@ -86,7 +88,7 @@ ssh admin@<vm-ip>         # admin 即 cloud_init.user
 
 要移除這台測試 VM：`sudo kvm-vm delete nat01 --force --yes`。
 
-**下一步**：參考 [VM 定義檔參考](docs/configuration.zh-TW.md)撰寫自己的定義檔，並用橋接或 Macvtap 模式讓 VM 接上 LAN（[網路設定](docs/networking.zh-TW.md)）。
+**下一步**：參考 [VM 範本](docs/templates.zh-TW.md)選擇其他發行版或自訂範本，參考 [VM 定義檔參考](docs/configuration.zh-TW.md)撰寫自己的定義檔，並用橋接或 Macvtap 模式讓 VM 接上 LAN（[網路設定](docs/networking.zh-TW.md)）。
 
 ## 常用指令
 
@@ -96,7 +98,9 @@ ssh admin@<vm-ip>         # admin 即 cloud_init.user
 |---|---|
 | 檢查定義檔（離線） | `kvm-vm validate vm.yaml` |
 | 在此宿主機預演建立 | `kvm-vm create vm.yaml --dry-run` |
-| 建立 VM | `kvm-vm create vm.yaml` |
+| 列出／查看範本 | `kvm-vm template list` / `kvm-vm template show NAME` |
+| 從範本建立 VM | `kvm-vm create @ubuntu24-nat` |
+| 從 YAML 檔案建立 VM | `kvm-vm create vm.yaml` |
 | 列出 VM 與位址 | `kvm-vm list --ips` |
 | 查看單台 VM 詳細資訊 | `kvm-vm status web01` |
 | 查看 VM CPU、記憶體和 I/O 資源 | `kvm-vm monitor web01` |
@@ -138,6 +142,7 @@ Prometheus metrics endpoint、systemd、PromQL 與安全設定請見 [Prometheus
 
 | 我想要… | 請閱讀 |
 |---|---|
+| 使用或自訂 VM 範本 | [VM 範本](docs/templates.zh-TW.md) |
 | 撰寫 VM 定義檔：欄位、預設值、映像檔、覆寫 | [VM 定義檔參考](docs/configuration.zh-TW.md) |
 | 分散 Guest 維護作業並選擇性降低資源優先權 | [Guest 維護排程](docs/maintenance.zh-TW.md) |
 | 在橋接、NAT、Macvtap 之間做選擇 | [網路設定](docs/networking.zh-TW.md) |

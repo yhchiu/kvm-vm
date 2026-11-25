@@ -59,6 +59,12 @@ VM_DIR = Path(os.environ.get("KVM_VM_DISK_DIR", "/var/lib/libvirt/images/vm"))
 STATE_DIR = Path(os.environ.get("KVM_VM_STATE_DIR", "/var/lib/kvm-vm/state"))
 CLOUD_DIR = Path(os.environ.get("KVM_VM_CLOUD_DIR", "/var/lib/libvirt/images/cloud-init"))
 DEF_DIR = Path(os.environ.get("KVM_VM_DEF_DIR", "/etc/kvm-vm/definitions"))
+TEMPLATE_DIR = Path(os.environ.get("KVM_VM_TEMPLATE_DIR") or "/etc/kvm-vm/templates")
+# The installer uses PREFIX/share; infer PREFIX for normal bin/sbin installs.
+_EXEC_DIR = Path(__file__).resolve().parent
+_INSTALL_PREFIX = _EXEC_DIR.parent if _EXEC_DIR.name in {"bin", "sbin"} else Path("/usr/local")
+BUILTIN_TEMPLATE_DIR = Path(os.environ.get("KVM_VM_BUILTIN_TEMPLATE_DIR")
+                            or _INSTALL_PREFIX / "share/kvm-vm/templates")
 DEFAULT_BRIDGE = "br0"
 DEFAULT_MACHINE = "q35"
 NET_SYS_DIR = Path("/sys/class/net")
@@ -256,6 +262,8 @@ def yaml_load(path: Path) -> Dict[str, Any]:
         raise KVMError(f"Definition not found: {path}") from None
     except yaml.YAMLError as exc:
         raise KVMError(f"Invalid YAML {path}: {exc}") from exc
+    except (OSError, UnicodeError) as exc:
+        raise KVMError(f"Cannot read definition {path}: {exc}") from exc
     if not isinstance(data, dict):
         raise KVMError("YAML root must be a mapping")
     return data
@@ -1903,15 +1911,147 @@ def check_create_state(name: str, disk: Path) -> None:
     log.warning(f"Stale managed state for {name}; it will be replaced only after successful creation")
 
 
-def load_validated_definition(p: Path, *, for_clone: bool = False) -> Dict[str, Any]:
+def template_filename(name: str) -> str:
+    """Template references are names, never paths."""
+    if name.endswith(".yaml"):
+        name = name[:-5]
+    if (not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", name)
+            or ".." in name or name.endswith((".yaml", ".yml"))):
+        raise KVMError("Invalid template name: use a basename with optional .yaml suffix")
+    return name + ".yaml"
+
+
+def template_roots() -> Tuple[Tuple[str, Path], ...]:
+    roots = (TEMPLATE_DIR, BUILTIN_TEMPLATE_DIR)
+    if any(not path.is_absolute() or ".." in path.parts for path in roots):
+        raise KVMError("Template directories must be absolute paths without '..'")
+    if len({*roots, DEF_DIR.resolve()}) != 3:
+        raise KVMError("Template and definition directories must be distinct")
+    return (("local", TEMPLATE_DIR), ("builtin", BUILTIN_TEMPLATE_DIR))
+
+
+def trusted_template_path(path: Path, *, directory: bool) -> bool:
+    """Fail closed for unsafe entries, including dangling symlinks.
+
+    Root operations trust only root-owned entries. Read-only non-root use may
+    also inspect its own private template tree. Check ancestors too; a root-owned
+    file in a replaceable directory is not a trusted input.
+    """
+    path = path.absolute()
+    if ".." in path.parts:
+        raise KVMError(f"Unsafe template path: {path}")
+    owners = {0, os.geteuid()}
+    for part in [*reversed(path.parents), path]:
+        try:
+            info = part.lstat()
+        except FileNotFoundError:
+            return False
+        except OSError as exc:
+            raise KVMError(f"Cannot inspect template path {part}: {exc}") from exc
+        is_dir = part != path or directory
+        correct_type = stat.S_ISDIR(info.st_mode) if is_dir else stat.S_ISREG(info.st_mode)
+        # Sticky root-owned ancestors (e.g. /tmp) protect owned children from
+        # replacement. The template directory itself must never be writable.
+        sticky_ancestor = (part != path and stat.S_ISDIR(info.st_mode)
+                           and info.st_uid == 0 and bool(info.st_mode & stat.S_ISVTX))
+        if (not correct_type or info.st_uid not in owners
+                or (info.st_mode & 0o022 and not sticky_ancestor)):
+            raise KVMError(f"Unsafe template path (ownership, permissions or file type): {part}")
+    return True
+
+
+def find_template(name: str) -> Tuple[Path, str]:
+    filename = template_filename(name)
+    for source, root in template_roots():
+        if not trusted_template_path(root, directory=True):
+            continue
+        candidate = root.absolute() / filename
+        if trusted_template_path(candidate, directory=False):
+            return candidate, source
+    raise KVMError(f"Template not found: {filename}")
+
+
+def resolve_definition_path(args: argparse.Namespace) -> Tuple[Path, bool]:
+    definition = vars(args).get("definition")
+    template = vars(args).get("template")
+    if template is not None and definition is not None:
+        raise KVMError("Specify either a YAML definition or --template, not both")
+    if template is None and definition and str(definition).startswith("@"):
+        template = str(definition)[1:]
+    if template is not None:
+        path, source = find_template(template)
+        # Keep validate and dry-run stdout available for YAML consumers.
+        log.info(f"Template ({source}): {path}")
+        return path, True
+    if definition is None:
+        raise KVMError("Specify a YAML definition or --template NAME")
+    return Path(definition), False
+
+
+def prepare_template_definition(cfg: Dict[str, Any], path: Path) -> None:
+    """Make saved template-derived definitions independent of template edits."""
+    ci = cfg["cloud_init"]
+    ci["ssh_authorized_keys"] = resolve_ssh_keys(ci["ssh_authorized_keys"], path.parent)
+    image = cfg["storage"]["image"]
+    if image.get("path"):
+        image["path"] = str(resolve_file_path(str(image["path"]), path.parent).absolute())
+
+
+def cmd_template_list(args: argparse.Namespace) -> int:
+    names = set()
+    for _, root in template_roots():
+        if trusted_template_path(root, directory=True):
+            try:
+                for entry in root.iterdir():
+                    if entry.suffix != ".yaml":
+                        continue
+                    try:
+                        names.add(template_filename(entry.name))
+                    except KVMError:
+                        continue
+            except OSError as exc:
+                raise KVMError(f"Cannot list templates in {root}: {exc}") from exc
+    print(f"{'NAME':32} {'SOURCE':8} TYPE")
+    for name in sorted(names):
+        path, source = find_template(name)
+        try:
+            storage = yaml_load(path).get("storage") or {}
+            image = (storage.get("image") or {}) if isinstance(storage, dict) else None
+            if not isinstance(image, dict):
+                kind = "invalid"
+            else:
+                sources = sum(bool(image.get(k)) for k in ("distro", "url", "path"))
+                kind = {0: "clone", 1: "create"}.get(sources, "invalid")
+        except KVMError:
+            kind = "invalid"
+        print(f"{name[:-5]:32} {source:8} {kind}")
+    return 0
+
+
+def cmd_template_show(args: argparse.Namespace) -> int:
+    path, source = find_template(args.name)
+    log.info(f"Template ({source}): {path}")
+    try:
+        sys.stdout.write(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError) as exc:
+        raise KVMError(f"Cannot read template {path}: {exc}") from exc
+    return 0
+
+
+def load_validated_definition(p: Path, *, for_clone: bool = False,
+                              is_template: bool = False) -> Dict[str, Any]:
     """Share offline definition validation between validate and create."""
     cfg = normalize_definition(yaml_load(p), for_clone=for_clone)
-    resolve_ssh_keys(cfg["cloud_init"]["ssh_authorized_keys"], p.parent)
+    if is_template:
+        prepare_template_definition(cfg, p)
+    else:
+        resolve_ssh_keys(cfg["cloud_init"]["ssh_authorized_keys"], p.parent)
     return cfg
 
 
 def cmd_validate(args: argparse.Namespace) -> int:
-    cfg = load_validated_definition(Path(args.definition), for_clone=args.clone)
+    p, is_template = resolve_definition_path(args)
+    cfg = load_validated_definition(p, for_clone=args.clone, is_template=is_template)
     print(yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True))
     return 0
 
@@ -1975,8 +2115,8 @@ def confirm_create(cfg: Dict[str, Any], *, yes: bool) -> None:
 
 @lifecycle_exclusive
 def cmd_create(args: argparse.Namespace) -> int:
-    p = Path(args.definition)
-    cfg = load_validated_definition(p)
+    p, is_template = resolve_definition_path(args)
+    cfg = load_validated_definition(p, is_template=is_template)
     require_commands(["virsh", "virt-install", "qemu-img"])
     require_cloud_seed_generator()
     ensure_dirs()
@@ -2045,6 +2185,7 @@ def first_disk_source(name: str) -> Path:
 
 @lifecycle_exclusive
 def cmd_clone(args: argparse.Namespace) -> int:
+    p, is_template = resolve_definition_path(args)
     require_commands(["virsh", "virt-install", "qemu-img", "virt-sysprep", "virt-customize"])
     require_cloud_seed_generator()
     ensure_dirs()
@@ -2058,8 +2199,9 @@ def cmd_clone(args: argparse.Namespace) -> int:
     source_state = load_state(source_name)
     src_disk = checked_domain_disk(source_name, source_state)
 
-    p = Path(args.definition)
     cfg = normalize_definition(yaml_load(p), for_clone=True)
+    if is_template:
+        prepare_template_definition(cfg, p)
     source_definition = Path(source_state.get("definition") or DEF_DIR / f"{source_name}.yaml") if source_state else DEF_DIR / f"{source_name}.yaml"
     source_config = yaml_load(source_definition) if source_definition.exists() else {}
     inherit_os_variant(cfg, source_name, source_config)
@@ -4524,6 +4666,12 @@ def cmd_reset_password(args: argparse.Namespace) -> int:
     return 0
 
 
+def add_definition_arguments(parser: argparse.ArgumentParser) -> None:
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("definition", nargs="?", help="YAML path or @TEMPLATE")
+    group.add_argument("--template", metavar="NAME", help="Installed template (optional .yaml suffix)")
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="kvm-vm", description="Declarative KVM/libvirt VM manager")
     p.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
@@ -4531,7 +4679,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     q = sp.add_parser("create", help="Create a VM from a YAML definition and cloud image")
     q.add_argument("--console-password-file", help="New credential file in a private administrator-owned directory")
-    q.add_argument("definition")
+    add_definition_arguments(q)
     q.add_argument("--refresh-image", action="store_true", help="Redownload a URL/distro base image")
     q.add_argument("--no-start", action="store_true", help="Define the VM but do not boot it")
     q.add_argument("--dry-run", action="store_true", help="Run all pre-flight checks but do not create the VM")
@@ -4541,7 +4689,7 @@ def build_parser() -> argparse.ArgumentParser:
     q = sp.add_parser("clone", help="Offline full clone of a VM, then sysprep and apply target YAML")
     q.add_argument("--console-password-file", help="New credential file in a private administrator-owned directory")
     q.add_argument("source", help="Source libvirt domain name; must be shut off")
-    q.add_argument("definition", help="Target VM YAML definition")
+    add_definition_arguments(q)
     q.add_argument("--no-start", action="store_true", help="Define the clone but do not boot it")
     q.add_argument("--dry-run", action="store_true", help="Run all pre-flight checks but do not clone the VM")
     q.set_defaults(func=cmd_clone)
@@ -4667,9 +4815,17 @@ def build_parser() -> argparse.ArgumentParser:
     q.set_defaults(func=cmd_console)
 
     q = sp.add_parser("validate", help="Validate and normalize a YAML definition without touching libvirt")
-    q.add_argument("definition")
+    add_definition_arguments(q)
     q.add_argument("--clone", action="store_true", help="Validate as a clone target (image source optional)")
     q.set_defaults(func=cmd_validate)
+
+    q = sp.add_parser("template", help="Inspect installed VM definition templates")
+    tsp = q.add_subparsers(dest="template_command", required=True)
+    t = tsp.add_parser("list", help="List available templates and their source")
+    t.set_defaults(func=cmd_template_list)
+    t = tsp.add_parser("show", help="Print the selected template YAML")
+    t.add_argument("name", help="Template name (optional .yaml suffix)")
+    t.set_defaults(func=cmd_template_show)
 
     return p
 

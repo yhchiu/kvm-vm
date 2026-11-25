@@ -58,7 +58,7 @@ For older releases, see [Requirements](#requirements).
 sudo ./install.sh
 ```
 
-This installs `/usr/local/sbin/kvm-vm` and creates its directories. Run it again
+This installs `/usr/local/sbin/kvm-vm`, built-in VM templates and their directories. Run it again
 to upgrade. The installer uses POSIX `sh` (no Bash required);
 `sudo sh ./install.sh` also works. The other setup scripts may still require Bash.
 
@@ -78,14 +78,16 @@ sudo virsh net-start default
 sudo virsh net-autostart default
 ```
 
-**5. Create the VM.** [`examples/ubuntu24-nat.yaml`](examples/ubuntu24-nat.yaml)
+**5. Create the VM from an installed template.** `ubuntu24-nat` ([source YAML](examples/ubuntu24-nat.yaml))
 describes `nat01`, an Ubuntu 24.04 VM with 2 vCPUs, 4 GiB of memory and a 40 GiB
 disk.
 
 ```bash
-sudo kvm-vm validate examples/ubuntu24-nat.yaml          # check the file, show all values
-sudo kvm-vm create examples/ubuntu24-nat.yaml --dry-run  # also check the host
-sudo kvm-vm create examples/ubuntu24-nat.yaml
+kvm-vm template list
+kvm-vm template show ubuntu24-nat
+sudo kvm-vm validate @ubuntu24-nat          # check the file, show all values
+sudo kvm-vm create @ubuntu24-nat --dry-run  # also check the host
+sudo kvm-vm create @ubuntu24-nat
 ```
 
 `create` automatically validates the definition and runs host pre-flight checks,
@@ -104,7 +106,7 @@ ssh admin@<vm-ip>         # admin is cloud_init.user
 
 To remove the test VM: `sudo kvm-vm delete nat01 --force --yes`.
 
-**Next steps:** write your own definition with the
+**Next steps:** choose or customize [VM templates](docs/templates.md), or write your own definition with the
 [VM definition reference](docs/configuration.md), and put VMs on your LAN with
 bridge or Macvtap mode ([Networking](docs/networking.md)).
 
@@ -117,7 +119,9 @@ option, and the [command reference](docs/commands.md) explains them.
 |---|---|
 | Check a definition (offline) | `kvm-vm validate vm.yaml` |
 | Preview a create on this host | `kvm-vm create vm.yaml --dry-run` |
-| Create a VM | `kvm-vm create vm.yaml` |
+| List / inspect templates | `kvm-vm template list` / `kvm-vm template show NAME` |
+| Create from a template | `kvm-vm create @ubuntu24-nat` |
+| Create from a YAML file | `kvm-vm create vm.yaml` |
 | List VMs with their addresses | `kvm-vm list --ips` |
 | Show one VM in detail | `kvm-vm status web01` |
 | Sample VM CPU, memory and I/O | `kvm-vm monitor web01` |
@@ -159,6 +163,7 @@ For running managed VMs, use `sudo kvm-vm maintenance apply web01 --profile bala
 
 | I want to... | Read |
 |---|---|
+| Use or customize VM templates | [VM templates](docs/templates.md) |
 | Write a VM definition: fields, defaults, images, overrides | [VM definition reference](docs/configuration.md) |
 | Stagger and optionally deprioritize guest maintenance jobs | [Guest maintenance](docs/maintenance.md) |
 | Choose between bridge, NAT and Macvtap | [Networking](docs/networking.md) |
