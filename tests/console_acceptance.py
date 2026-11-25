@@ -417,9 +417,9 @@ def main():
             Path(args.report).write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
             session.phase = "create"
             if enabled:
-                session.cli("create", definition, "--console-password-file", credential)
+                session.cli("create", "--yes", definition, "--console-password-file", credential)
             else:
-                session.cli("create", definition)
+                session.cli("create", "--yes", definition)
                 with session.sftp.open(credential, "wx") as output:
                     output.chmod(0o600)
                     output.write(json.dumps({"vm": name, "user": args.user, "password": secrets.token_urlsafe(24)}))

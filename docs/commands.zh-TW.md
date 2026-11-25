@@ -4,7 +4,7 @@
 
 ```text
 kvm-vm validate <vm.yaml> [--clone]
-kvm-vm create <vm.yaml> [--console-password-file <path>] [--refresh-image] [--no-start] [--dry-run]
+kvm-vm create <vm.yaml> [--console-password-file <path>] [--refresh-image] [--no-start] [--dry-run] [--yes]
 kvm-vm list [--managed] [--ips]
 kvm-vm status <vm>
 kvm-vm identity [--json]
@@ -60,13 +60,16 @@ kvm-vm validate --clone web02.yaml     # clone 目標，不需映像檔
 ```bash
 sudo kvm-vm create web01.yaml
 sudo kvm-vm create web01.yaml --dry-run
+sudo kvm-vm create web01.yaml --yes
 ```
 
-1. 檢查定義檔、名稱是否可用、網路連接與 SSH 金鑰。`mac: auto` 時挑選 MAC 位址。
+1. 執行與 `validate` 相同的定義檔及 SSH 金鑰驗證，再執行宿主機預檢（名稱、網路、殘留檔案、憑證路徑、已快取映像檔大小）。`mac: auto` 時挑選 MAC 位址。通過後顯示生效定義檔，並詢問 `Create VM 'NAME'? [Y/n]`。直接按 Enter 或輸入 `y`／`yes` 繼續，其他輸入取消。
 2. 若映像檔尚未快取則下載（`--refresh-image` 會重新下載，詳見[映像檔快取](configuration.zh-TW.md#映像檔快取與---refresh-image)）。
 3. 把映像檔複製成新磁碟 `/var/lib/libvirt/images/vm/NAME.qcow2`，並擴充到 `disk_gib`。
 4. 寫入 cloud-init seed，並以 `virt-install` 定義 VM。
 5. 儲存生效定義檔與狀態清單。
+
+`--yes` 略過互動式預覽與確認，不略過驗證或預檢。非互動式執行必須指定 `--yes`，但 `--dry-run` 不需要。Dry run 不會提示確認，也不會建立 VM。取消時回傳非零結束碼，不下載映像檔或建立 VM 相關檔案。
 
 VM 開機後指令就會結束。之後 cloud-init 會設定 guest，需要一分鐘以上。可在 guest 上等待它完成：
 

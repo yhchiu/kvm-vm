@@ -88,6 +88,10 @@ sudo kvm-vm create examples/ubuntu24-nat.yaml --dry-run  # also check the host
 sudo kvm-vm create examples/ubuntu24-nat.yaml
 ```
 
+`create` automatically validates the definition and runs host pre-flight checks,
+then displays the effective definition and asks for confirmation (Enter = yes).
+For automation, use `create --yes`; `--dry-run` never prompts.
+
 The first run downloads the Ubuntu cloud image, which can take a few minutes.
 
 **6. Connect.** cloud-init sets up the guest after it starts, which takes a

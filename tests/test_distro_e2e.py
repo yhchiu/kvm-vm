@@ -54,7 +54,7 @@ def test_distro_create_ssh(distro, tmp_path, ssh_keypair, vm_cleanup_tracker):
     definition.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
 
     print(f"CREATE_SSH_START distro={distro} vm={name} port={port}", flush=True)
-    result = E2EHelper.run_kvm_vm("create", str(definition))
+    result = E2EHelper.run_kvm_vm("create", "--yes", str(definition))
     assert result.returncode == 0
     assert E2EHelper.domain_exists(name)
     assert E2EHelper.domain_state(name) == "running"

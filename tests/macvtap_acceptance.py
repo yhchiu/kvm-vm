@@ -145,7 +145,7 @@ def main():
             path = remote_dir + "/" + name + ".yaml"
             host("tee", path, input_text=yaml.safe_dump(raw))
             definitions.append(path)
-        cli("create", definitions[0])
+        cli("create", "--yes", definitions[0])
         print("Created " + names[0] + "; waiting for external SSH and cloud-init", flush=True)
         xml_check(0)
         wait_guest(0)
@@ -205,7 +205,7 @@ def main():
             source_config["network"]["ipv4"] = {"method": "dhcp"}
             host("tee", definitions[0], input_text=yaml.safe_dump(source_config))
             cli("delete", names[0], "--force", "--yes")
-            cli("create", definitions[0])
+            cli("create", "--yes", definitions[0])
             xml_check(0)
             wait_guest(0)
             lease = guest(1, "sudo cat /run/kvm-vm-dhcp.leases").stdout

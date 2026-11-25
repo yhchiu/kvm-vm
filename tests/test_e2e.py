@@ -369,7 +369,7 @@ def test_e2e_delete_keep_storage(tmp_path: Path, ssh_keypair: Dict[str, Any], vm
     yaml_file.write_text(build_vm_yaml(test_name, ssh_keypair["public_key_content"]), encoding="utf-8")
 
     # Create with --no-start for instant execution
-    res_create = E2EHelper.run_kvm_vm("create", str(yaml_file), "--no-start")
+    res_create = E2EHelper.run_kvm_vm("create", "--yes", str(yaml_file), "--no-start")
     assert res_create.returncode == 0
     assert E2EHelper.domain_exists(test_name)
 
@@ -426,7 +426,7 @@ def test_e2e_primary_lifecycle(tmp_path: Path, ssh_keypair: Dict[str, Any], vm_c
     src_yaml = tmp_path / f"{src_name}.yaml"
     src_yaml.write_text(build_vm_yaml(src_name, key_pub_str, distro=E2E_DISTRO, ssh_port=ssh_port), encoding="utf-8")
 
-    res_create = E2EHelper.run_kvm_vm("create", str(src_yaml))
+    res_create = E2EHelper.run_kvm_vm("create", "--yes", str(src_yaml))
     assert res_create.returncode == 0
     assert E2EHelper.domain_exists(src_name)
     assert E2EHelper.domain_state(src_name) == "running"
@@ -574,7 +574,7 @@ def test_e2e_ssh_port_rollback(tmp_path: Path, ssh_keypair: Dict[str, Any], vm_c
     definition = tmp_path / f"{name}.yaml"
     definition.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
 
-    assert E2EHelper.run_kvm_vm("create", str(definition)).returncode == 0
+    assert E2EHelper.run_kvm_vm("create", "--yes", str(definition)).returncode == 0
     ip = E2EHelper.wait_for_ssh(name, key, timeout=E2E_SSH_TIMEOUT)
     # Port 22 answers before provisioning ends, so wait for the rollback first.
     rc = E2EHelper.ssh_exec(ip, key, "sudo cloud-init status --wait >/dev/null; echo $?")

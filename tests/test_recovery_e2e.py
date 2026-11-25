@@ -42,7 +42,7 @@ def recovery_domain():
         "cloud_init": {"ssh_authorized_keys": ["ssh-ed25519 AAAA... recovery-test"]}}
     definition.write_text(yaml.safe_dump(cfg))
     try:
-        cli("create", str(definition), "--no-start")
+        cli("create", "--yes", str(definition), "--no-start")
         state = json.loads((root / "state" / (name + ".json")).read_text())
         disk = Path(state["disk"])
         subprocess.run(["qemu-io", "-f", "qcow2", "-c", "write -P 0x5a 0 4096", str(disk)], check=True)

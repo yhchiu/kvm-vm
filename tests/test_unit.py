@@ -478,6 +478,8 @@ class TestParser:
 
         args_create_default = parser.parse_args(["create", "myvm.yaml"])
         assert args_create_default.dry_run is False
+        assert args_create_default.yes is False
+        assert parser.parse_args(["create", "myvm.yaml", "--yes"]).yes is True
 
         args_reinstall = parser.parse_args(["reinstall", "myvm", "--dry-run"])
         assert args_reinstall.dry_run is True
@@ -1767,7 +1769,7 @@ def stale_create(tmp_path, monkeypatch):
     monkeypatch.setattr(kvm_vm, "acquire_base_image", lambda *args: tmp_path / "base")
     monkeypatch.setattr(kvm_vm, "make_disk_from_base", lambda base, target, size: target.write_bytes(b"new disk"))
     monkeypatch.setattr(kvm_vm, "make_cloud_files", lambda *args, **kwargs: (None, None, None, "new"))
-    return kvm_vm.build_parser().parse_args(["create", str(definition), "--no-start"]), manifest, disk
+    return kvm_vm.build_parser().parse_args(["create", str(definition), "--no-start", "--yes"]), manifest, disk
 
 
 def test_create_replaces_state_when_domain_and_artifacts_are_absent(stale_create):
@@ -2370,7 +2372,7 @@ def _create_args(tmp_path, monkeypatch, raw, *, dry_run=True):
     monkeypatch.setattr(kvm_vm, "domain_exists", lambda name: False)
     monkeypatch.setattr(kvm_vm, "existing_macs", lambda: set())
     monkeypatch.setattr(kvm_vm, "run", lambda *args, **kwargs: subprocess.CompletedProcess([], 0, "", ""))
-    return kvm_vm.build_parser().parse_args(["create", str(definition)] + (["--dry-run"] if dry_run else []))
+    return kvm_vm.build_parser().parse_args(["create", str(definition)] + (["--dry-run"] if dry_run else ["--yes"]))
 
 
 def test_create_dry_run_rejects_disk_smaller_than_cached_image(tmp_path, monkeypatch):
@@ -2573,3 +2575,78 @@ def test_validate_bridge_still_rejects_a_missing_bridge(monkeypatch):
     with pytest.raises(kvm_vm.KVMError, match="Bridge/interface not found: br0"):
         kvm_vm.validate_bridge("br0")
 
+
+
+@pytest.mark.parametrize("answer", ["", "y", "YES", " yes ", "n", "no", "invalid", None])
+def test_create_confirmation(stale_create, monkeypatch, capsys, answer):
+    args, manifest, disk = stale_create
+    args.yes = False
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    acquire = MagicMock(wraps=kvm_vm.acquire_base_image)
+    monkeypatch.setattr(kvm_vm, "acquire_base_image", acquire)
+
+    def confirm(prompt):
+        assert prompt == "Create VM 'test01'? [Y/n] "
+        assert not disk.exists()
+        acquire.assert_not_called()
+        assert json.loads(manifest.read_text())["instance_id"] == "old"
+        preview = capsys.readouterr().out
+        assert "machine: q35" in preview
+        assert "Validation and pre-flight checks passed." in preview
+        if answer is None:
+            raise EOFError
+        return answer
+
+    monkeypatch.setattr("builtins.input", confirm)
+    if answer in ("", "y", "YES", " yes "):
+        assert kvm_vm.cmd_create(args) == 0
+        assert disk.exists()
+        acquire.assert_called_once()
+    else:
+        with pytest.raises(kvm_vm.KVMError, match="Create cancelled"):
+            kvm_vm.cmd_create(args)
+        acquire.assert_not_called()
+        assert not disk.exists()
+        assert not (kvm_vm.CLOUD_DIR / "test01").exists()
+        assert json.loads(manifest.read_text())["instance_id"] == "old"
+    assert not (kvm_vm.STATE_DIR / ".lifecycle-lock").exists()
+
+
+@pytest.mark.parametrize("yes,dry_run", [(False, False), (True, False), (False, True), (True, True)])
+def test_create_noninteractive_policy(stale_create, monkeypatch, yes, dry_run):
+    args, manifest, disk = stale_create
+    args.yes, args.dry_run = yes, dry_run
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+    monkeypatch.setattr("builtins.input", MagicMock(side_effect=AssertionError("must not prompt")))
+    if yes or dry_run:
+        assert kvm_vm.cmd_create(args) == 0
+    else:
+        with pytest.raises(kvm_vm.KVMError, match="without --yes in non-interactive mode"):
+            kvm_vm.cmd_create(args)
+    assert disk.exists() == (yes and not dry_run)
+
+
+@pytest.mark.parametrize("yes", [False, True])
+@pytest.mark.parametrize("failure", ["definition", "ssh", "host", "artifact"])
+def test_create_validation_failure_never_prompts_or_provisions(tmp_path, monkeypatch, yes, failure):
+    raw = _minimal_raw()
+    if failure == "definition":
+        raw["vm"]["machine"] = "invalid machine"
+    elif failure == "ssh":
+        raw.setdefault("cloud_init", {})["ssh_authorized_keys"] = ["file:missing.pub"]
+    args = _create_args(tmp_path, monkeypatch, raw, dry_run=False)
+    args.yes = yes
+    if failure == "host":
+        monkeypatch.setattr(kvm_vm, "validate_network_attachment", MagicMock(side_effect=kvm_vm.KVMError("host failure")))
+    if failure == "artifact":
+        (kvm_vm.VM_DIR / "test01.qcow2").write_bytes(b"existing")
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    prompt = MagicMock(side_effect=AssertionError("must not prompt"))
+    acquire = MagicMock(side_effect=AssertionError("must not acquire image"))
+    monkeypatch.setattr("builtins.input", prompt)
+    monkeypatch.setattr(kvm_vm, "acquire_base_image", acquire)
+    with pytest.raises(kvm_vm.KVMError):
+        kvm_vm.cmd_create(args)
+    prompt.assert_not_called()
+    acquire.assert_not_called()
+    assert not (kvm_vm.CLOUD_DIR / "test01").exists()

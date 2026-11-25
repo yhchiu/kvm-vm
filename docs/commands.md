@@ -4,7 +4,7 @@ English | [繁體中文](commands.zh-TW.md)
 
 ```text
 kvm-vm validate <vm.yaml> [--clone]
-kvm-vm create <vm.yaml> [--console-password-file <path>] [--refresh-image] [--no-start] [--dry-run]
+kvm-vm create <vm.yaml> [--console-password-file <path>] [--refresh-image] [--no-start] [--dry-run] [--yes]
 kvm-vm list [--managed] [--ips]
 kvm-vm status <vm>
 kvm-vm identity [--json]
@@ -74,16 +74,25 @@ for that. The firewall warning is described in
 ```bash
 sudo kvm-vm create web01.yaml
 sudo kvm-vm create web01.yaml --dry-run
+sudo kvm-vm create web01.yaml --yes
 ```
 
-1. Checks the definition, that the name is free, the network attachment, and the
-   SSH keys. Picks a MAC address when `mac: auto`.
+1. Runs the same definition and SSH key validation as `validate`, then host
+   pre-flight checks (name, network, existing artifacts, credential destination,
+   cached image size). Picks a MAC address when `mac: auto`. Prints the effective
+   definition and asks `Create VM 'NAME'? [Y/n]`. Enter or `y`/`yes` continues;
+   other answers cancel.
 2. Downloads the image if it is not cached yet (`--refresh-image` downloads it
    again; see [Image cache](configuration.md#image-cache-and---refresh-image)).
 3. Copies the image to a new disk, `/var/lib/libvirt/images/vm/NAME.qcow2`, and
    grows it to `disk_gib`.
 4. Writes the cloud-init seed and defines the VM with `virt-install`.
 5. Saves the effective definition and the state manifest.
+
+`--yes` skips the interactive preview and confirmation, not validation or
+pre-flight checks. Non-interactive execution requires `--yes` unless
+`--dry-run` is used. Dry runs never prompt or create a VM. Cancelling returns
+a nonzero exit status without downloading an image or creating VM artifacts.
 
 The command returns when the VM has started. cloud-init then sets up the guest,
 which takes a minute or more. To wait for it from the guest:

@@ -39,7 +39,7 @@ def test_create_macvtap_persists_direct_attachment(network_machine):
     raw = kvm_vm.yaml_load(kvm_vm.Path(definition))
     raw["network"] = {"mode": "macvtap", "parent": "eno1", "mac": "52:54:00:11:22:33"}
     kvm_vm.yaml_dump(kvm_vm.Path(definition), raw)
-    assert invoke("create", definition, "--no-start") == 0
+    assert invoke("create", "--yes", definition, "--no-start") == 0
     saved = kvm_vm.yaml_load(kvm_vm.DEF_DIR / "clone01.yaml")
     assert saved["network"]["mode"] == "macvtap"
     assert saved["network"]["parent"] == "eno1"
@@ -58,7 +58,7 @@ def test_guest_agent_channel_is_explicit_for_generic_variant(network_machine, op
     raw["vm"]["os_variant"] = "generic"
     raw["cloud_init"]["qemu_guest_agent"] = True
     kvm_vm.yaml_dump(definition, raw)
-    args = [operation] + (["test01"] if operation == "clone" else [])
+    args = [operation] + (["test01"] if operation == "clone" else ["--yes"])
     assert invoke(*args, str(definition), "--no-start") == 0
     install = next(cmd for cmd in network_machine["commands"] if cmd[0] == "virt-install")
     assert "--channel" in install
@@ -98,7 +98,7 @@ def test_macvtap_conflicts_fail_before_mutation(network_machine, monkeypatch, pa
     if bridge is not None:
         monkeypatch.setenv("KVM_VM_BRIDGE", bridge)
     with pytest.raises(kvm_vm.KVMError, match="conflict|network.parent"):
-        invoke("create", str(definition))
+        invoke("create", "--yes", str(definition))
     assert not (kvm_vm.VM_DIR / "clone01.qcow2").exists()
     assert not machine["commands"]
 
@@ -122,7 +122,7 @@ def test_create_refuses_unsupported_parent(network_machine, monkeypatch, problem
     else:
         machine["link"]["master"] = "br0"
     with pytest.raises(kvm_vm.KVMError, match="Macvtap parent"):
-        invoke("create", machine["args"].definition)
+        invoke("create", "--yes", machine["args"].definition)
     assert not (kvm_vm.VM_DIR / "clone01.qcow2").exists()
     assert not any(cmd[0] in ("qemu-img", "virt-install") for cmd in machine["commands"])
     assert all(cmd[:4] == ["ip", "-j", "-d", "link"] for cmd in machine["commands"] if cmd[0] == "ip")

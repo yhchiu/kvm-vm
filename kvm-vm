@@ -1591,11 +1591,15 @@ def check_create_state(name: str, disk: Path) -> None:
     log.warning(f"Stale managed state for {name}; it will be replaced only after successful creation")
 
 
-def cmd_validate(args: argparse.Namespace) -> int:
-    p = Path(args.definition)
-    raw = yaml_load(p)
-    cfg = normalize_definition(raw, for_clone=args.clone)
+def load_validated_definition(p: Path, *, for_clone: bool = False) -> Dict[str, Any]:
+    """Share offline definition validation between validate and create."""
+    cfg = normalize_definition(yaml_load(p), for_clone=for_clone)
     resolve_ssh_keys(cfg["cloud_init"]["ssh_authorized_keys"], p.parent)
+    return cfg
+
+
+def cmd_validate(args: argparse.Namespace) -> int:
+    cfg = load_validated_definition(Path(args.definition), for_clone=args.clone)
     print(yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True))
     return 0
 
@@ -1641,23 +1645,40 @@ def lifecycle_exclusive(command):
     return invoke
 
 
+def confirm_create(cfg: Dict[str, Any], *, yes: bool) -> None:
+    if yes:
+        return
+    if not sys.stdin.isatty():
+        raise KVMError("Refusing create without --yes in non-interactive mode")
+    print(yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True), end="")
+    print("Validation and pre-flight checks passed.")
+    name = cfg["vm"]["name"]
+    try:
+        answer = input(f"Create VM '{name}'? [Y/n] ").strip().lower()
+    except EOFError:
+        raise KVMError("Create cancelled") from None
+    if answer not in ("", "y", "yes"):
+        raise KVMError("Create cancelled")
+
+
 @lifecycle_exclusive
 def cmd_create(args: argparse.Namespace) -> int:
+    p = Path(args.definition)
+    cfg = load_validated_definition(p)
     require_commands(["virsh", "virt-install", "qemu-img"])
     require_cloud_seed_generator()
     ensure_dirs()
-    p = Path(args.definition)
-    cfg = normalize_definition(yaml_load(p), for_clone=False)
     name = cfg["vm"]["name"]
     if domain_exists(name):
         raise KVMError(f"Domain already exists: {name}")
-    check_create_state(name, VM_DIR / f"{name}.qcow2")
+    disk = VM_DIR / f"{name}.qcow2"
+    check_create_state(name, disk)
+    check_new_artifacts(name, disk)
     destination = vars(args).get("console_password_file")
     deliver_console_credential(cfg, destination, preview=True)
     validate_network_attachment(cfg["network"])
     if cfg["network"]["mac"] == "auto":
         cfg["network"]["mac"] = generate_mac(exclude=existing_macs())
-    resolve_ssh_keys(cfg["cloud_init"]["ssh_authorized_keys"], p.parent)
     # Measure a base image that is already on disk. Do not download one just
     # to compare sizes; a later real create still checks after the download.
     check_base_disk_capacity(cfg)
@@ -1667,8 +1688,8 @@ def cmd_create(args: argparse.Namespace) -> int:
         print(yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True))
         return 0
 
+    confirm_create(cfg, yes=args.yes)
     base = acquire_base_image(cfg, args.refresh_image)
-    disk = VM_DIR / f"{name}.qcow2"
     check_new_artifacts(name, disk)
     password_hash = deliver_console_credential(cfg, destination, preview=False)
     owned = {}
@@ -3743,6 +3764,7 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--refresh-image", action="store_true", help="Redownload a URL/distro base image")
     q.add_argument("--no-start", action="store_true", help="Define the VM but do not boot it")
     q.add_argument("--dry-run", action="store_true", help="Run all pre-flight checks but do not create the VM")
+    q.add_argument("--yes", action="store_true", help="Skip interactive confirmation (validation still runs)")
     q.set_defaults(func=cmd_create)
 
     q = sp.add_parser("clone", help="Offline full clone of a VM, then sysprep and apply target YAML")

@@ -125,7 +125,7 @@ def main():
     definition.write_text(build_vm_yaml(name, key.with_suffix(".pub").read_text()), encoding="utf-8")
     os.umask(0o022)
     try:
-        assert kvm("create", str(definition))[0] == 0
+        assert kvm("create", "--yes", str(definition))[0] == 0
     finally:
         os.umask(0o077)
     ip = E2EHelper.wait_for_ssh(name, key, timeout=360)

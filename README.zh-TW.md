@@ -73,6 +73,8 @@ sudo kvm-vm create examples/ubuntu24-nat.yaml --dry-run  # 一併檢查宿主機
 sudo kvm-vm create examples/ubuntu24-nat.yaml
 ```
 
+`create` 會自動驗證定義檔及執行宿主機預檢，再顯示生效定義檔並要求確認（Enter 預設 yes）。自動化請使用 `create --yes`；`--dry-run` 不會提示確認。
+
 第一次執行會下載 Ubuntu 雲端映像檔，可能需要幾分鐘。
 
 **6. 連線。** VM 開機後，cloud-init 需要一兩分鐘完成設定。

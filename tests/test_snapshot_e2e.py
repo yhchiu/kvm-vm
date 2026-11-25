@@ -93,7 +93,7 @@ def snapshot_vm(tmp_path, ssh_keypair):
 
 
 def boot_guest(name: str, definition: Path, key: Path) -> str:
-    kvm("create", str(definition))
+    kvm("create", "--yes", str(definition))
     ip = E2EHelper.wait_for_ssh(name, key, timeout=E2E_SSH_TIMEOUT)
     E2EHelper.ssh_exec(ip, key, "sudo cloud-init status --wait")
     deadline = time.monotonic() + 120

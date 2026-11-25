@@ -55,7 +55,7 @@ def main():
     # Match the normal CLI's directory traversal permissions for QEMU.
     os.umask(0o022)
     try:
-        E2EHelper.run_kvm_vm("create", str(definition), capture=False)
+        E2EHelper.run_kvm_vm("create", "--yes", str(definition), capture=False)
     finally:
         os.umask(0o077)
     ip = E2EHelper.wait_for_ssh(name, key, timeout=360)

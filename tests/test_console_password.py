@@ -49,7 +49,7 @@ def test_validate_console_policy_is_explicit(console_machine, capsys):
 def test_create_delivers_console_credential_without_leaks(console_machine, capsys, caplog):
     machine = console_machine
     destination = machine["credential"]
-    assert invoke("create", machine["args"].definition, "--no-start",
+    assert invoke("create", "--yes", machine["args"].definition, "--no-start",
                   "--console-password-file", str(destination)) == 0
     delivered = json.loads(destination.read_text())
     assert delivered["user"] == "admin" and delivered["vm"] == "clone01"
@@ -120,7 +120,7 @@ def test_unsafe_delivery_leaves_guest_untouched(console_machine, case):
     elif case == "missing":
         destination = destination.parent / "absent" / "credential"
     with pytest.raises(kvm_vm.KVMError):
-        invoke("create", console_machine["args"].definition,
+        invoke("create", "--yes", console_machine["args"].definition,
                "--console-password-file", str(destination))
     assert not (kvm_vm.VM_DIR / "clone01.qcow2").exists()
     if case == "existing":
@@ -129,7 +129,7 @@ def test_unsafe_delivery_leaves_guest_untouched(console_machine, case):
 
 def test_create_requires_explicit_destination(console_machine):
     with pytest.raises(kvm_vm.KVMError, match="requires --console-password-file"):
-        invoke("create", console_machine["args"].definition)
+        invoke("create", "--yes", console_machine["args"].definition)
     assert not (kvm_vm.VM_DIR / "clone01.qcow2").exists()
 
 
@@ -139,7 +139,7 @@ def test_destination_cannot_enable_password(console_machine):
     raw["cloud_init"]["console_password"] = False
     kvm_vm.yaml_dump(definition, raw)
     with pytest.raises(kvm_vm.KVMError, match="requires cloud_init.console_password"):
-        invoke("create", str(definition), "--console-password-file", str(console_machine["credential"]))
+        invoke("create", "--yes", str(definition), "--console-password-file", str(console_machine["credential"]))
     assert not console_machine["credential"].exists()
 
 
@@ -171,7 +171,7 @@ def test_delivery_failure_precedes_guest_mutation(console_machine, monkeypatch, 
         monkeypatch.setattr(os, "open" if failure == "race" else "fsync",
                             race_open if failure == "race" else failed_sync)
     with pytest.raises(kvm_vm.KVMError, match="securely deliver"):
-        invoke("create", console_machine["args"].definition,
+        invoke("create", "--yes", console_machine["args"].definition,
                "--console-password-file", str(destination))
     assert not (kvm_vm.VM_DIR / "clone01.qcow2").exists()
     assert not console_machine.get("target_defined")
@@ -184,7 +184,7 @@ def test_late_failure_preserves_delivered_credential(console_machine):
     console_machine["install_succeeds"] = False
     destination = console_machine["credential"]
     with pytest.raises(subprocess.CalledProcessError):
-        invoke("create", console_machine["args"].definition,
+        invoke("create", "--yes", console_machine["args"].definition,
                "--console-password-file", str(destination))
     assert len(json.loads(destination.read_text())["password"]) == 24
     assert (kvm_vm.VM_DIR / "clone01.qcow2").exists()
@@ -220,7 +220,7 @@ def test_reinstall_preserves_policy_with_new_credential(console_machine, monkeyp
 def test_generated_guest_script_hardens_conditions_before_unlock(console_machine, monkeypatch, ssh_valid):
     if ssh_valid == "actual_parser" and (os.geteuid() != 0 or not kvm_vm.Path("/usr/sbin/sshd").is_file()):
         pytest.skip("Actual SSH parser verification requires a Linux root host with sshd installed")
-    invoke("create", console_machine["args"].definition, "--no-start",
+    invoke("create", "--yes", console_machine["args"].definition, "--no-start",
            "--console-password-file", str(console_machine["credential"]))
     data = kvm_vm.yaml_load(kvm_vm.CLOUD_DIR / "clone01" / "user-data")
     assert data["users"][0]["lock_passwd"] is True
@@ -278,7 +278,7 @@ def test_generated_guest_script_hardens_conditions_before_unlock(console_machine
 @pytest.mark.skipif(os.name != "posix", reason="Requires POSIX delivery")
 @pytest.mark.parametrize("python3_available", [True, False])
 def test_console_launcher_uses_available_guest_python(console_machine, python3_available):
-    invoke("create", console_machine["args"].definition, "--no-start",
+    invoke("create", "--yes", console_machine["args"].definition, "--no-start",
            "--console-password-file", str(console_machine["credential"]))
     data = kvm_vm.yaml_load(kvm_vm.CLOUD_DIR / "clone01" / "user-data")
     command = list(data["runcmd"][-1])
@@ -302,14 +302,14 @@ def test_console_launcher_uses_available_guest_python(console_machine, python3_a
 def test_independent_creates_receive_distinct_credentials(console_machine):
     definition = kvm_vm.Path(console_machine["args"].definition)
     first = console_machine["credential"]
-    invoke("create", str(definition), "--no-start", "--console-password-file", str(first))
+    invoke("create", "--yes", str(definition), "--no-start", "--console-password-file", str(first))
     first_data = kvm_vm.yaml_load(kvm_vm.CLOUD_DIR / "clone01" / "user-data")
     console_machine["target_defined"] = False
     raw = kvm_vm.yaml_load(definition)
     raw["vm"]["name"] = "second01"
     kvm_vm.yaml_dump(definition, raw)
     second = first.with_name("second01.json")
-    invoke("create", str(definition), "--no-start", "--console-password-file", str(second))
+    invoke("create", "--yes", str(definition), "--no-start", "--console-password-file", str(second))
     second_data = kvm_vm.yaml_load(kvm_vm.CLOUD_DIR / "second01" / "user-data")
     assert json.loads(first.read_text())["password"] != json.loads(second.read_text())["password"]
     assert first_data["users"][0]["hashed_passwd"] != second_data["users"][0]["hashed_passwd"]
@@ -368,7 +368,7 @@ def test_foreign_private_directory_is_rejected(console_machine):
     os.chown(directory, 65534, -1)
     try:
         with pytest.raises(kvm_vm.KVMError, match="owned by"):
-            invoke("create", console_machine["args"].definition,
+            invoke("create", "--yes", console_machine["args"].definition,
                    "--console-password-file", str(console_machine["credential"]))
         assert not (kvm_vm.VM_DIR / "clone01.qcow2").exists()
     finally:
